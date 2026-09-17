@@ -49,6 +49,9 @@ def build(days: int = 7) -> dict:
     n_secret = n_pii = 0
     ok = refused = failed = 0
     ms = []
+    mask_ms = []
+    distinct_secret: set = set()
+    distinct_pii: set = set()
     for t, r in recs:
         for k, v in (r.get("masked") or {}).items():
             by_kind[k] += v
@@ -67,6 +70,10 @@ def build(days: int = 7) -> dict:
             failed += 1
         if isinstance(r.get("ms"), int):
             ms.append(r["ms"])
+        if isinstance(r.get("mask_ms"), int):
+            mask_ms.append(r["mask_ms"])
+        for tok in r.get("tokens") or []:
+            (distinct_secret if str(tok).startswith("SECRET_") else distinct_pii).add(tok)
     chain_ok, chain_n, chain_msg = receipts.verify()
     # If the receipts carry no per-layer totals (older lines), fall back to a name hint.
     if n_secret == 0 and n_pii == 0 and by_kind:
@@ -90,6 +97,9 @@ def build(days: int = 7) -> dict:
         "sessions": len(sessions),
         "secrets_caught": n_secret,
         "pii_caught": n_pii,
+        "distinct_secrets": len(distinct_secret),
+        "distinct_pii": len(distinct_pii),
+        "avg_mask_ms": int(sum(mask_ms) / len(mask_ms)) if mask_ms else 0,
         "by_kind": dict(by_kind.most_common()),
         "by_day": dict(sorted(by_day.items())),
         "by_upstream": dict(by_upstream.most_common()),
@@ -104,7 +114,7 @@ def render_text(d: dict) -> str:
         f"Omna weekly report  ·  last {d['period_days']} days (since {d['since']})  ·  generated {d['generated']}",
         "",
         f"PROTECT   {d['requests']} AI requests enabled, 0 blocked  ·  {d['requests_refused']} refused (unparseable)  ·  {d['requests_failed']} provider errors",
-        f"          {d['secrets_caught']} secrets kept off the wire  ·  {d['pii_caught']} personal values tokenised  ·  {d['requests_with_catch']} requests had at least one catch",
+        f"          {d['distinct_secrets']} distinct secrets kept off the wire ({d['secrets_caught']} occurrences)  ·  {d['distinct_pii']} distinct personal values tokenised ({d['pii_caught']} occurrences)  ·  {d['requests_with_catch']} requests had at least one catch",
     ]
     if d["by_kind"]:
         lines.append("          by kind: " + ", ".join(f"{k} ×{v}" for k, v in d["by_kind"].items()))
@@ -112,7 +122,7 @@ def render_text(d: dict) -> str:
         f"SCAN      {len(d['by_upstream'])} AI destination(s): " + ", ".join(f"{k} ({v})" for k, v in d["by_upstream"].items()) + f"  ·  {d['sessions']} Claude Code session(s)",
         f"PROVE     receipt chain {'INTACT' if d['chain']['intact'] else 'BROKEN'} ({d['chain']['receipts']} receipts, {d['chain']['message']})",
         f"TRUST     {d['what_left_the_machine']}",
-        f"COST      +{d['avg_ms']} ms average per request through the proxy (includes the provider's own time)",
+        f"COST      masking added {d['avg_mask_ms']} ms per request on average (whole round trip incl. the provider: {d['avg_ms']} ms)",
         "",
         "by day:   " + (", ".join(f"{k}: {v}" for k, v in d["by_day"].items()) or "no requests"),
         f"engine {d['engine']}  ·  receipts in {d['home']}",
@@ -134,15 +144,15 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 <p><b>THE UNLOCK.</b> Your team used AI on everything. {d['requests']} requests enabled, 0 blocked, every one masked on this machine before it left.</p>
 <div class="grid">
 <div class="cell"><b>{d['requests']}</b>AI requests enabled · 0 blocked</div>
-<div class="cell"><b>{d['secrets_caught']}</b>secrets kept off the wire</div>
-<div class="cell"><b>{d['pii_caught']}</b>personal values tokenised</div>
+<div class="cell"><b>{d['distinct_secrets']}</b>distinct secrets kept off the wire ({d['secrets_caught']} occurrences)</div>
+<div class="cell"><b>{d['distinct_pii']}</b>distinct personal values tokenised ({d['pii_caught']} occurrences)</div>
 <div class="cell"><b>{chain}</b>receipt chain ({d['chain']['receipts']} receipts)</div>
 </div>
 <h2>Catches, not incidents</h2><p class="muted">A catch means the value never reached the provider. No incident occurred.</p>
 <table><tr><th align=left>kind</th><th align=left>count</th></tr>{kinds}</table>
 <h2>Scan</h2><p>AI destinations seen: {ups}. Claude Code sessions: {d['sessions']}.</p>
 <h2>Requests by day</h2><table>{days}</table>
-<h2>Trust</h2><p>{e(d['what_left_the_machine'])}. Average added time per request: {d['avg_ms']} ms (includes the provider's own time).</p>
+<h2>Trust</h2><p>{e(d['what_left_the_machine'])}. Masking added {d['avg_mask_ms']} ms per request on average; the whole round trip including the provider took {d['avg_ms']} ms.</p>
 <p class="muted">engine {e(d['engine'])} · receipts in {e(d['home'])} · verify any time with <code>omna log --verify</code></p>
 </body></html>"""
 

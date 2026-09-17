@@ -122,8 +122,9 @@ async def test_streamed_anthropic_request_is_masked_and_reply_restored(env):
     assert "".join(delta_texts) == f"I will email {EMAIL} now."
     rec = receipts.tail(1)[0]
     assert rec["route"] == "/v1/messages" and rec["stream"] is True and rec["session"] == "sess-1"
-    assert rec["masked"] == {"EMAIL": 1, "AWS_KEY": 1}
-    assert EMAIL not in json.dumps(rec)
+    assert rec["masked"] == {"EMAIL": 1, "AWS_KEY": 1} and rec["secrets"] == 1 and rec["pii"] == 1
+    assert rec["tokens"] == ["EMAIL_1", "SECRET_AWS_KEY_1"] and isinstance(rec["mask_ms"], int)
+    assert EMAIL not in json.dumps(rec) and KEY not in json.dumps(rec)
 
 
 @pytest.mark.anyio

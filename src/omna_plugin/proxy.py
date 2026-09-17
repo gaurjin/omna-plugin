@@ -30,7 +30,7 @@ from starlette.routing import Route
 
 from . import config, receipts
 from .body import mask_body, restore_body
-from .engine import MaskingSession, engine_version
+from .engine import MaskingSession, TOKEN_RE, engine_version
 from .stream import StreamRestorer
 
 __version__ = "0.1.0"
@@ -97,6 +97,8 @@ def create_app(
         body = await request.body()
         counts: dict[str, int] = {}
         passthrough = False
+        mask_ms = 0
+        tokens_seen: list[str] = []
         ctype = request.headers.get("content-type", "")
         is_inference = any(path.startswith(pfx) for pfx in INFERENCE_PREFIXES)
         if body and request.method in ("POST", "PUT", "PATCH"):
@@ -108,8 +110,11 @@ def create_app(
                     obj = None
             if obj is not None:
                 try:
+                    t_mask = time.time()
                     masked, counts = await run_in_threadpool(mask_body, session, obj)
                     body = json.dumps(masked, ensure_ascii=False).encode("utf-8")
+                    mask_ms = int((time.time() - t_mask) * 1000)
+                    tokens_seen = sorted({m.group(0)[1:-1] for m in TOKEN_RE.finditer(body.decode("utf-8", "replace"))})
                 except (TypeError, ValueError, UnicodeEncodeError) as e:
                     _receipt(request, path, upstream, 400, {}, len(body), time.time(), stream=False, note="mask-failed")
                     return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": f"omna could not mask this request ({e}); refused rather than sent unmasked"}}, status_code=400)
@@ -155,7 +160,7 @@ def create_app(
                         yield tail
                 finally:
                     await resp.aclose()
-                    _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=True, note="passthrough" if passthrough else None)
+                    _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=True, note="passthrough" if passthrough else None, extra={"mask_ms": mask_ms, "tokens": tokens_seen})
 
             return StreamingResponse(gen(), status_code=resp.status_code, headers=resp_headers)
 
@@ -166,10 +171,10 @@ def create_app(
                 data = json.dumps(restore_body(session, json.loads(data)), ensure_ascii=False).encode("utf-8")
             except ValueError:
                 pass
-        _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=False, note="passthrough" if passthrough else None)
+        _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=False, note="passthrough" if passthrough else None, extra={"mask_ms": mask_ms, "tokens": tokens_seen})
         return Response(data, status_code=resp.status_code, headers=resp_headers)
 
-    def _receipt(request: Request, path: str, upstream: str, status: int, counts: dict, nbytes: int, t0: float, stream: bool, note: str | None = None):
+    def _receipt(request: Request, path: str, upstream: str, status: int, counts: dict, nbytes: int, t0: float, stream: bool, note: str | None = None, extra: dict | None = None):
         counts = dict(counts)
         n_secrets = counts.pop("_secrets", 0)
         n_pii = counts.pop("_pii", 0)
@@ -181,6 +186,7 @@ def create_app(
             "masked": counts,
             "secrets": n_secrets,
             "pii": n_pii,
+            **(extra or {}),
             "bytes_in": nbytes,
             "ms": int((time.time() - t0) * 1000),
         }
