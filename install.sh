@@ -6,7 +6,8 @@
 # Nothing is sent to Omna. Set OMNA_SOURCE to install from a git URL or a local path.
 set -eu
 
-SOURCE="${OMNA_SOURCE:-omna-plugin}"
+# Until the PyPI release, install straight from GitHub (a tagged release, not a moving branch).
+SOURCE="${OMNA_SOURCE:-git+https://github.com/gaurjin/omna-plugin@v0.1.0}"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "omna: installing uv (Python tool manager)..."

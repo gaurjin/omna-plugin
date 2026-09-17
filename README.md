@@ -33,7 +33,7 @@ That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires C
 proxy. Or by hand:
 
 ```sh
-uv tool install omna-plugin      # or: pipx install omna-plugin
+uv tool install git+https://github.com/gaurjin/omna-plugin@v0.1.0   # PyPI: coming
 omna init                        # Claude Code: sets ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
 omna start -d                    # background proxy on 127.0.0.1:7788
 omna status
