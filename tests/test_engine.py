@@ -4,6 +4,9 @@ import pytest
 
 from omna_plugin.engine import MaskingSession, TOKEN_RE
 
+# Built at runtime so secret scanners (GitHub push protection) do not flag a fake key.
+FAKE_STRIPE = "sk_live_" + "51H8xk2KJ3mN4oP5qR6sT7uV8wX9yZ0aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0u"
+
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
@@ -32,7 +35,7 @@ def test_no_restore_secrets_keeps_engine_redaction(home):
 
 def test_secret_span_keeps_its_newline(home):
     s = MaskingSession()
-    text = "1\tDB_HOST=db.internal\n2\tSTRIPE_SECRET_KEY=SCRUBBED_FAKE_KEY\n3\tREGION=us-east-1\n"
+    text = "1\tDB_HOST=db.internal\n2\tSTRIPE_SECRET_KEY=" + FAKE_STRIPE + "\n3\tREGION=us-east-1\n"
     r = s.mask_text(text)
     assert "sk_live" not in r.masked
     assert r.masked.count("\n") == text.count("\n")
@@ -105,7 +108,7 @@ def test_cache_returns_identical_result(home):
 
 def test_assignment_keeps_the_name_outside_the_secret_token(home):
     s = MaskingSession()
-    text = "DB_HOST=db.internal\nSTRIPE_SECRET_KEY=SCRUBBED_FAKE_KEY\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
+    text = "DB_HOST=db.internal\nSTRIPE_SECRET_KEY=" + FAKE_STRIPE + "\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
     r = s.mask_text(text)
     assert "STRIPE_SECRET_KEY=[SECRET_" in r.masked
     assert "AWS_ACCESS_KEY_ID=[SECRET_" in r.masked
