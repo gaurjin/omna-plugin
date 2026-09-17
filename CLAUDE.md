@@ -1,7 +1,7 @@
 # omna-plugin/CLAUDE.md
 
 ## What this repo is
-Product #4 of Omna: **the plugin**, a local masking proxy for AI coding tools. Thin Python shell
+Product #4 of Omna: **the plugin** — ONE command that masks everything an AI sees from this machine and will replace the Mac app + Chrome extension. This repo is Stage 1 (the mail-room proxy + coding tools via base URL); Stages 1b–5 (report, Mac system proxy + certificate via mitmproxy, VPN extension, Windows/Linux, sunset) are in the Product Spec §6. Thin Python shell
 (`src/omna_plugin/`) over the compiled `omna-pii-mask` engine wheel (built from the private
 `omna-workspace/bindings/omna-core-py`; never copy engine code here). Strategy and the blueprint live in
 `~/Developer/Omna Notes/:Vision/Omna Plugin — Product Spec.md` §6. The implementation plan is
