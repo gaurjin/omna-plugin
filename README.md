@@ -112,6 +112,10 @@ If the proxy is not running, the tool's requests fail to connect: nothing leaves
   secret span no longer swallows the newline after it. One known false positive remains: prose like
   "authorization context: something" can be flagged as a generic secret.
 - This masks secrets and PII. It does not make anything "compliant".
+- No exceptions, not even for us: with Claude Code wired to this proxy, Claude reading this
+  README's own demo values (the fake email/AWS key/phone two sections up) sees them as tokens
+  too, same as it would see yours. That's the proxy working as designed, not a bug — it is a
+  side effect worth knowing if you develop this repo with Claude Code pointed at itself.
 
 ## Free vs paid
 
