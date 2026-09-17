@@ -1,1 +1,116 @@
-# Omna plugin
+# Omna — mask secrets and PII before your prompt leaves the machine
+
+A small local proxy for AI coding tools. Point Claude Code, aider, Codex CLI or any
+Anthropic/OpenAI SDK app at `http://127.0.0.1:7788` and every request is masked on
+the way out, sent to the provider with **your own key or login**, and un-masked on
+the way back. The tool never notices. The model never sees the real values.
+
+```
+you type:     "fix the config, SUPPORT_EMAIL=jane.doe@example.com AWS_ACCESS_KEY_ID=AKIA…"
+model sees:   "fix the config, SUPPORT_EMAIL=[EMAIL_1] AWS_ACCESS_KEY_ID=[REDACTED:GENERIC_SECRET]"
+you get back: "…set SUPPORT_EMAIL to jane.doe@example.com…"   ← restored, streaming, inside tool calls too
+```
+
+- **Secrets** (240 rules: AWS, GitHub, Stripe, OpenAI, Anthropic, database URLs, JWTs, private keys, …) are
+  removed for good. They are never restored and never written anywhere.
+- **Personal data** (emails, phones, SSNs and 50 international ID formats with real checksum validation,
+  cards, IBANs, IPs, names) becomes stable tokens: `[EMAIL_1]` is the same address in every request, so
+  prompt caching keeps working.
+- **Nothing is sent to Omna.** The only network destination is the provider you were already using.
+  A local receipt log (counts only, hash-chained) shows what was caught.
+
+Same compiled engine as the Omna Mac app, browser extension and the `omna` Python library.
+
+## Install (macOS Apple Silicon, Linux x86_64/aarch64)
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/gaurjin/omna-plugin/main/install.sh | sh
+```
+
+That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires Claude Code, and starts the
+proxy. Or by hand:
+
+```sh
+uv tool install omna-plugin      # or: pipx install omna-plugin
+omna init                        # Claude Code: sets ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
+omna start -d                    # background proxy on 127.0.0.1:7788
+omna status
+```
+
+Other tools use the same address:
+
+```sh
+export ANTHROPIC_BASE_URL=http://127.0.0.1:7788   # aider (Claude), Anthropic SDK
+export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # Codex CLI, aider (OpenAI), OpenAI SDK, Cursor BYOK
+```
+
+## Try it in 30 seconds
+
+```sh
+omna mask "email jane.doe@example.com, key AKIAIOSFODNN7EXAMPLE, phone 212-555-0199"
+# email [EMAIL_1], key [REDACTED:AWS_KEY], phone [PHONE_1]
+
+omna log         # one line per request: time, route, status, ms, what was masked
+omna log --verify
+```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `omna start [-d] [--smart]` | Run the proxy (foreground, or `-d` in the background). `--smart` adds the on-device Contextual model for prose names (809 MB download once, slower). |
+| `omna stop` / `omna ensure` | Stop the background proxy / start it if it is not running (the Claude Code hook calls this). |
+| `omna status` | Running? Claude Code wired? Receipts today. |
+| `omna log [-n 20] [--verify] [--json]` | Local receipts. `--verify` checks the hash chain. |
+| `omna mask [TEXT or -]` | Mask a string or stdin. |
+| `omna allow VALUE` | Never mask this exact value again (false positive). |
+| `omna forget` | Wipe the token registry (tokens renumber). |
+| `omna init [--project]` / `omna uninstall` | Wire / un-wire Claude Code. `init` backs up your settings first and removes only its own keys on uninstall. |
+
+## What it costs you
+
+Measured on a MacBook Air M5 with Claude Code 2.1.274, a 4-request task (read a file, write a file, answer):
+
+| | direct | through omna |
+|---|---|---|
+| wall time | 8.8 s | 9.8 s |
+| fast masking, 68 KB request body | | 16 ms |
+
+The proxy relays the stream as it arrives (pings included), forwards `anthropic-beta`, `anthropic-version`,
+`cache_control` and the `system` array untouched, and forwards provider errors unmodified, per Claude Code's
+[gateway compatibility guide](https://code.claude.com/docs/en/llm-gateway-protocol).
+
+## What is stored on your machine
+
+| File (`~/.omna/`) | Contents | Permissions |
+|---|---|---|
+| `registry.json` | token → real value for reversible PII (needed to restore replies). Secrets are never in it. | 0600 |
+| `receipts.jsonl` | one hash-chained line per request: route, status, ms, counts per entity. No values. | 0600 |
+| `ruleset.json` | your allowlist and custom patterns (`{"allowlist": [...], "custom_rules": [{"label": "CUSTOMER_ID", "pattern": "ACME-\\d{6}"}]}`) | |
+| `proxy.log`, `omna.pid` | background-process housekeeping | |
+
+## Honest limits (v1)
+
+- Fast masking (rules + checksums) runs by default. Prose names in free text need `--smart`, which loads a
+  local model and slows each request; it is off by default.
+- Windows: no engine wheel yet (WSL works).
+- Model thinking blocks are passed through untouched in both directions (the API requires it), so a name the
+  model mentions inside its thinking shows as a token there.
+- A tool's own cloud features (for example Cursor tab-completion) never pass through a local proxy.
+- This masks secrets and PII. It does not make anything "compliant".
+
+## Free vs paid
+
+Everything in this repository is free. The paid layer, for teams, is the proof: a signed weekly evidence pack
+built from these receipts, per-machine coverage, and org-wide rulesets. See a sample at
+[omna.dev/sample-report](https://omna.dev/sample-report).
+
+## Development
+
+```sh
+uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
+.venv/bin/pytest -q          # 32 tests, ~0.1 s (fake upstream, no network)
+.venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
+```
+
+MIT for this shell. The engine wheel (`omna-pii-mask`) is binary-only.
