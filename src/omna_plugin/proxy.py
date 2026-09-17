@@ -17,11 +17,13 @@ buffering (pings included), forward error bodies unmodified, answer
 from __future__ import annotations
 
 import json
+import os
 import time
 from urllib.parse import urlsplit
 
 import httpx
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -32,6 +34,13 @@ from .engine import MaskingSession, engine_version
 from .stream import StreamRestorer
 
 __version__ = "0.1.0"
+
+# Paths that carry prompts. A POST here whose body we cannot parse is refused
+# (fail closed) instead of being forwarded unmasked.
+INFERENCE_PREFIXES = ("/v1/messages", "/v1/complete", "/v1/chat/completions", "/v1/responses", "/v1/completions", "/v1/embeddings")
+
+# Developer aid: OMNA_DEBUG_DUMP=<dir> writes each MASKED request body there.
+_DUMP_DIR = os.environ.get("OMNA_DEBUG_DUMP")
 
 # Hop-by-hop or connection-specific headers we never forward in either direction.
 _DROP_REQ = {"host", "content-length", "connection", "keep-alive", "transfer-encoding",
@@ -67,6 +76,8 @@ def create_app(
                 "plugin": __version__,
                 "engine": engine_version(),
                 "smart": session.smart,
+                "restore_secrets": session.restore_secrets,
+                "secrets_held_in_memory": session.secrets_held,
                 "requests_this_run": stats["requests"],
                 "receipts": n,
                 "chain_intact": ok,
@@ -85,15 +96,35 @@ def create_app(
 
         body = await request.body()
         counts: dict[str, int] = {}
+        passthrough = False
         ctype = request.headers.get("content-type", "")
-        if body and "json" in ctype:
-            try:
-                obj = json.loads(body)
-            except ValueError:
-                obj = None
+        is_inference = any(path.startswith(pfx) for pfx in INFERENCE_PREFIXES)
+        if body and request.method in ("POST", "PUT", "PATCH"):
+            obj = None
+            if "json" in ctype and not request.headers.get("content-encoding"):
+                try:
+                    obj = json.loads(body)
+                except ValueError:
+                    obj = None
             if obj is not None:
-                masked, counts = mask_body(session, obj)
-                body = json.dumps(masked, ensure_ascii=False).encode("utf-8")
+                try:
+                    masked, counts = await run_in_threadpool(mask_body, session, obj)
+                    body = json.dumps(masked, ensure_ascii=False).encode("utf-8")
+                except (TypeError, ValueError, UnicodeEncodeError) as e:
+                    _receipt(request, path, upstream, 400, {}, len(body), time.time(), stream=False, note="mask-failed")
+                    return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": f"omna could not mask this request ({e}); refused rather than sent unmasked"}}, status_code=400)
+                if _DUMP_DIR:
+                    try:
+                        os.makedirs(_DUMP_DIR, exist_ok=True)
+                        with open(os.path.join(_DUMP_DIR, f"{int(time.time()*1000)}-{path.strip('/').replace('/', '_')}.json"), "wb") as f:
+                            f.write(body)
+                    except OSError:
+                        pass
+            elif is_inference:
+                _receipt(request, path, upstream, 400, {}, len(body), time.time(), stream=False, note="unparseable")
+                return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": f"omna only forwards JSON to {path} (got content-type {ctype!r}, content-encoding {request.headers.get('content-encoding')!r}); refused rather than sent unmasked"}}, status_code=400)
+            else:
+                passthrough = True  # e.g. file/audio uploads: forwarded as-is, marked in the receipt
 
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _DROP_REQ}
         headers["host"] = urlsplit(upstream).netloc
@@ -115,7 +146,7 @@ def create_app(
             async def gen():
                 restorer = StreamRestorer(session)
                 try:
-                    async for chunk in resp.aiter_raw():
+                    async for chunk in resp.aiter_bytes():
                         out = restorer.feed(chunk)
                         if out:
                             yield out
@@ -124,7 +155,7 @@ def create_app(
                         yield tail
                 finally:
                     await resp.aclose()
-                    _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=True)
+                    _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=True, note="passthrough" if passthrough else None)
 
             return StreamingResponse(gen(), status_code=resp.status_code, headers=resp_headers)
 
@@ -135,19 +166,26 @@ def create_app(
                 data = json.dumps(restore_body(session, json.loads(data)), ensure_ascii=False).encode("utf-8")
             except ValueError:
                 pass
-        _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=False)
+        _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=False, note="passthrough" if passthrough else None)
         return Response(data, status_code=resp.status_code, headers=resp_headers)
 
-    def _receipt(request: Request, path: str, upstream: str, status: int, counts: dict, nbytes: int, t0: float, stream: bool):
+    def _receipt(request: Request, path: str, upstream: str, status: int, counts: dict, nbytes: int, t0: float, stream: bool, note: str | None = None):
+        counts = dict(counts)
+        n_secrets = counts.pop("_secrets", 0)
+        n_pii = counts.pop("_pii", 0)
         rec = {
             "route": path,
             "upstream": urlsplit(upstream).netloc,
             "status": status,
             "stream": stream,
             "masked": counts,
+            "secrets": n_secrets,
+            "pii": n_pii,
             "bytes_in": nbytes,
             "ms": int((time.time() - t0) * 1000),
         }
+        if note:
+            rec["note"] = note
         sid = request.headers.get("x-claude-code-session-id")
         if sid:
             rec["session"] = sid
@@ -167,16 +205,16 @@ def create_app(
     return app
 
 
-def run(port: int = config.DEFAULT_PORT, smart: bool = False, log_level: str = "warning") -> None:
+def run(port: int = config.DEFAULT_PORT, smart: bool = False, restore_secrets: bool = True, log_level: str = "warning") -> None:
     """Start the proxy in the foreground (``omna start``)."""
     import uvicorn
 
-    session = MaskingSession(smart=smart)
+    session = MaskingSession(smart=smart, restore_secrets=restore_secrets)
     if smart:
         import omna_pii_mask
 
         print("omna: preparing the on-device Contextual model (first run downloads ~809 MB)...", flush=True)
         omna_pii_mask.download_model()
     app = create_app(session)
-    print(f"omna: masking proxy on {config.base_url(port)}  (engine {engine_version()}, smart={'on' if smart else 'off'})", flush=True)
+    print(f"omna: masking proxy on {config.base_url(port)}  (engine {engine_version()}, smart={'on' if smart else 'off'}, secrets={'restored locally' if restore_secrets else 'redacted for good'})", flush=True)
     uvicorn.run(app, host=config.DEFAULT_HOST, port=port, log_level=log_level, access_log=False)

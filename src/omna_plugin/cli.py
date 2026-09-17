@@ -8,6 +8,7 @@
     omna mask [TEXT|-] [--smart]           mask a piece of text and print it
     omna allow VALUE                       never mask this exact value again (false positive)
     omna forget                            wipe the token registry (tokens will renumber)
+    omna report [--days 7] [--json|--html F] weekly summary from the receipts
     omna init [--project]                  wire Claude Code (settings.json env + SessionStart hook)
     omna uninstall [--project]             undo init
     omna version
@@ -39,10 +40,10 @@ def _health(port: int) -> dict | None:
     return None
 
 
-def _spawn(port: int, smart: bool) -> int:
+def _spawn(port: int, smart: bool, no_restore_secrets: bool = False) -> int:
     config.ensure_home()
     log = open(config.log_path(), "ab")
-    cmd = [sys.executable, "-m", "omna_plugin.cli", "start", "--port", str(port)] + (["--smart"] if smart else [])
+    cmd = [sys.executable, "-m", "omna_plugin.cli", "start", "--port", str(port)] + (["--smart"] if smart else []) + (["--no-restore-secrets"] if no_restore_secrets else [])
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
     config.pid_path().write_text(str(p.pid))
     return p.pid
@@ -63,7 +64,7 @@ def cmd_start(a) -> int:
         print(f"omna: already running on {config.base_url(a.port)}")
         return 0
     if a.daemon:
-        pid = _spawn(a.port, a.smart)
+        pid = _spawn(a.port, a.smart, a.no_restore_secrets)
         h = _wait_healthy(a.port, 60 if a.smart else 10)
         if h:
             print(f"omna: running in the background on {config.base_url(a.port)} (pid {pid}, engine {h['engine']})")
@@ -72,7 +73,7 @@ def cmd_start(a) -> int:
         return 1
     from .proxy import run
 
-    run(port=a.port, smart=a.smart)
+    run(port=a.port, smart=a.smart, restore_secrets=not a.no_restore_secrets)
     return 0
 
 
@@ -119,7 +120,7 @@ def cmd_status(a) -> int:
     h = _health(a.port)
     print(f"omna plugin {__version__}  engine {engine_version()}")
     if h:
-        print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {'on' if h['smart'] else 'off'}, {h['requests_this_run']} requests this run)")
+        print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {'on' if h['smart'] else 'off'}, secrets {'restored locally, never on disk' if h.get('restore_secrets', True) else 'redacted for good'}, {h['requests_this_run']} requests this run)")
     else:
         print(f"proxy:        NOT running  → `omna start -d`")
     cc = claude_code.status(claude_code.settings_file("user"))
@@ -200,6 +201,23 @@ def cmd_uninstall(a) -> int:
     return 0
 
 
+def cmd_report(a) -> int:
+    from . import report
+
+    d = report.build(days=a.days)
+    if a.json:
+        print(report.to_json(d))
+        return 0
+    if a.html:
+        page = report.render_html(d)
+        with open(a.html, "w", encoding="utf-8") as f:
+            f.write(page)
+        print(f"omna: report written to {a.html}")
+        return 0
+    print(report.render_text(d))
+    return 0
+
+
 def cmd_version(a) -> int:
     from .engine import engine_version
     from .proxy import __version__
@@ -218,6 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("start", help="run the masking proxy"); add_port(s)
     s.add_argument("-d", "--daemon", action="store_true", help="run in the background")
     s.add_argument("--smart", action="store_true", help="also run the on-device Contextual model (L3); slower, catches prose names")
+    s.add_argument("--no-restore-secrets", action="store_true", help="redact secrets for good (engine default) instead of numbered tokens restored locally; breaks edits to lines that contain a key")
     s.set_defaults(fn=cmd_start)
     s = sub.add_parser("stop", help="stop the background proxy"); add_port(s); s.set_defaults(fn=cmd_stop)
     s = sub.add_parser("ensure", help="start the background proxy if needed"); add_port(s)
@@ -235,6 +254,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--project", action="store_true", help="write ./.claude/settings.json instead of ~/.claude/settings.json")
     s.set_defaults(fn=cmd_init)
     s = sub.add_parser("uninstall", help="undo init"); s.add_argument("--project", action="store_true"); s.set_defaults(fn=cmd_uninstall)
+    s = sub.add_parser("report", help="weekly summary from the receipts (text, --json, or --html FILE)")
+    s.add_argument("--days", type=int, default=7); s.add_argument("--json", action="store_true"); s.add_argument("--html", metavar="FILE")
+    s.set_defaults(fn=cmd_report)
     s = sub.add_parser("version"); s.set_defaults(fn=cmd_version)
     return p
 

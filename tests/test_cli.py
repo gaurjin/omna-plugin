@@ -12,7 +12,7 @@ def home(tmp_path, monkeypatch):
 def test_mask_command(capsys):
     assert main(["mask", "key AKIAIOSFODNN7EXAMPLE mail a@example.com", "--counts"]) == 0
     out, err = capsys.readouterr()
-    assert "[REDACTED:AWS_KEY]" in out and "a@example.com" not in out
+    assert "[SECRET_AWS_KEY_1]" in out and "AKIAIOSFODNN7EXAMPLE" not in out and "a@example.com" not in out
     assert "AWS_KEY×1" in err and "EMAIL×1" in err
 
 

@@ -20,7 +20,7 @@ SKIP_KEYS = frozenset(
         "id", "model", "type", "role", "name", "tool_use_id", "tool_call_id",
         "call_id", "media_type", "stop_reason", "stop_sequence", "stop_sequences",
         "url", "file_id", "service_tier", "anthropic_version", "stream",
-        "tool_choice", "metadata", "output_config", "context_management",
+        "tool_choice", "output_config", "context_management",
         "mcp_servers", "container", "response_format", "modalities", "user",
         # must be byte-identical for the API to accept the request back
         "signature", "thinking", "redacted_thinking", "cache_control",
@@ -59,13 +59,21 @@ def _walk(obj, fn, counts: dict[str, int], key: str | None = None):
 
 
 def mask_body(session: MaskingSession, obj):
-    """Return (masked_copy, counts). ``obj`` is not modified."""
+    """Return (masked_copy, counts). ``obj`` is not modified.
+
+    ``counts`` maps entity name -> occurrences and carries two reserved keys,
+    ``_secrets`` and ``_pii`` (totals by layer) that the receipt writer pops off.
+    """
     counts: dict[str, int] = {}
 
     def fn(s: str, c: dict[str, int]) -> str:
         r = session.mask_text(s)
         for k, n in r.counts.items():
             c[k] = c.get(k, 0) + n
+        if r.secrets:
+            c["_secrets"] = c.get("_secrets", 0) + r.secrets
+        if r.pii:
+            c["_pii"] = c.get("_pii", 0) + r.pii
         return r.masked
 
     return _walk(obj, fn, counts), counts

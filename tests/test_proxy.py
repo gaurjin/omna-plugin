@@ -110,7 +110,7 @@ async def test_streamed_anthropic_request_is_masked_and_reply_restored(env):
     assert r.status_code == 200
     call = up.calls[-1]
     assert EMAIL not in call["raw"] and KEY not in call["raw"]
-    assert "[REDACTED:AWS_KEY]" in call["raw"]
+    assert "[SECRET_AWS_KEY_1]" in call["raw"]
     assert call["headers"]["anthropic-beta"] == "oauth-2025-04-20,fine-grained-tool-streaming-2025-05-14"
     assert call["headers"]["anthropic-version"] == "2023-06-01"
     assert call["headers"]["authorization"] == "Bearer sk-ant-oat-TEST"
@@ -170,3 +170,26 @@ async def test_health(env):
     up, session, client = env
     r = await client.get("/omna/health")
     assert r.status_code == 200 and r.json()["ok"] is True and "engine" in r.json()
+
+
+@pytest.mark.anyio
+async def test_unparseable_inference_body_is_refused_not_forwarded(env):
+    up, session, client = env
+    before = len(up.calls)
+    r = await client.post("/v1/messages", content=b"\x1f\x8b not json", headers={"content-type": "application/json", "content-encoding": "gzip", "anthropic-version": "2023-06-01"})
+    assert r.status_code == 400 and r.json()["error"]["type"] == "omna_refused"
+    r = await client.post("/v1/chat/completions", content=b"{not json", headers={"content-type": "application/json"})
+    assert r.status_code == 400
+    assert len(up.calls) == before  # nothing reached the upstream
+    assert receipts.tail(1)[0]["note"] in ("unparseable", "mask-failed")
+
+
+@pytest.mark.anyio
+async def test_secret_restored_inside_streamed_tool_input(env):
+    up, session, client = env
+    # the model echoes the secret token inside an input_json_delta; the proxy must put the key back, JSON-escaped
+    body = {"model": "m", "stream": True, "messages": [{"role": "user", "content": f"key {KEY}"}]}
+    r = await client.post("/v1/messages", json=body, headers={"anthropic-version": "2023-06-01"})
+    assert r.status_code == 200
+    assert KEY not in up.calls[-1]["raw"] and "[SECRET_AWS_KEY_1]" in up.calls[-1]["raw"]
+    assert KEY in r.text and "[SECRET_AWS_KEY_1]" not in r.text

@@ -11,13 +11,38 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_secret_is_redacted_and_never_restorable(home):
+def test_secret_is_numbered_restorable_in_memory_and_never_on_disk(home):
     s = MaskingSession()
     r = s.mask_text("key AKIAIOSFODNN7EXAMPLE here")
     assert "AKIAIOSFODNN7EXAMPLE" not in r.masked
-    assert "[REDACTED:AWS_KEY]" in r.masked
-    assert s.restore_text(r.masked) == r.masked  # secrets stay redacted
+    assert "[SECRET_AWS_KEY_1]" in r.masked
+    assert s.restore_text(r.masked) == "key AKIAIOSFODNN7EXAMPLE here"
     assert r.counts == {"AWS_KEY": 1}
+    assert "AKIAIOSFODNN7EXAMPLE" not in (home / "registry.json").read_text() if (home / "registry.json").exists() else True
+    # a new session (proxy restart) does not know the secret any more
+    assert MaskingSession().restore_text("[SECRET_AWS_KEY_1]") == "[SECRET_AWS_KEY_1]"
+
+
+def test_no_restore_secrets_keeps_engine_redaction(home):
+    s = MaskingSession(restore_secrets=False)
+    r = s.mask_text("key AKIAIOSFODNN7EXAMPLE here")
+    assert "[REDACTED:AWS_KEY]" in r.masked
+    assert s.restore_text(r.masked) == r.masked
+
+
+def test_secret_span_keeps_its_newline(home):
+    s = MaskingSession()
+    text = "1\tDB_HOST=db.internal\n2\tSTRIPE_SECRET_KEY=SCRUBBED_FAKE_KEY\n3\tREGION=us-east-1\n"
+    r = s.mask_text(text)
+    assert "sk_live" not in r.masked
+    assert r.masked.count("\n") == text.count("\n")
+    assert "\n3\tREGION" in r.masked
+    assert s.restore_text(r.masked) == text
+
+
+def test_loopback_addresses_are_not_masked_by_default(home):
+    s = MaskingSession()
+    assert s.mask_text("listening on 127.0.0.1:7788 and 0.0.0.0:80").masked == "listening on 127.0.0.1:7788 and 0.0.0.0:80"
 
 
 def test_pii_round_trips(home):
@@ -66,7 +91,7 @@ def test_allow_stops_masking_a_value(home):
     s.allow("a@example.com")
     assert s.mask_text("mail a@example.com").masked == "mail a@example.com"
     data = json.loads((home / "ruleset.json").read_text())
-    assert data["allowlist"] == ["a@example\\.com"]
+    assert data["allowlist"][-1] == "a@example\\.com"
 
 
 def test_cache_returns_identical_result(home):
@@ -76,3 +101,14 @@ def test_cache_returns_identical_result(home):
     b = s.mask_text(text)
     assert a.masked == b.masked and a.counts == b.counts
     assert s.cache_hits == 1
+
+
+def test_assignment_keeps_the_name_outside_the_secret_token(home):
+    s = MaskingSession()
+    text = "DB_HOST=db.internal\nSTRIPE_SECRET_KEY=SCRUBBED_FAKE_KEY\nAWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"
+    r = s.mask_text(text)
+    assert "STRIPE_SECRET_KEY=[SECRET_" in r.masked
+    assert "AWS_ACCESS_KEY_ID=[SECRET_" in r.masked
+    assert "sk_live" not in r.masked and "AKIA" not in r.masked
+    assert s.restore_text(r.masked) == text
+    assert r.secrets == 2 and r.pii == 0

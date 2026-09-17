@@ -66,9 +66,10 @@ def test_anthropic_request_masked_everywhere_it_should_be(session):
     assert masked["stop_sequences"] == ["[END]"]
     assert masked["model"] == "claude-sonnet-5" and masked["stream"] is True
     assert counts["EMAIL"] == 4 and counts["AWS_KEY"] == 1
-    # the same email became the same token everywhere
-    toks = set(TOKEN_RE.findall(s))
-    assert len(toks) == 1
+    assert "[SECRET_AWS_KEY_1]" in s
+    # the same email became the same token everywhere (one email token + one secret token)
+    toks = set(m.group(0) for m in TOKEN_RE.finditer(s))
+    assert toks == {"[SECRET_AWS_KEY_1]", next(t for t in toks if t.startswith("[EMAIL_"))}
 
 
 def test_openai_request_masked(session):
@@ -83,7 +84,7 @@ def test_openai_request_masked(session):
     masked, counts = mask_body(session, body)
     assert EMAIL not in str(masked)
     assert masked["messages"][0]["content"] == "You are helpful."
-    assert counts == {"EMAIL": 2}
+    assert counts == {"EMAIL": 2, "_pii": 2}
 
 
 def test_response_restore_puts_values_back(session):
