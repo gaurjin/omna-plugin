@@ -34,6 +34,20 @@ def test_mask_bytes_json_and_refusal(tmp_path, monkeypatch):
     assert bad.body is None
 
 
+def test_mask_bytes_valid_json_that_fails_to_mask_is_mask_failed_not_unparseable(tmp_path, monkeypatch):
+    # A lone UTF-16 surrogate: valid JSON syntax (json.loads accepts \uXXXX
+    # escapes for any code point, paired or not), but json.dumps(...,
+    # ensure_ascii=False).encode("utf-8") raises UnicodeEncodeError on it.
+    # This is the review finding: such bodies must be "mask-failed", never
+    # collapsed into the same "unparseable" bucket used for bad JSON syntax
+    # (a non-inference route treats the two differently downstream).
+    p = _pipe(tmp_path, monkeypatch)
+    body = '{"prompt": "\\ud800"}'.encode("ascii")
+    out = p.mask_bytes(body, "application/json")
+    assert out.refused == "mask-failed"
+    assert out.body is None
+
+
 def test_mask_bytes_form_urlencoded(tmp_path, monkeypatch):
     p = _pipe(tmp_path, monkeypatch)
     out = p.mask_bytes(b"q=email+jane.doe%40example.com&page=1", "application/x-www-form-urlencoded")

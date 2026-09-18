@@ -193,6 +193,24 @@ async def test_unparseable_inference_body_is_refused_not_forwarded(env):
 
 
 @pytest.mark.anyio
+async def test_mask_failed_on_non_inference_route_refuses_not_passthrough(env):
+    # /v1/error is NOT in INFERENCE_PREFIXES. Valid JSON syntax, but the value
+    # is a lone UTF-16 surrogate: json.loads accepts it, but masking's own
+    # json.dumps(..., ensure_ascii=False).encode("utf-8") raises
+    # UnicodeEncodeError. Before the fix, mask_bytes collapsed this into
+    # refused="unparseable", which on a non-inference route fell through to
+    # passthrough=True — forwarding the unmasked original body upstream.
+    up, session, client = env
+    before = len(up.calls)
+    body = '{"messages": ["\\ud800"]}'.encode("ascii")
+    r = await client.post("/v1/error", content=body, headers={"content-type": "application/json"})
+    assert r.status_code == 400
+    assert r.json()["error"]["type"] == "omna_refused"
+    assert len(up.calls) == before  # never reached the upstream, masked or not
+    assert receipts.tail(1)[0]["note"] == "mask-failed"
+
+
+@pytest.mark.anyio
 async def test_secret_restored_inside_streamed_tool_input(env):
     up, session, client = env
     # the model echoes the secret token inside an input_json_delta; the proxy must put the key back, JSON-escaped

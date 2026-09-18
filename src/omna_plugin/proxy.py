@@ -67,7 +67,11 @@ def create_app(
     policy: Policy | None = None,
     doors_state: dict[str, bool] | None = None,
 ) -> Starlette:
-    session = session or (pipeline.session if pipeline else None) or MaskingSession()
+    # When a Pipeline is given, its MaskingSession is the one source of truth
+    # (registry, /omna/health counters, etc.) — a separately-passed `session`
+    # that wraps a DIFFERENT MaskingSession is ignored rather than silently
+    # reporting on the wrong registry.
+    session = pipeline.session if pipeline is not None else (session or MaskingSession())
     pipeline = pipeline or Pipeline(session)
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0))
     stats = {"requests": 0, "started": time.time()}
@@ -124,9 +128,14 @@ def create_app(
                                 f.write(body)
                         except OSError:
                             pass
-                elif is_inference:
-                    _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note="unparseable")
+                elif out.refused == "mask-failed":
+                    # The body parsed as JSON fine, but masking it blew up. Never
+                    # forward that unmasked, on ANY route (inference or not).
+                    _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note=out.refused)
                     return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": "omna could not mask this request; refused rather than sent unmasked"}}, status_code=400)
+                elif is_inference:
+                    _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note=out.refused)
+                    return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": "omna could not parse this request as JSON; refused rather than sent unmasked"}}, status_code=400)
                 else:
                     passthrough = True
             elif is_inference:

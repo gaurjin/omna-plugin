@@ -28,7 +28,7 @@ class MaskStats:
 class MaskedBody:
     body: bytes | None
     stats: MaskStats
-    refused: str | None = None   # "unparseable" | None
+    refused: str | None = None   # "unparseable" | "mask-failed" | None
 
 
 def _tokens_in(text: str) -> list[str]:
@@ -69,24 +69,50 @@ class Pipeline:
                                     mask_ms=int((time.time() - t0) * 1000), tokens=_tokens_in(r.masked))
 
     def mask_bytes(self, body: bytes, content_type: str) -> MaskedBody:
-        """Mask a request body by content type. Unparseable bodies are refused, never forwarded."""
+        """Mask a request body by content type. Never forwarded unmasked.
+
+        Two distinct refusal reasons: "unparseable" means the body itself
+        couldn't even be read as the shape its content-type promised (bad
+        JSON syntax, bad text encoding); "mask-failed" means the body parsed
+        fine but the masking step itself blew up on it (e.g. a lone Unicode
+        surrogate that survives ``json.loads`` but can't be re-encoded to
+        UTF-8). Both are refused, but callers may treat them differently.
+        """
         ct = (content_type or "").lower()
-        try:
-            if "json" in ct:
-                masked, stats = self.mask_json(json.loads(body))
+        if "json" in ct:
+            try:
+                obj = json.loads(body)
+            except ValueError:
+                return MaskedBody(None, MaskStats(), refused="unparseable")
+            try:
+                masked, stats = self.mask_json(obj)
                 return MaskedBody(json.dumps(masked, ensure_ascii=False).encode("utf-8"), stats)
-            if "x-www-form-urlencoded" in ct:
+            except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
+                return MaskedBody(None, MaskStats(), refused="mask-failed")
+        if "x-www-form-urlencoded" in ct:
+            try:
+                pairs = parse_qsl(body.decode("utf-8"), keep_blank_values=True)
+            except (ValueError, UnicodeDecodeError, TypeError):
+                return MaskedBody(None, MaskStats(), refused="unparseable")
+            try:
                 total, out = MaskStats(), []
-                for k, v in parse_qsl(body.decode("utf-8"), keep_blank_values=True):
+                for k, v in pairs:
                     mv, st = self.mask_text(v)
                     out.append((k, mv))
                     _merge(total, st)
                 return MaskedBody(urlencode(out).encode("utf-8"), total)
-            if ct.startswith("text/"):
-                masked, stats = self.mask_text(body.decode("utf-8"))
+            except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
+                return MaskedBody(None, MaskStats(), refused="mask-failed")
+        if ct.startswith("text/"):
+            try:
+                text = body.decode("utf-8")
+            except (ValueError, UnicodeDecodeError, TypeError):
+                return MaskedBody(None, MaskStats(), refused="unparseable")
+            try:
+                masked, stats = self.mask_text(text)
                 return MaskedBody(masked.encode("utf-8"), stats)
-        except (ValueError, UnicodeDecodeError, TypeError):
-            pass
+            except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
+                return MaskedBody(None, MaskStats(), refused="mask-failed")
         return MaskedBody(None, MaskStats(), refused="unparseable")
 
     # ------------------------------------------------------------ restoring
