@@ -11,12 +11,18 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import time
 from typing import Iterator
 
 from . import config
 
 GENESIS = "0" * 64
+
+# The daemon runs the API door and the system door on separate OS threads
+# sharing one Pipeline; both can call append() at once. This guards the
+# read-last_hash-then-write sequence so the chain never forks.
+_LOCK = threading.Lock()
 
 
 def _canonical(rec: dict) -> str:
@@ -55,11 +61,12 @@ def append(record: dict) -> dict:
     path = config.receipts_path()
     rec = dict(record)
     rec.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%S%z"))
-    rec["prev"] = last_hash()
-    rec["hash"] = _hash(rec["prev"], rec)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    with os.fdopen(fd, "a", encoding="utf-8") as f:
-        f.write(json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n")
+    with _LOCK:
+        rec["prev"] = last_hash()
+        rec["hash"] = _hash(rec["prev"], rec)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n")
     return rec
 
 

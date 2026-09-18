@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 
@@ -34,6 +35,27 @@ def test_tampering_breaks_the_chain(home):
     p.write_text("\n".join(lines) + "\n")
     ok, n, msg = receipts.verify()
     assert not ok and n == 2 and "hash" in msg
+
+
+def test_concurrent_appends_do_not_fork_the_chain(home):
+    # The API door and the system door run on separate OS threads sharing one
+    # Pipeline (daemon.py); both can call append() at once.
+    n = 40
+    barrier = threading.Barrier(n)
+
+    def go(i):
+        barrier.wait()
+        receipts.append({"route": f"/t{i}", "masked": {}})
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    ok, count, msg = receipts.verify()
+    assert ok, msg
+    assert count == n
 
 
 def test_receipt_never_contains_values(home):
