@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "omna-plugin"
-version = "0.1.0"
+version = "0.2.0"
 description = "Omna — local privacy proxy for AI coding tools. Masks secrets and PII before a prompt leaves your machine, restores them in the reply."
 readme = "README.md"
 requires-python = ">=3.12"
