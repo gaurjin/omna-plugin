@@ -45,9 +45,12 @@ def build(days: int = 7) -> dict:
     by_kind: Counter = Counter()
     by_day: Counter = Counter()
     by_upstream: Counter = Counter()
+    by_app: Counter = Counter()
+    by_door: Counter = Counter()
+    tls_refused: Counter = Counter()
     sessions = set()
     n_secret = n_pii = 0
-    ok = refused = failed = 0
+    ok = refused = failed = bypassed = 0
     ms = []
     mask_ms = []
     distinct_secret: set = set()
@@ -59,10 +62,20 @@ def build(days: int = 7) -> dict:
         n_pii += r.get("pii", 0)
         by_day[t.strftime("%Y-%m-%d")] += 1
         by_upstream[r.get("upstream", "?")] += 1
+        if r.get("app"):
+            by_app[r["app"]] += 1
+        # Older receipts (pre-Stage-2) have no "door" key at all; that is the
+        # API door by definition, since it is the only door that existed then.
+        by_door[r.get("door", "api")] += 1
+        note = r.get("note")
+        if note == "bypassed-by-policy":
+            bypassed += 1
+        if note == "tls-refused":
+            tls_refused[(r.get("app") or "unknown app", r.get("host") or "?")] += 1
         if r.get("session"):
             sessions.add(r["session"])
         st = int(r.get("status", 0) or 0)
-        if r.get("note") in ("unparseable", "mask-failed"):
+        if note in ("unparseable", "mask-failed"):
             refused += 1
         elif 200 <= st < 400:
             ok += 1
@@ -83,6 +96,19 @@ def build(days: int = 7) -> dict:
             else:
                 n_pii += v
     requests_with_catch = sum(1 for _, r in recs if (r.get("masked") or {}))
+    # Fixed order (api, system, deep) so the report reads the same every week,
+    # e.g. "deep 0" when no deep-capture app has been seen yet; any other
+    # door name (future doors) is appended, largest first.
+    door_order = ("api", "system", "deep")
+    ordered_by_door = {name: by_door.get(name, 0) for name in door_order}
+    for name, count in by_door.most_common():
+        if name not in ordered_by_door:
+            ordered_by_door[name] = count
+    refused_breakdown = sorted(
+        ({"app": app, "host": host, "count": count} for (app, host), count in tls_refused.items()),
+        key=lambda x: (-x["count"], x["app"], x["host"]),
+    )
+    refused_struct = {"count": sum(tls_refused.values()), "by_app_host": refused_breakdown}
     return {
         "generated": now.strftime("%Y-%m-%d %H:%M %Z"),
         "period_days": days,
@@ -103,6 +129,10 @@ def build(days: int = 7) -> dict:
         "by_kind": dict(by_kind.most_common()),
         "by_day": dict(sorted(by_day.items())),
         "by_upstream": dict(by_upstream.most_common()),
+        "by_app": dict(by_app.most_common()),
+        "by_door": ordered_by_door,
+        "bypassed": bypassed,
+        "refused": refused_struct,
         "avg_ms": int(sum(ms) / len(ms)) if ms else 0,
         "chain": {"intact": chain_ok, "receipts": chain_n, "message": chain_msg},
         "what_left_the_machine": "masked requests only, to the AI provider you were already using; nothing to Omna",
@@ -118,13 +148,23 @@ def render_text(d: dict) -> str:
     ]
     if d["by_kind"]:
         lines.append("          by kind: " + ", ".join(f"{k} ×{v}" for k, v in d["by_kind"].items()))
+    apps_str = " · ".join(f"{k} {v}" for k, v in d["by_app"].items()) or "none seen"
+    if d["bypassed"]:
+        apps_str += f" · {d['bypassed']} bypassed"
+    refused = d["refused"]
+    if refused["count"]:
+        refused_str = "refused: " + " · ".join(f"{e['app']} → {e['host']} ×{e['count']}" for e in refused["by_app_host"])
+    else:
+        refused_str = "no refusals"
     lines += [
         f"SCAN      {len(d['by_upstream'])} AI destination(s): " + ", ".join(f"{k} ({v})" for k, v in d["by_upstream"].items()) + f"  ·  {d['sessions']} Claude Code session(s)",
+        f"          apps: {apps_str}  ·  {refused_str}",
         f"PROVE     receipt chain {'INTACT' if d['chain']['intact'] else 'BROKEN'} ({d['chain']['receipts']} receipts, {d['chain']['message']})",
         f"TRUST     {d['what_left_the_machine']}",
         f"COST      masking added {d['avg_mask_ms']} ms per request on average (whole round trip incl. the provider: {d['avg_ms']} ms)",
         "",
         "by day:   " + (", ".join(f"{k}: {v}" for k, v in d["by_day"].items()) or "no requests"),
+        "by door:  " + " · ".join(f"{k} {v}" for k, v in d["by_door"].items()),
         f"engine {d['engine']}  ·  receipts in {d['home']}",
     ]
     return "\n".join(lines)
@@ -135,6 +175,11 @@ def render_html(d: dict) -> str:
     kinds = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_kind"].items()) or "<tr><td colspan=2>nothing caught</td></tr>"
     days = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_day"].items()) or "<tr><td colspan=2>no requests</td></tr>"
     ups = ", ".join(f"{e(k)} ({v})" for k, v in d["by_upstream"].items()) or "none"
+    apps = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_app"].items()) or "<tr><td colspan=2>no app receipts</td></tr>"
+    doors = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_door"].items())
+    refused_rows = "".join(
+        f"<tr><td>{e(r['app'])}</td><td>{e(r['host'])}</td><td>{r['count']}</td></tr>" for r in d["refused"]["by_app_host"]
+    ) or "<tr><td colspan=3>no refusals</td></tr>"
     chain = "intact" if d["chain"]["intact"] else "BROKEN"
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>Omna weekly report</title>
 <style>body{{font:15px/1.5 -apple-system,Helvetica,Arial,sans-serif;max-width:820px;margin:40px auto;padding:0 16px;color:#111}}
@@ -151,7 +196,11 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 <h2>Catches, not incidents</h2><p class="muted">A catch means the value never reached the provider. No incident occurred.</p>
 <table><tr><th align=left>kind</th><th align=left>count</th></tr>{kinds}</table>
 <h2>Scan</h2><p>AI destinations seen: {ups}. Claude Code sessions: {d['sessions']}.</p>
+<h3>Apps</h3><table><tr><th align=left>app</th><th align=left>requests</th></tr>{apps}</table>
+<p class="muted">{d['bypassed']} bypassed by policy · {d['refused']['count']} refused by a pinned app's own certificate (never forwarded)</p>
+<table><tr><th align=left>app</th><th align=left>host</th><th align=left>refused</th></tr>{refused_rows}</table>
 <h2>Requests by day</h2><table>{days}</table>
+<h2>Requests by door</h2><table><tr><th align=left>door</th><th align=left>requests</th></tr>{doors}</table>
 <h2>Trust</h2><p>{e(d['what_left_the_machine'])}. Masking added {d['avg_mask_ms']} ms per request on average; the whole round trip including the provider took {d['avg_ms']} ms.</p>
 <p class="muted">engine {e(d['engine'])} · receipts in {e(d['home'])} · verify any time with <code>omna log --verify</code></p>
 </body></html>"""

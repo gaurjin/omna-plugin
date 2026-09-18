@@ -31,3 +31,73 @@ def test_report_on_empty_receipts():
     d = report.build(days=7)
     assert d["requests"] == 0 and d["by_kind"] == {}
     assert "no requests" in report.render_text(d)
+
+
+def test_report_by_app_counts():
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system", "app": "Google Chrome", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system", "app": "Google Chrome", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "deep", "app": "Claude", "masked": {}, "secrets": 0, "pii": 0})
+    d = report.build(days=7)
+    assert d["by_app"] == {"Google Chrome": 2, "Claude": 1}
+
+
+def test_report_by_door_backward_compat():
+    # New-format receipts: explicit door.
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system", "app": "Google Chrome", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "deep", "app": "Claude", "masked": {}, "secrets": 0, "pii": 0})
+    # Old-format receipt: no "door" key and no "app" key at all (pre-Stage-2).
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "masked": {}, "secrets": 0, "pii": 0})
+    d = report.build(days=7)
+    assert d["requests"] == 3
+    assert d["by_door"]["api"] == 1
+    assert d["by_door"]["system"] == 1
+    assert d["by_door"]["deep"] == 1
+    assert "None" not in d["by_app"]
+    assert "none" not in {k.lower() for k in d["by_app"]}
+    assert len(d["by_app"]) == 2  # the door-less/app-less receipt contributes no key
+
+
+def test_report_bypassed_count():
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system", "app": "Slack", "note": "bypassed-by-policy", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system", "app": "Slack", "note": "bypassed-by-policy", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system", "app": "Google Chrome", "masked": {}, "secrets": 0, "pii": 0})
+    d = report.build(days=7)
+    assert d["bypassed"] == 2
+
+
+def test_report_refused_is_distinct_from_requests_refused():
+    # Existing meaning: requests_refused counts "unparseable"/"mask-failed" notes.
+    receipts.append({"route": "/v1/messages", "upstream": "api.openai.com", "status": 400, "masked": {}, "secrets": 0, "pii": 0, "note": "unparseable"})
+    # New meaning: refused counts "tls-refused" notes, broken down by (app, host).
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "host": "api.anthropic.com", "status": 0, "door": "deep", "app": "Claude Desktop", "masked": {}, "secrets": 0, "pii": 0, "note": "tls-refused"})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "host": "api.anthropic.com", "status": 0, "door": "deep", "app": "Claude Desktop", "masked": {}, "secrets": 0, "pii": 0, "note": "tls-refused"})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "host": "api.anthropic.com", "status": 0, "door": "deep", "app": "Claude Desktop", "masked": {}, "secrets": 0, "pii": 0, "note": "tls-refused"})
+    d = report.build(days=7)
+    assert d["requests_refused"] == 1
+    assert d["refused"]["count"] == 3
+    assert d["refused"]["by_app_host"] == [{"app": "Claude Desktop", "host": "api.anthropic.com", "count": 3}]
+
+
+def test_render_text_shows_apps_door_and_refused():
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system", "app": "Google Chrome", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "deep", "app": "Claude", "note": "bypassed-by-policy", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "host": "api.anthropic.com", "status": 0, "door": "deep", "app": "Claude Desktop", "masked": {}, "secrets": 0, "pii": 0, "note": "tls-refused"})
+    d = report.build(days=7)
+    text = report.render_text(d)
+    assert "apps:" in text
+    assert "Google Chrome" in text
+    assert "refused:" in text
+    assert "Claude Desktop" in text and "api.anthropic.com" in text
+    assert "by door:" in text
+    assert "system" in text and "deep" in text
+
+
+def test_render_html_shows_apps_and_door_and_stays_safe():
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system", "app": "Google Chrome", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "host": "api.anthropic.com", "status": 0, "door": "deep", "app": "Claude Desktop", "masked": {}, "secrets": 0, "pii": 0, "note": "tls-refused"})
+    d = report.build(days=7)
+    page = report.render_html(d)
+    assert "Google Chrome" in page
+    assert "Claude Desktop" in page
+    assert "system" in page and "door" in page.lower()
+    assert "@" not in page
