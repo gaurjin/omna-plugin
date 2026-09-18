@@ -59,16 +59,16 @@ class Policy:
             return cls()
         try:
             data = json.loads(p.read_text())
-        except (OSError, ValueError):
+            pol = cls()
+            pol.version = int(data.get("version", 1))
+            pol.hosts = [h.lower() for h in data.get("hosts", pol.hosts)]
+            pol.tools = dict(data.get("tools", pol.tools))
+            pol.apps = dict(data.get("apps", {}))
+            pol.deep_apps = list(data.get("deep_apps", []))
+            pol.doors = {**pol.doors, **data.get("doors", {})}
+            return pol
+        except Exception:
             return cls()
-        pol = cls()
-        pol.version = int(data.get("version", 1))
-        pol.hosts = [h.lower() for h in data.get("hosts", pol.hosts)]
-        pol.tools = dict(data.get("tools", pol.tools))
-        pol.apps = dict(data.get("apps", {}))
-        pol.deep_apps = list(data.get("deep_apps", []))
-        pol.doors = {**pol.doors, **data.get("doors", {})}
-        return pol
 
     def save(self) -> None:
         config.ensure_home()
@@ -83,6 +83,7 @@ class Policy:
             "doors": self.doors,
         }
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)  # Guarantee 0600 even if tmp file existed at different mode
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f, indent=2)
             f.write("\n")
