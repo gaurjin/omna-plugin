@@ -39,17 +39,30 @@ def _domain() -> str:
     return f"gui/{os.getuid()}"
 
 
+def bootout(label: str = LABEL) -> None:
+    """Unload the job from launchd. With ``KeepAlive`` it will NOT come back on its
+    own — the plist stays on disk, so it resumes at the next login (``RunAtLoad``)
+    or via an explicit :func:`bootstrap`."""
+    subprocess.run(["launchctl", "bootout", f"{_domain()}/{label}"], capture_output=True, check=False)
+
+
+def bootstrap(label: str = LABEL) -> None:
+    """Load an already-installed plist back into launchd (the ``install()``-written
+    file must still exist on disk — this does not recreate it)."""
+    subprocess.run(["launchctl", "bootstrap", _domain(), str(plist_path(label))], check=False)
+
+
 def install(omna_bin: Path, *, label: str = LABEL, args: list[str] | None = None, log: Path | None = None) -> Path:
     p = plist_path(label)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(plist_text(omna_bin, log or config.log_path(), label=label, args=args))
-    subprocess.run(["launchctl", "bootout", f"{_domain()}/{label}"], capture_output=True, check=False)
-    subprocess.run(["launchctl", "bootstrap", _domain(), str(p)], check=False)
+    bootout(label)
+    bootstrap(label)
     return p
 
 
 def remove(label: str = LABEL) -> None:
-    subprocess.run(["launchctl", "bootout", f"{_domain()}/{label}"], capture_output=True, check=False)
+    bootout(label)
     plist_path(label).unlink(missing_ok=True)
 
 

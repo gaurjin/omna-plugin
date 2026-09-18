@@ -12,14 +12,15 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import httpx
 
 from . import config
 
 POLL_SECONDS = 4
-ON_COLOR = (34, 197, 94, 255)     # green — the proxy answered a health check
-OFF_COLOR = (156, 163, 175, 255)  # gray — not reachable
+LOGO_PATH = Path(__file__).parent / "assets" / "menubar-icon.png"
+OFF_DOT_COLOR = (156, 163, 175, 255)  # gray — overlay shown when not reachable/paused
 
 
 def _health(port: int) -> dict | None:
@@ -35,7 +36,7 @@ def _health(port: int) -> dict | None:
 def status_lines(h: dict | None) -> list[str]:
     """Pure so it's testable without a running proxy or the tray library."""
     if not h:
-        return ["Omna: NOT RUNNING", "→ omna start -d"]
+        return ["Omna: NOT RUNNING", "→ Resume Omna below, or omna start -d"]
     doors = h.get("doors") or {}
     coverage = "every app on this Mac" if doors.get("system") else "coding tools only (Claude Code etc.)"
     return [
@@ -48,9 +49,39 @@ def status_lines(h: dict | None) -> list[str]:
 def _icon_image(on: bool):
     from PIL import Image, ImageDraw
 
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    ImageDraw.Draw(img).ellipse((6, 6, 58, 58), fill=ON_COLOR if on else OFF_COLOR)
+    img = Image.open(LOGO_PATH).convert("RGBA")
+    if not on:
+        # Same overlay position the Mac app uses for its state dots: a small
+        # circle in the top-right corner of the glyph, not a full recolor.
+        w, h = img.size
+        cx, cy, r = w * 0.78, h * 0.22, max(w * 0.16, 3.0)
+        ImageDraw.Draw(img).ellipse((cx - r, cy - r, cx + r, cy + r), fill=OFF_DOT_COLOR)
     return img
+
+
+def _toggle_masking(h: dict | None) -> None:
+    """Pause = stop the proxy so it fails closed (connection refused for any tool
+    still pointed at it — nothing is ever forwarded unmasked). Resume starts it
+    again. Uses the same launchd job `omna init` installed, so this works whether
+    Omna was started by the login agent or manually."""
+    from .mac import launchd
+
+    if sys.platform != "darwin":
+        subprocess.run(["omna", "stop" if h else "start", *([] if h else ["-d"])], capture_output=True)
+        return
+    launchd.bootout(launchd.LABEL) if h else launchd.bootstrap(launchd.LABEL)
+
+
+def _quit(icon) -> None:
+    """Unloads the menu-bar's OWN launchd job first — its ``KeepAlive`` would
+    otherwise relaunch the icon within a second of this exiting, which is why
+    Quit used to appear to do nothing. The plist stays on disk, so the icon
+    still comes back at the next login."""
+    if sys.platform == "darwin":
+        from .mac import launchd
+
+        launchd.bootout(launchd.MENUBAR_LABEL)
+    icon.stop()
 
 
 def _confirm_and_uninstall() -> None:
@@ -80,8 +111,10 @@ def run(port: int = config.DEFAULT_PORT) -> int:
         h = _health(port)
         items = [pystray.MenuItem(line, None, enabled=False) for line in status_lines(h)]
         items.append(pystray.Menu.SEPARATOR)
+        pause_label = "Pause Omna" if h else "Resume Omna"
+        items.append(pystray.MenuItem(pause_label, lambda: _toggle_masking(h)))
         items.append(pystray.MenuItem("Uninstall Omna…", lambda: _confirm_and_uninstall()))
-        items.append(pystray.MenuItem("Quit (Omna keeps masking in the background)", lambda icon: icon.stop()))
+        items.append(pystray.MenuItem("Quit", lambda icon: _quit(icon)))
         return items
 
     icon = pystray.Icon("omna", _icon_image(False), "Omna", menu=pystray.Menu(menu_items))
