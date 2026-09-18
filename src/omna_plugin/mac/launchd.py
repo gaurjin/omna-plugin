@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
 
 from .. import config
 
@@ -15,17 +16,18 @@ def plist_path() -> Path:
 
 def plist_text(omna_bin: Path, log: Path) -> str:
     path_env = f"/usr/bin:/bin:/usr/sbin:/sbin:{omna_bin.parent}"
+    omna_bin_x, log_x, path_env_x = (_xml_escape(str(v)) for v in (omna_bin, log, path_env))
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key><string>{LABEL}</string>
-  <key>ProgramArguments</key><array><string>{omna_bin}</string><string>start</string></array>
+  <key>ProgramArguments</key><array><string>{omna_bin_x}</string><string>start</string></array>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>{log}</string>
-  <key>StandardErrorPath</key><string>{log}</string>
-  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path_env}</string></dict>
+  <key>StandardOutPath</key><string>{log_x}</string>
+  <key>StandardErrorPath</key><string>{log_x}</string>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>{path_env_x}</string></dict>
 </dict>
 </plist>
 """
