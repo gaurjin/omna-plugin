@@ -39,6 +39,12 @@ omna start -d                    # background proxy on 127.0.0.1:7788
 omna status
 ```
 
+On a Mac, `omna init` also does one more thing: it trusts a local certificate ("Omna Local
+Certificate Authority") and points the system proxy at Omna via a PAC file that names only AI
+hostnames, so apps that don't use `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` (a desktop chat app, a
+browser) are masked too — not just Claude Code. That's one `sudo` password prompt, printed before
+it runs. Pass `--no-system` to skip it and wire Claude Code only. `omna uninstall` reverts it.
+
 Other tools use the same address:
 
 ```sh
@@ -68,7 +74,11 @@ omna log --verify
 | `omna mask [TEXT or -]` | Mask a string or stdin. |
 | `omna allow VALUE` | Never mask this exact value again (false positive). |
 | `omna forget` | Wipe the token registry (tokens renumber). |
-| `omna init [--project]` / `omna uninstall` | Wire / un-wire Claude Code. `init` backs up your settings first and removes only its own keys on uninstall. |
+| `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up your settings first and removes only its own keys on uninstall. |
+| `omna tools` / `omna enable TOOL` / `omna disable TOOL` | Show, or turn on/off, which tools Omna covers. `enable claude-code` / `disable claude-code` also wire/unwire it (same as `init`/`uninstall`); other tool names (aider, Codex, Cursor) just record the policy today. |
+| `omna apps` / `omna bypass app NAME` / `omna mask app NAME` | Show, or set, what happens to an app's traffic through the system proxy: `mask` (default) tokenises it like everything else, `bypass` tunnels it through untouched (still receipted, so you can see what wasn't masked). |
+| `omna capture app NAME` | Stage 3: deep-capture an app that ignores the system proxy, via its own signed network extension. |
+| `omna hosts` / `omna hosts add HOST` / `omna hosts remove HOST` | Show, or add/remove, the hostnames the system proxy treats as AI traffic. |
 
 ## What it costs you
 

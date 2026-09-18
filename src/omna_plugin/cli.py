@@ -9,8 +9,16 @@
     omna allow VALUE                       never mask this exact value again (false positive)
     omna forget                            wipe the token registry (tokens will renumber)
     omna report [--days 7] [--json|--html F] weekly summary from the receipts
-    omna init [--project]                  wire Claude Code (settings.json env + SessionStart hook)
-    omna uninstall [--project]             undo init
+    omna init [--project] [--no-system]    wire Claude Code (settings.json env + SessionStart hook);
+                                            on a Mac, also trust the certificate + set the system proxy
+    omna uninstall [--project]             undo init (Claude Code + Mac system proxy/certificate)
+    omna tools                             show tool policy (on/off)
+    omna enable TOOL / omna disable TOOL   turn a tool on/off (claude-code also wires/unwires it)
+    omna apps                              show app policy (mask/bypass)
+    omna bypass app NAME                   never mask this app's traffic (still receipted)
+    omna mask app NAME                     mask this app's traffic (the default)
+    omna capture app NAME                  Stage 3: deep-capture an app that ignores the system proxy
+    omna hosts [add|remove HOST]           show/add/remove the hostnames counted as AI
     omna version
 """
 
@@ -28,6 +36,7 @@ from datetime import date
 import httpx
 
 from . import claude_code, config, receipts
+from .policy import Policy
 
 
 def _health(port: int) -> dict | None:
@@ -57,6 +66,35 @@ def _wait_healthy(port: int, seconds: float) -> dict | None:
             return h
         time.sleep(0.2)
     return None
+
+
+def _restart_daemon(a=None) -> None:
+    """Called after every policy save. Real behavior (never exercised by a test,
+    which always monkeypatches this by name — see the safety rule): if the Mac
+    launchd job is installed, kick it; else if a foreground/background proxy is
+    already answering health checks, stop it and re-spawn it detached; else there
+    is nothing running to restart, so do nothing."""
+    from .mac import launchd
+
+    if launchd.plist_path().exists():
+        launchd.restart()
+        return
+    port = getattr(a, "port", None) or config.DEFAULT_PORT
+    if _health(port):
+        p = config.pid_path()
+        if p.exists():
+            try:
+                os.kill(int(p.read_text().strip() or 0), signal.SIGTERM)
+            except (ProcessLookupError, ValueError):
+                pass
+            p.unlink(missing_ok=True)
+        _spawn(port, False)
+
+
+def _save_policy(pol: Policy, a=None) -> None:
+    pol.save()
+    _restart_daemon(a)
+    print("omna: policy saved; restarting → omna restart")
 
 
 def cmd_start(a) -> int:
@@ -104,13 +142,56 @@ def cmd_stop(a) -> int:
     return 0
 
 
-def _today_counts() -> dict[str, int]:
+def _today_receipts() -> list[dict]:
     today = date.today().isoformat()
-    return receipts.summary([r for r in receipts.tail(0) if str(r.get("ts", "")).startswith(today)])
+    return [r for r in receipts.tail(0) if str(r.get("ts", "")).startswith(today)]
+
+
+def _today_counts() -> dict[str, int]:
+    return receipts.summary(_today_receipts())
 
 
 def _fmt_counts(c: dict[str, int]) -> str:
     return " ".join(f"{k}×{v}" for k, v in sorted(c.items())) or "-"
+
+
+def _doors_line(h: dict | None) -> str:
+    # Deliberately simple: on/off per door from /omna/health's `doors` dict.
+    # A "(PAC on Wi-Fi)" style detail from mac.setup.status() was considered but
+    # dropped — that reads real network state via `networksetup` on every
+    # `omna status`, which is unnecessary work for a status line (see report).
+    doors = (h or {}).get("doors") or {"api": True, "system": False, "deep": False}
+    return "doors:        api {} · system {} · deep {}".format(
+        *("on" if doors.get(k) else "off" for k in ("api", "system", "deep"))
+    )
+
+
+def _apps_today_line(pol: Policy, recs_today: list[dict]) -> str:
+    counts: dict[str, int] = {}
+    for r in recs_today:
+        app = r.get("app")
+        if app:
+            counts[app] = counts.get(app, 0) + 1
+    parts = []
+    for app in sorted(counts):
+        suffix = " (bypassed)" if pol.app_action(app) == "bypass" else ""
+        parts.append(f"{app} ×{counts[app]}{suffix}")
+    for app in sorted(pol.apps):
+        if app not in counts:
+            parts.append(f"{app} — not seen")
+    return "apps today:   " + (" · ".join(parts) if parts else "none seen yet")
+
+
+def _refused_line(recs_today: list[dict]) -> str:
+    counts: dict[tuple[str, str], int] = {}
+    for r in recs_today:
+        if r.get("note") == "tls-refused":
+            key = (r.get("app") or "unknown app", r.get("host") or "?")
+            counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return "refused:      none today"
+    parts = [f'{app} → {host} ×{n} (pinned)  → omna bypass app "{app}"' for (app, host), n in sorted(counts.items())]
+    return "refused:      " + " · ".join(parts)
 
 
 def cmd_status(a) -> int:
@@ -129,6 +210,11 @@ def cmd_status(a) -> int:
     ok, n, msg = receipts.verify()
     print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}")
     print(f"registry:     {config.registry_path()} ({'exists' if config.registry_path().exists() else 'empty'})")
+    pol = Policy.load()
+    recs_today = _today_receipts()
+    print(_doors_line(h))
+    print(_apps_today_line(pol, recs_today))
+    print(_refused_line(recs_today))
     print("what leaves this machine: the masked request, to the AI provider you were already using. Nothing goes to Omna.")
     return 0
 
@@ -154,9 +240,26 @@ def cmd_log(a) -> int:
 
 
 def cmd_mask(a) -> int:
+    # `a.text` is a list (nargs="*") so that `omna mask app NAME` (set an app's
+    # policy action to "mask") and the original `omna mask TEXT [--smart] [--counts]`
+    # (mask a piece of text) can share one subcommand name — see the report for why.
+    args: list[str] = a.text
+    if len(args) >= 2 and args[0] == "app":
+        name = args[1]
+        pol = Policy.load()
+        pol.set_app(name, "mask")
+        _save_policy(pol, a)
+        print(f'omna: {name!r} → mask (default: every request from this app is masked)')
+        return 0
+
     from .engine import MaskingSession
 
-    text = sys.stdin.read() if (a.text is None or a.text == "-") else a.text
+    if not args:
+        text = sys.stdin.read()
+    elif len(args) == 1:
+        text = sys.stdin.read() if args[0] == "-" else args[0]
+    else:
+        text = " ".join(args)
     s = MaskingSession(smart=a.smart)
     r = s.mask_text(text)
     sys.stdout.write(r.masked)
@@ -191,6 +294,17 @@ def cmd_init(a) -> int:
         print(f"      backup of your previous settings: {ch['backup']}")
     print(f"      env {claude_code.ENV_KEY}={config.base_url(a.port)}  ·  SessionStart hook `omna ensure`")
     print("      other tools: export ANTHROPIC_BASE_URL / OPENAI_BASE_URL to the same address (aider, SDKs, Codex CLI).")
+    if a.no_system:
+        print("      Mac system proxy + certificate: skipped (--no-system) — Claude Code only.")
+    elif sys.platform == "darwin":
+        from .mac import setup as mac_setup
+
+        mac_setup.apply(api_port=a.port)
+        print("      Mac: system proxy + certificate installed — every AI app on this Mac is masked, not just Claude Code.")
+    # Printed whether the Mac setup just ran or was intentionally skipped (--no-system
+    # or a non-Mac platform); Claude Code is wired either way, which is the sense in
+    # which Omna is "active" here.
+    print("Omna is active. Everything you send to an AI from this Mac is masked. `omna status` any time.")
     return 0
 
 
@@ -198,6 +312,91 @@ def cmd_uninstall(a) -> int:
     path = claude_code.settings_file("project" if a.project else "user")
     ch = claude_code.uninstall(path)
     print(f"omna: removed {'env var ' if ch['env'] else ''}{'hook ' if ch['hook'] else ''}from {path}" if any(ch.values()) else f"omna: nothing to remove in {path}")
+    if sys.platform == "darwin":
+        from .mac import setup as mac_setup
+
+        mac_setup.revert()
+        print("      Mac: system proxy + certificate removed.")
+    return 0
+
+
+def cmd_tools(a) -> int:
+    pol = Policy.load()
+    if not pol.tools:
+        print("omna: no tools configured")
+        return 0
+    for name, state in sorted(pol.tools.items()):
+        print(f"{name:<15} {state}")
+    return 0
+
+
+def _set_tool(a, state: str) -> int:
+    pol = Policy.load()
+    pol.tools[a.tool] = state
+    if a.tool == "claude-code":
+        path = claude_code.settings_file("user")
+        if state == "on":
+            claude_code.init(path, a.port)
+        else:
+            claude_code.uninstall(path)
+    _save_policy(pol, a)
+    print(f"omna: {a.tool} → {state}")
+    return 0
+
+
+def cmd_enable(a) -> int:
+    return _set_tool(a, "on")
+
+
+def cmd_disable(a) -> int:
+    return _set_tool(a, "off")
+
+
+def cmd_apps(a) -> int:
+    pol = Policy.load()
+    if not pol.apps:
+        print("omna: no apps configured (default action for every app is mask)")
+        return 0
+    for name, action in sorted(pol.apps.items()):
+        print(f"{name:<24} {action}")
+    return 0
+
+
+def cmd_bypass(a) -> int:
+    pol = Policy.load()
+    pol.set_app(a.name, "bypass")
+    _save_policy(pol, a)
+    print(f'omna: {a.name!r} → bypass (never masked; still receipted)')
+    return 0
+
+
+def cmd_capture(a) -> int:
+    pol = Policy.load()
+    if a.name not in pol.deep_apps:
+        pol.deep_apps.append(a.name)
+    pol.doors["deep"] = True
+    _save_policy(pol, a)
+    print(f'omna: {a.name!r} → deep capture (Stage 3)')
+    return 0
+
+
+def cmd_hosts(a) -> int:
+    pol = Policy.load()
+    if a.action is None:
+        for h in pol.hosts:
+            print(h)
+        return 0
+    if not a.host:
+        print("omna: `omna hosts add|remove HOST` needs a HOST", file=sys.stderr)
+        return 1
+    if a.action == "add":
+        pol.add_host(a.host)
+        _save_policy(pol, a)
+        print(f"omna: added {a.host}")
+    else:
+        pol.remove_host(a.host)
+        _save_policy(pol, a)
+        print(f"omna: removed {a.host}")
     return 0
 
 
@@ -245,18 +444,31 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("log", help="show local receipts")
     s.add_argument("-n", type=int, default=20); s.add_argument("--verify", action="store_true"); s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_log)
-    s = sub.add_parser("mask", help="mask a piece of text")
-    s.add_argument("text", nargs="?"); s.add_argument("--smart", action="store_true"); s.add_argument("--counts", action="store_true")
+    s = sub.add_parser("mask", help="mask a piece of text, or `mask app NAME` to set an app's action to mask")
+    s.add_argument("text", nargs="*"); s.add_argument("--smart", action="store_true"); s.add_argument("--counts", action="store_true")
+    add_port(s)
     s.set_defaults(fn=cmd_mask)
     s = sub.add_parser("allow", help="never mask this value again"); s.add_argument("value"); s.set_defaults(fn=cmd_allow)
     s = sub.add_parser("forget", help="wipe the token registry"); s.set_defaults(fn=cmd_forget)
-    s = sub.add_parser("init", help="wire Claude Code"); add_port(s)
+    s = sub.add_parser("init", help="wire Claude Code (and, on a Mac, the system proxy + certificate)"); add_port(s)
     s.add_argument("--project", action="store_true", help="write ./.claude/settings.json instead of ~/.claude/settings.json")
+    s.add_argument("--no-system", dest="no_system", action="store_true", help="skip the Mac system-wide proxy + certificate; Claude Code only")
     s.set_defaults(fn=cmd_init)
-    s = sub.add_parser("uninstall", help="undo init"); s.add_argument("--project", action="store_true"); s.set_defaults(fn=cmd_uninstall)
+    s = sub.add_parser("uninstall", help="undo init (Claude Code + Mac system proxy/certificate)"); s.add_argument("--project", action="store_true"); s.set_defaults(fn=cmd_uninstall)
     s = sub.add_parser("report", help="weekly summary from the receipts (text, --json, or --html FILE)")
     s.add_argument("--days", type=int, default=7); s.add_argument("--json", action="store_true"); s.add_argument("--html", metavar="FILE")
     s.set_defaults(fn=cmd_report)
+    s = sub.add_parser("tools", help="show tool policy (on/off)"); s.set_defaults(fn=cmd_tools)
+    s = sub.add_parser("enable", help="turn a tool on (claude-code also wires it)"); s.add_argument("tool"); add_port(s); s.set_defaults(fn=cmd_enable)
+    s = sub.add_parser("disable", help="turn a tool off (claude-code also unwires it)"); s.add_argument("tool"); add_port(s); s.set_defaults(fn=cmd_disable)
+    s = sub.add_parser("apps", help="show app policy (mask/bypass)"); s.set_defaults(fn=cmd_apps)
+    s = sub.add_parser("bypass", help="`bypass app NAME` — never mask this app's traffic"); add_port(s)
+    s.add_argument("kind", choices=["app"]); s.add_argument("name"); s.set_defaults(fn=cmd_bypass)
+    s = sub.add_parser("capture", help="`capture app NAME` — Stage 3 deep-capture for an app that ignores the system proxy"); add_port(s)
+    s.add_argument("kind", choices=["app"]); s.add_argument("name"); s.set_defaults(fn=cmd_capture)
+    s = sub.add_parser("hosts", help="show, or add/remove, the hostnames counted as AI"); add_port(s)
+    s.add_argument("action", nargs="?", choices=["add", "remove"]); s.add_argument("host", nargs="?")
+    s.set_defaults(fn=cmd_hosts)
     s = sub.add_parser("version"); s.set_defaults(fn=cmd_version)
     return p
 
