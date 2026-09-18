@@ -12,6 +12,7 @@
     omna init [--project] [--no-system]    wire Claude Code (settings.json env + SessionStart hook);
                                             on a Mac, also trust the certificate + set the system proxy
     omna uninstall [--project]             undo init (Claude Code + Mac system proxy/certificate)
+    omna menubar                           a status icon: on/off, what's covered, Uninstall (auto-starts on a Mac)
     omna tools                             show tool policy (on/off)
     omna enable TOOL / omna disable TOOL   turn a tool on/off (claude-code also wires/unwires it)
     omna apps                              show app policy (mask/bypass)
@@ -308,11 +309,18 @@ def cmd_init(a) -> int:
 
         mac_setup.apply(api_port=a.port)
         print("      Mac: system proxy + certificate installed — every AI app on this Mac is masked, not just Claude Code.")
+        print("      Mac: a menu-bar icon now shows Omna's status — click it any time to see what's covered, or to uninstall.")
     # Printed whether the Mac setup just ran or was intentionally skipped (--no-system
     # or a non-Mac platform); Claude Code is wired either way, which is the sense in
     # which Omna is "active" here.
     print("Omna is active. Everything you send to an AI from this Mac is masked. `omna status` any time.")
     return 0
+
+
+def cmd_menubar(a) -> int:
+    from . import menubar
+
+    return menubar.run(a.port)
 
 
 def cmd_uninstall(a) -> int:
@@ -462,6 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-system", dest="no_system", action="store_true", help="skip the Mac system-wide proxy + certificate; Claude Code only")
     s.set_defaults(fn=cmd_init)
     s = sub.add_parser("uninstall", help="undo init (Claude Code + Mac system proxy/certificate)"); s.add_argument("--project", action="store_true"); s.set_defaults(fn=cmd_uninstall)
+    s = sub.add_parser("menubar", help="a status icon: on/off, what's covered, Uninstall"); add_port(s); s.set_defaults(fn=cmd_menubar)
     s = sub.add_parser("report", help="weekly summary from the receipts (text, --json, or --html FILE)")
     s.add_argument("--days", type=int, default=7); s.add_argument("--json", action="store_true"); s.add_argument("--html", metavar="FILE")
     s.set_defaults(fn=cmd_report)

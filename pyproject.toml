@@ -26,6 +26,8 @@ dependencies = [
     "starlette>=0.38",
     "uvicorn>=0.30",
     "mitmproxy>=12.2,<13",
+    "pystray>=0.19,<1",
+    "pillow>=10",
 ]
 
 [project.optional-dependencies]

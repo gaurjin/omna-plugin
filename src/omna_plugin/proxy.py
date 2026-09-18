@@ -19,6 +19,8 @@ from __future__ import annotations
 import json
 import os
 import time
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from urllib.parse import urlsplit
 
 import httpx
@@ -33,7 +35,12 @@ from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
 
-__version__ = "0.1.0"
+try:
+    # Read from the installed package's own metadata (pyproject.toml's `version`)
+    # so this can never drift from a release the way a second hardcoded string did.
+    __version__ = _pkg_version("omna-plugin")
+except PackageNotFoundError:
+    __version__ = "0.0.0+unknown"
 
 # Paths that carry prompts. A POST here whose body we cannot parse is refused
 # (fail closed) instead of being forwarded unmasked.

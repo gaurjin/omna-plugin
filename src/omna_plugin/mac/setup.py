@@ -41,13 +41,22 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
     rc = _run_batch(plan(services=services, cert=cert, pac_url=pac_url), "certificate + system proxy")
     omna_bin = Path(shutil.which("omna") or sys.argv[0]).resolve()
     plist = launchd.install(omna_bin)
-    return {"cert": str(cert), "services": services, "pac_url": pac_url, "sudo_rc": rc, "launchd": str(plist)}
+    menubar_plist = launchd.install(omna_bin, label=launchd.MENUBAR_LABEL, args=["menubar"], log=config.menubar_log_path())
+    return {
+        "cert": str(cert),
+        "services": services,
+        "pac_url": pac_url,
+        "sudo_rc": rc,
+        "launchd": str(plist),
+        "menubar_launchd": str(menubar_plist),
+    }
 
 
 def revert() -> dict:
     cert = config.ca_dir() / "mitmproxy-ca-cert.pem"
     services = netproxy.list_services()
     launchd.remove()
+    launchd.remove(label=launchd.MENUBAR_LABEL)
     rc = _run_batch(revert_plan(services=services, cert=cert), "remove certificate + system proxy") if cert.exists() else 0
     return {"services": services, "sudo_rc": rc}
 

@@ -55,6 +55,10 @@ def log_path() -> Path:
     return home() / "proxy.log"
 
 
+def menubar_log_path() -> Path:
+    return home() / "menubar.log"
+
+
 def policy_path() -> Path:
     return home() / "policy.json"
 

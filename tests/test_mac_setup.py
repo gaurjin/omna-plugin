@@ -61,3 +61,44 @@ def test_setup_plan_is_one_batch_with_both_privileged_actions(tmp_path):
     assert lines[0].startswith("security add-trusted-cert")
     assert any(l.startswith("networksetup -setautoproxyurl") for l in lines)
     assert all("sudo" not in l for l in lines)          # sudo wraps the batch, never the lines
+
+
+def test_plist_text_defaults_to_the_daemon_label_and_args():
+    text = launchd.plist_text(omna_bin=Path("/x/omna"), log=Path("/x/proxy.log"))
+    assert f"<string>{launchd.LABEL}</string>" in text
+    assert "<string>start</string>" in text
+
+
+def test_plist_text_supports_a_second_label_and_args():
+    text = launchd.plist_text(omna_bin=Path("/x/omna"), log=Path("/x/menubar.log"), label=launchd.MENUBAR_LABEL, args=["menubar"])
+    assert f"<string>{launchd.MENUBAR_LABEL}</string>" in text
+    assert "<string>menubar</string>" in text
+    assert launchd.LABEL not in text.split(f"<string>{launchd.MENUBAR_LABEL}</string>")[0].replace(launchd.MENUBAR_LABEL, "")
+
+
+def test_apply_installs_the_daemon_and_the_menubar_launchd_agents(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
+    calls = []
+    monkeypatch.setattr(setup.launchd, "install", lambda omna_bin, **kw: calls.append((omna_bin, kw)) or tmp_path / "p.plist")
+
+    out = setup.apply()
+
+    assert len(calls) == 2
+    assert calls[0][1] == {}  # the daemon: default label ("start")
+    assert calls[1][1]["label"] == launchd.MENUBAR_LABEL
+    assert calls[1][1]["args"] == ["menubar"]
+    assert "menubar_launchd" in out
+
+
+def test_revert_removes_the_daemon_and_the_menubar_launchd_agents(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)  # no cert on disk -> no sudo batch needed
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    calls = []
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: calls.append(label))
+
+    setup.revert()
+
+    assert calls == [launchd.LABEL, launchd.MENUBAR_LABEL]
