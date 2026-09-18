@@ -68,8 +68,14 @@ class OmnaAddon:
         self.seen_apps: dict[str, int] = {}
 
     # ---------------------------------------------------------------- helpers
-    def _app_of(self, client) -> str | None:
-        got = self.resolver(getattr(client, "peername", None))
+    async def _app_of(self, client) -> str | None:
+        # self.resolver (ProcessResolver.resolve) can shell out to lsof/ps and block for
+        # up to ~2.5s on a cache miss. mitmproxy runs each hook invocation as its own
+        # asyncio Task (proxy/server.py's StartHook handling), so awaiting an executor
+        # future here only delays THIS flow — it does not stall other connections or the
+        # rest of the event loop, unlike calling self.resolver(...) directly would.
+        loop = asyncio.get_running_loop()
+        got = await loop.run_in_executor(None, self.resolver, getattr(client, "peername", None))
         return got[1] if got else None
 
     def _door_for_client(self, client) -> str:
@@ -94,8 +100,8 @@ class OmnaAddon:
             stream=stream, app=flow.metadata.get("omna_app"), note=flow.metadata.get("omna_note"), session_id=None)
 
     # ---------------------------------------------------------------- TLS
-    def tls_clienthello(self, data: tls.ClientHelloData) -> None:
-        app = self._app_of(data.context.client)
+    async def tls_clienthello(self, data: tls.ClientHelloData) -> None:
+        app = await self._app_of(data.context.client)
         if self.policy.app_action(app) == "bypass":
             data.ignore_connection = True
             self.pipeline.receipt(door=self._door_for_client(data.context.client), route="CONNECT",
@@ -103,8 +109,8 @@ class OmnaAddon:
                                   stats=MaskStats(), nbytes=0, ms=0, stream=False, app=app,
                                   note="bypassed-by-policy", session_id=None)
 
-    def tls_failed_client(self, data: tls.TlsData) -> None:
-        app = self._app_of(data.context.client) or "unknown app"
+    async def tls_failed_client(self, data: tls.TlsData) -> None:
+        app = await self._app_of(data.context.client) or "unknown app"
         host = data.context.client.sni or "?"
         key = f"{app} → {host}"
         self.refusals[key] = self.refusals.get(key, 0) + 1
@@ -117,8 +123,8 @@ class OmnaAddon:
         flow.request.headers["accept-encoding"] = "identity"
         flow.metadata["omna_t0"] = time.time()
 
-    def request(self, flow: http.HTTPFlow) -> None:
-        app = self._app_of(flow.client_conn)
+    async def request(self, flow: http.HTTPFlow) -> None:
+        app = await self._app_of(flow.client_conn)
         if app:
             self.seen_apps[app] = self.seen_apps.get(app, 0) + 1
         adapter = for_host(flow.request.pretty_host)

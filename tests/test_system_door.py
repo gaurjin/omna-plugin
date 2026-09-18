@@ -1,5 +1,6 @@
 import asyncio
 import ssl
+import time
 
 import httpx
 import pytest
@@ -110,3 +111,55 @@ async def test_bypassed_app_is_tunnelled_untouched(door):
     assert r.status_code == 200
     assert EMAIL.encode() in up.last_body                                        # bypass = really untouched
     assert receipts.tail(1)[0]["note"] == "bypassed-by-policy"
+
+
+async def test_slow_resolver_does_not_serialize_concurrent_flows(tmp_path, monkeypatch):
+    """Regression: ProcessResolver.resolve() shells out to lsof/ps and can block for up
+    to ~2.5s on a cache miss. If the addon called it synchronously from inside a hook, a
+    slow resolution would stall mitmproxy's single event loop thread for its whole
+    duration — serializing every other flow behind it. The fix runs it via
+    loop.run_in_executor so only the flow that's waiting on it is delayed.
+
+    Each HTTPS flow calls the resolver twice (tls_clienthello, then request) — those two
+    calls are necessarily sequential within ONE flow (request can't fire before the TLS
+    handshake completes), so a single flow's own critical path is ~2x the resolver's
+    delay. What must NOT happen is that delay compounding ACROSS flows too. Prove it by
+    running two requests concurrently through a resolver that sleeps 0.4s per call: fully
+    serialized (the bug) is 4 sequential calls = ~1.6s; correctly concurrent flows (the
+    fix) is two ~0.8s per-flow critical paths running in parallel = ~0.8-0.9s."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    ca_pem, leaf, key = make_ca_and_leaf(tmp_path)
+    up = FakeUpstream()
+    await up.start(leaf, key)
+
+    def slow_resolver(peer):
+        time.sleep(0.4)
+        return (1, "SlowApp")
+
+    pol = Policy()
+    pol.hosts = ["127.0.0.1"]
+    pol.allow_hosts = lambda: [rf"^127\.0\.0\.1:{up.port}$"]
+    pipe = Pipeline(MaskingSession())
+    addon = OmnaAddon(pipe, pol, door="system", resolver=slow_resolver)
+    master = build_master(pol, addon, port=0, ca_dir=tmp_path / "ca", upstream_ca=str(ca_pem))
+    task = asyncio.create_task(master.run())
+    await asyncio.sleep(0.5)
+    port = next(a[1] for inst in master.addons.get("proxyserver").servers for a in inst.listen_addrs)
+    client_ctx = ssl.create_default_context(cafile=str(tmp_path / "ca" / "mitmproxy-ca-cert.pem"))
+    try:
+        async def one_request():
+            async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=client_ctx) as c:
+                return await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": "hi"})
+
+        t0 = time.monotonic()
+        results = await asyncio.gather(one_request(), one_request())
+        elapsed = time.monotonic() - t0
+    finally:
+        master.shutdown()
+        await task
+        await up.stop()
+
+    assert all(r.status_code == 200 for r in results)
+    # ~1.6s would mean all 4 resolver calls (2 flows x 2 hooks) ran serially (the bug);
+    # ~0.8-0.9s is two flows' own ~0.8s critical paths running concurrently (the fix).
+    assert elapsed < 1.2, f"two concurrent flows took {elapsed:.2f}s — looks serialized, not concurrent"
