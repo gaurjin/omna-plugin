@@ -174,6 +174,13 @@ async def test_health(env):
 
 
 @pytest.mark.anyio
+async def test_proxy_pac_serves_system_door(env):
+    up, session, client = env
+    r = await client.get("/omna/proxy.pac")
+    assert r.status_code == 200 and "PROXY 127.0.0.1:7789" in r.text
+
+
+@pytest.mark.anyio
 async def test_unparseable_inference_body_is_refused_not_forwarded(env):
     up, session, client = env
     before = len(up.calls)

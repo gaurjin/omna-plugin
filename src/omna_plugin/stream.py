@@ -28,8 +28,8 @@ _MAX_HOLD = 48
 _PREFIX_RE = re.compile(r"\[[A-Z0-9_]*$")
 
 
-class _HoldBack:
-    """Per-stream text restorer with partial-token hold-back."""
+class TextRestorer:
+    """Token-level restore over any text stream, with partial-token hold-back."""
 
     def __init__(self, session: MaskingSession, json_escape: bool = False):
         self.session = session
@@ -61,18 +61,22 @@ class _HoldBack:
         return self._restore(out) if out else ""
 
 
+# Backwards-compat alias: this class used to be private.
+_HoldBack = TextRestorer
+
+
 class StreamRestorer:
     """Feed raw SSE bytes in, get restored SSE bytes out."""
 
     def __init__(self, session: MaskingSession):
         self.session = session
         self._buf = b""
-        self._text: dict[str, _HoldBack] = {}  # key -> holdback (per content block / choice)
+        self._text: dict[str, TextRestorer] = {}  # key -> holdback (per content block / choice)
 
-    def _hb(self, key: str, json_escape: bool) -> _HoldBack:
+    def _hb(self, key: str, json_escape: bool) -> TextRestorer:
         hb = self._text.get(key)
         if hb is None:
-            hb = self._text[key] = _HoldBack(self.session, json_escape)
+            hb = self._text[key] = TextRestorer(self.session, json_escape)
         return hb
 
     def feed(self, chunk: bytes) -> bytes:

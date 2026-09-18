@@ -29,9 +29,9 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from . import config, receipts
-from .body import mask_body, restore_body
-from .engine import MaskingSession, TOKEN_RE, engine_version
-from .stream import StreamRestorer
+from .engine import MaskingSession, engine_version
+from .pipeline import MaskStats, Pipeline
+from .policy import Policy
 
 __version__ = "0.1.0"
 
@@ -63,8 +63,12 @@ def create_app(
     anthropic_upstream: str = config.ANTHROPIC_UPSTREAM,
     openai_upstream: str = config.OPENAI_UPSTREAM,
     client: httpx.AsyncClient | None = None,
+    pipeline: Pipeline | None = None,
+    policy: Policy | None = None,
+    doors_state: dict[str, bool] | None = None,
 ) -> Starlette:
-    session = session or MaskingSession()
+    session = session or (pipeline.session if pipeline else None) or MaskingSession()
+    pipeline = pipeline or Pipeline(session)
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0))
     stats = {"requests": 0, "started": time.time()}
 
@@ -82,7 +86,14 @@ def create_app(
                 "receipts": n,
                 "chain_intact": ok,
                 "registry_entries": session.registry_size,
+                "doors": doors_state or {"api": True, "system": False, "deep": False},
             }
+        )
+
+    async def pac(_: Request) -> Response:
+        return Response(
+            (policy or Policy.load()).pac(system_port=config.SYSTEM_PORT),
+            media_type="application/x-ns-proxy-autoconfig",
         )
 
     async def relay(request: Request) -> Response:
@@ -90,49 +101,42 @@ def create_app(
         if request.method == "HEAD" and path == "/api/hello":
             return Response(status_code=200)
         upstream = pick_upstream(request, anthropic_upstream, openai_upstream)
+        upstream_host = urlsplit(upstream).netloc
         url = upstream.rstrip("/") + path
         if request.url.query:
             url += "?" + request.url.query
 
         body = await request.body()
-        counts: dict[str, int] = {}
+        mstats = MaskStats()
         passthrough = False
-        mask_ms = 0
-        tokens_seen: list[str] = []
         ctype = request.headers.get("content-type", "")
         is_inference = any(path.startswith(pfx) for pfx in INFERENCE_PREFIXES)
         if body and request.method in ("POST", "PUT", "PATCH"):
-            obj = None
             if "json" in ctype and not request.headers.get("content-encoding"):
-                try:
-                    obj = json.loads(body)
-                except ValueError:
-                    obj = None
-            if obj is not None:
-                try:
-                    t_mask = time.time()
-                    masked, counts = await run_in_threadpool(mask_body, session, obj)
-                    body = json.dumps(masked, ensure_ascii=False).encode("utf-8")
-                    mask_ms = int((time.time() - t_mask) * 1000)
-                    tokens_seen = sorted({m.group(0)[1:-1] for m in TOKEN_RE.finditer(body.decode("utf-8", "replace"))})
-                except (TypeError, ValueError, UnicodeEncodeError) as e:
-                    _receipt(request, path, upstream, 400, {}, len(body), time.time(), stream=False, note="mask-failed")
-                    return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": f"omna could not mask this request ({e}); refused rather than sent unmasked"}}, status_code=400)
-                if _DUMP_DIR:
-                    try:
-                        os.makedirs(_DUMP_DIR, exist_ok=True)
-                        with open(os.path.join(_DUMP_DIR, f"{int(time.time()*1000)}-{path.strip('/').replace('/', '_')}.json"), "wb") as f:
-                            f.write(body)
-                    except OSError:
-                        pass
+                out = await run_in_threadpool(pipeline.mask_bytes, body, ctype)
+                if out.refused is None:
+                    body = out.body
+                    mstats = out.stats
+                    if _DUMP_DIR:
+                        try:
+                            os.makedirs(_DUMP_DIR, exist_ok=True)
+                            with open(os.path.join(_DUMP_DIR, f"{int(time.time()*1000)}-{path.strip('/').replace('/', '_')}.json"), "wb") as f:
+                                f.write(body)
+                        except OSError:
+                            pass
+                elif is_inference:
+                    _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note="unparseable")
+                    return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": "omna could not mask this request; refused rather than sent unmasked"}}, status_code=400)
+                else:
+                    passthrough = True
             elif is_inference:
-                _receipt(request, path, upstream, 400, {}, len(body), time.time(), stream=False, note="unparseable")
+                _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note="unparseable")
                 return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": f"omna only forwards JSON to {path} (got content-type {ctype!r}, content-encoding {request.headers.get('content-encoding')!r}); refused rather than sent unmasked"}}, status_code=400)
             else:
                 passthrough = True  # e.g. file/audio uploads: forwarded as-is, marked in the receipt
 
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _DROP_REQ}
-        headers["host"] = urlsplit(upstream).netloc
+        headers["host"] = upstream_host
         headers["accept-encoding"] = "identity"
 
         t0 = time.time()
@@ -141,7 +145,7 @@ def create_app(
         try:
             resp = await client.send(req, stream=True)
         except httpx.HTTPError as e:
-            _receipt(request, path, upstream, 502, counts, len(body), t0, stream=False)
+            _receipt(request, path, upstream_host, 502, mstats, len(body), t0, stream=False)
             return JSONResponse({"type": "error", "error": {"type": "omna_upstream_error", "message": str(e)}}, status_code=502)
 
         resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _DROP_RESP}
@@ -149,7 +153,7 @@ def create_app(
 
         if is_sse:
             async def gen():
-                restorer = StreamRestorer(session)
+                restorer = pipeline.sse_restorer()
                 try:
                     async for chunk in resp.aiter_bytes():
                         out = restorer.feed(chunk)
@@ -160,7 +164,7 @@ def create_app(
                         yield tail
                 finally:
                     await resp.aclose()
-                    _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=True, note="passthrough" if passthrough else None, extra={"mask_ms": mask_ms, "tokens": tokens_seen})
+                    _receipt(request, path, upstream_host, resp.status_code, mstats, len(body), t0, stream=True, note="passthrough" if passthrough else None)
 
             return StreamingResponse(gen(), status_code=resp.status_code, headers=resp_headers)
 
@@ -168,41 +172,31 @@ def create_app(
         await resp.aclose()
         if resp.status_code < 400 and "json" in resp.headers.get("content-type", ""):
             try:
-                data = json.dumps(restore_body(session, json.loads(data)), ensure_ascii=False).encode("utf-8")
+                data = json.dumps(pipeline.restore_json(json.loads(data)), ensure_ascii=False).encode("utf-8")
             except ValueError:
                 pass
-        _receipt(request, path, upstream, resp.status_code, counts, len(body), t0, stream=False, note="passthrough" if passthrough else None, extra={"mask_ms": mask_ms, "tokens": tokens_seen})
+        _receipt(request, path, upstream_host, resp.status_code, mstats, len(body), t0, stream=False, note="passthrough" if passthrough else None)
         return Response(data, status_code=resp.status_code, headers=resp_headers)
 
-    def _receipt(request: Request, path: str, upstream: str, status: int, counts: dict, nbytes: int, t0: float, stream: bool, note: str | None = None, extra: dict | None = None):
-        counts = dict(counts)
-        n_secrets = counts.pop("_secrets", 0)
-        n_pii = counts.pop("_pii", 0)
-        rec = {
-            "route": path,
-            "upstream": urlsplit(upstream).netloc,
-            "status": status,
-            "stream": stream,
-            "masked": counts,
-            "secrets": n_secrets,
-            "pii": n_pii,
-            **(extra or {}),
-            "bytes_in": nbytes,
-            "ms": int((time.time() - t0) * 1000),
-        }
-        if note:
-            rec["note"] = note
-        sid = request.headers.get("x-claude-code-session-id")
-        if sid:
-            rec["session"] = sid
-        try:
-            receipts.append(rec)
-        except OSError:
-            pass
+    def _receipt(request: Request, path: str, upstream_host: str, status: int, mstats: MaskStats, nbytes: int, t0: float, stream: bool, note: str | None = None):
+        pipeline.receipt(
+            door="api",
+            route=path,
+            host=upstream_host,
+            status=status,
+            stats=mstats,
+            nbytes=nbytes,
+            ms=int((time.time() - t0) * 1000),
+            stream=stream,
+            app=None,
+            note=note,
+            session_id=request.headers.get("x-claude-code-session-id"),
+        )
 
     app = Starlette(
         routes=[
             Route("/omna/health", health, methods=["GET"]),
+            Route("/omna/proxy.pac", pac, methods=["GET"]),
             Route("/{path:path}", relay, methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]),
         ]
     )
