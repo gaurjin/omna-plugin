@@ -256,3 +256,21 @@ def test_restart_daemon_does_not_double_spawn_a_foreground_instance(monkeypatch,
     _real_restart_daemon()
     out, _ = capsys.readouterr()
     assert "foreground" in out and "restart it yourself" in out
+
+
+def test_restart_daemon_warns_when_the_respawned_proxy_never_comes_up(monkeypatch, tmp_path, capsys):
+    # Regression: the respawn's own health was never checked, so a proxy that
+    # failed to come back (e.g. the old process still held the port) looked
+    # identical to a successful restart — nothing told the operator to look.
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: tmp_path / "missing.plist")
+    pidfile = tmp_path / "omna.pid"
+    pidfile.write_text("4242")
+    monkeypatch.setattr("omna_plugin.config.pid_path", lambda: pidfile)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"smart": False, "restore_secrets": True})
+    monkeypatch.setattr("os.kill", lambda pid, sig: None)
+    monkeypatch.setattr("omna_plugin.cli._spawn", lambda port, smart, no_restore_secrets=False: 4243)
+    monkeypatch.setattr("omna_plugin.cli._wait_healthy", lambda port, seconds: None)
+
+    _real_restart_daemon()
+    out, err = capsys.readouterr()
+    assert "did not come back up" in err

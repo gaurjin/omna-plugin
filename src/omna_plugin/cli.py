@@ -97,6 +97,8 @@ def _restart_daemon(a=None) -> None:
         pass
     p.unlink(missing_ok=True)
     _spawn(port, smart, no_restore_secrets)
+    if not _wait_healthy(port, 60 if smart else 10):
+        print(f"omna: policy saved, but the proxy did not come back up; see {config.log_path()}", file=sys.stderr)
 
 
 def _save_policy(pol: Policy, a=None) -> None:
@@ -310,6 +312,7 @@ def cmd_init(a) -> int:
         mac_setup.apply(api_port=a.port)
         print("      Mac: system proxy + certificate installed — every AI app on this Mac is masked, not just Claude Code.")
         print("      Mac: a menu-bar icon now shows Omna's status — click it any time to see what's covered, or to uninstall.")
+        print("      Mac: quit the icon any time and re-open \"Omna Plugin\" from Spotlight — turn on its Launch at Login to skip that step.")
     # Printed whether the Mac setup just ran or was intentionally skipped (--no-system
     # or a non-Mac platform); Claude Code is wired either way, which is the sense in
     # which Omna is "active" here.
@@ -331,7 +334,7 @@ def cmd_uninstall(a) -> int:
         from .mac import setup as mac_setup
 
         mac_setup.revert()
-        print("      Mac: system proxy + certificate removed.")
+        print("      Mac: system proxy + certificate removed, menu-bar app and Launch at Login removed.")
     return 0
 
 

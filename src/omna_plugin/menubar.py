@@ -34,15 +34,16 @@ def _health(port: int) -> dict | None:
 
 
 def status_lines(h: dict | None) -> list[str]:
-    """Pure so it's testable without a running proxy or the tray library."""
+    """Pure so it's testable without a running proxy or the tray library. Line 1 is
+    the clickable toggle itself — same self-describing pattern as the native Mac
+    app's "PII Masking: ON/OFF" item — so there is no separate Pause/Resume entry."""
     if not h:
-        return ["Omna: NOT RUNNING", "→ Resume Omna below, or omna start -d"]
+        return ["Omna: OFF · click to resume", "omna start -d (or click above)"]
     doors = h.get("doors") or {}
     coverage = "every app on this Mac" if doors.get("system") else "coding tools only (Claude Code etc.)"
     return [
-        "Omna: ON",
-        f"Covers: {coverage}",
-        f"Requests masked this session: {h.get('requests_this_run', 0)}",
+        "Omna: ON · click to pause",
+        f"Covers: {coverage} · {h.get('requests_this_run', 0)} masked this session",
     ]
 
 
@@ -72,11 +73,20 @@ def _toggle_masking(h: dict | None) -> None:
     launchd.bootout(launchd.LABEL) if h else launchd.bootstrap(launchd.LABEL)
 
 
+def _toggle_login_item() -> None:
+    """Launch at Login, same mechanism the native Mac app uses (System Events),
+    pointed at the plugin's own ``.app`` wrapper instead of the native app's."""
+    from .mac import app_bundle
+
+    app_bundle.disable_login_item() if app_bundle.login_item_enabled() else app_bundle.enable_login_item()
+
+
 def _quit(icon) -> None:
     """Unloads the menu-bar's OWN launchd job first — its ``KeepAlive`` would
     otherwise relaunch the icon within a second of this exiting, which is why
     Quit used to appear to do nothing. The plist stays on disk, so the icon
-    still comes back at the next login."""
+    still comes back at the next login -- and, if Launch at Login is on, after a
+    full log-out/log-in too, via the .app wrapper."""
     if sys.platform == "darwin":
         from .mac import launchd
 
@@ -109,10 +119,18 @@ def run(port: int = config.DEFAULT_PORT) -> int:
 
     def menu_items():
         h = _health(port)
-        items = [pystray.MenuItem(line, None, enabled=False) for line in status_lines(h)]
+        lines = status_lines(h)
+        items = [pystray.MenuItem(lines[0], lambda: _toggle_masking(h))]
+        items += [pystray.MenuItem(line, None, enabled=False) for line in lines[1:]]
         items.append(pystray.Menu.SEPARATOR)
-        pause_label = "Pause Omna" if h else "Resume Omna"
-        items.append(pystray.MenuItem(pause_label, lambda: _toggle_masking(h)))
+        if sys.platform == "darwin":
+            from .mac import app_bundle
+
+            items.append(pystray.MenuItem(
+                "Launch at Login",
+                lambda: _toggle_login_item(),
+                checked=lambda item: app_bundle.login_item_enabled(),
+            ))
         items.append(pystray.MenuItem("Uninstall Omna…", lambda: _confirm_and_uninstall()))
         items.append(pystray.MenuItem("Quit", lambda icon: _quit(icon)))
         return items

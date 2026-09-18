@@ -81,6 +81,7 @@ def test_apply_installs_the_daemon_and_the_menubar_launchd_agents(monkeypatch, t
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: tmp_path / "Omna Plugin.app")
     calls = []
     monkeypatch.setattr(setup.launchd, "install", lambda omna_bin, **kw: calls.append((omna_bin, kw)) or tmp_path / "p.plist")
 
@@ -91,6 +92,7 @@ def test_apply_installs_the_daemon_and_the_menubar_launchd_agents(monkeypatch, t
     assert calls[1][1]["label"] == launchd.MENUBAR_LABEL
     assert calls[1][1]["args"] == ["menubar"]
     assert "menubar_launchd" in out
+    assert "app_bundle" in out
 
 
 def test_revert_removes_the_daemon_and_the_menubar_launchd_agents(monkeypatch, tmp_path):
@@ -98,7 +100,9 @@ def test_revert_removes_the_daemon_and_the_menubar_launchd_agents(monkeypatch, t
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
     calls = []
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: calls.append(label))
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: calls.append("disable_login_item"))
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: calls.append("remove_app_bundle"))
 
     setup.revert()
 
-    assert calls == [launchd.LABEL, launchd.MENUBAR_LABEL]
+    assert calls == [launchd.LABEL, launchd.MENUBAR_LABEL, "disable_login_item", "remove_app_bundle"]

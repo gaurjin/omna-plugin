@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .. import config
 from ..system_door import ensure_ca
-from . import certs, launchd, netproxy
+from . import app_bundle, certs, launchd, netproxy
 
 
 def plan(*, services: list[str], cert: Path, pac_url: str) -> list[str]:
@@ -42,6 +42,7 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
     omna_bin = Path(shutil.which("omna") or sys.argv[0]).resolve()
     plist = launchd.install(omna_bin)
     menubar_plist = launchd.install(omna_bin, label=launchd.MENUBAR_LABEL, args=["menubar"], log=config.menubar_log_path())
+    app_path = app_bundle.install(omna_bin)
     return {
         "cert": str(cert),
         "services": services,
@@ -49,6 +50,7 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
         "sudo_rc": rc,
         "launchd": str(plist),
         "menubar_launchd": str(menubar_plist),
+        "app_bundle": str(app_path),
     }
 
 
@@ -57,6 +59,8 @@ def revert() -> dict:
     services = netproxy.list_services()
     launchd.remove()
     launchd.remove(label=launchd.MENUBAR_LABEL)
+    app_bundle.disable_login_item()
+    app_bundle.remove()
     rc = _run_batch(revert_plan(services=services, cert=cert), "remove certificate + system proxy") if cert.exists() else 0
     return {"services": services, "sudo_rc": rc}
 

@@ -33,7 +33,7 @@ That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires C
 proxy. Or by hand:
 
 ```sh
-uv tool install git+https://github.com/gaurjin/omna-plugin@v0.1.0   # PyPI: coming
+uv tool install git+https://github.com/gaurjin/omna-plugin@v0.2.0   # PyPI: coming
 omna init                        # Claude Code: sets ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
 omna start -d                    # background proxy on 127.0.0.1:7788
 omna status
@@ -44,6 +44,13 @@ Certificate Authority") and points the system proxy at Omna via a PAC file that 
 hostnames, so apps that don't use `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` (a desktop chat app, a
 browser) are masked too — not just Claude Code. That's one `sudo` password prompt, printed before
 it runs. Pass `--no-system` to skip it and wire Claude Code only. `omna uninstall` reverts it.
+
+On a Mac, `omna init` also starts a menu-bar icon (`omna menubar`) showing live status — click its
+top line to pause/resume masking, or use it to uninstall. Quitting the icon only stops that one
+process: relaunch it any time from Spotlight/Launchpad as **Omna Plugin** (a small `.app` at
+`/Applications/Omna Plugin.app`, kept distinct from the native Omna Mac app so the two never
+collide), or turn on its **Launch at Login** toggle so it comes back on its own after every reboot
+or log-out.
 
 Other tools use the same address:
 
@@ -79,6 +86,7 @@ omna log --verify
 | `omna start [-d] [--smart] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). `--smart` adds the on-device Contextual model for prose names (809 MB download once, slower). |
 | `omna stop` / `omna ensure` | Stop the background proxy / start it if it is not running (the Claude Code hook calls this). |
 | `omna status` | Running? Claude Code wired? Receipts today. |
+| `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see what's covered, toggle Launch at Login, or uninstall. |
 | `omna log [-n 20] [--verify] [--json]` | Local receipts. `--verify` checks the hash chain. |
 | `omna report [--days 7] [--json] [--html FILE]` | Weekly summary from the receipts: requests enabled, distinct secrets kept off the wire, PII tokenised, destinations, chain status, masking cost. |
 | `omna mask [TEXT or -]` | Mask a string or stdin. |
@@ -155,7 +163,7 @@ built from these receipts, per-machine coverage, and org-wide rulesets. See a sa
 
 ```sh
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q          # 40 tests, ~0.2 s (fake upstream, no network)
+.venv/bin/pytest -q          # 142 tests, ~7 s (fake upstream, no network)
 .venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
 ```
 

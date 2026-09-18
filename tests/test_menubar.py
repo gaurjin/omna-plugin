@@ -1,19 +1,19 @@
 from PIL import Image
 
 from omna_plugin import menubar
-from omna_plugin.mac import launchd
+from omna_plugin.mac import app_bundle, launchd
 
 
 def test_status_lines_not_running():
-    assert menubar.status_lines(None) == ["Omna: NOT RUNNING", "→ Resume Omna below, or omna start -d"]
+    assert menubar.status_lines(None) == ["Omna: OFF · click to resume", "omna start -d (or click above)"]
 
 
 def test_status_lines_api_door_only():
     h = {"doors": {"api": True, "system": False}, "requests_this_run": 3}
     lines = menubar.status_lines(h)
-    assert lines[0] == "Omna: ON"
+    assert lines[0] == "Omna: ON · click to pause"
     assert "coding tools only" in lines[1]
-    assert "3" in lines[2]
+    assert "3" in lines[1]
 
 
 def test_status_lines_system_door_on():
@@ -24,9 +24,8 @@ def test_status_lines_system_door_on():
 
 def test_status_lines_missing_doors_key_does_not_crash():
     assert menubar.status_lines({"requests_this_run": 1}) == [
-        "Omna: ON",
-        "Covers: coding tools only (Claude Code etc.)",
-        "Requests masked this session: 1",
+        "Omna: ON · click to pause",
+        "Covers: coding tools only (Claude Code etc.) · 1 masked this session",
     ]
 
 
@@ -117,6 +116,24 @@ def test_toggle_masking_non_darwin_not_running_shells_out_to_start_daemonized(mo
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
     menubar._toggle_masking(None)
     assert calls == [["omna", "start", "-d"]]
+
+
+def test_toggle_login_item_enables_when_currently_disabled(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app_bundle, "login_item_enabled", lambda: False)
+    monkeypatch.setattr(app_bundle, "enable_login_item", lambda: calls.append("enable"))
+    monkeypatch.setattr(app_bundle, "disable_login_item", lambda: calls.append("disable"))
+    menubar._toggle_login_item()
+    assert calls == ["enable"]
+
+
+def test_toggle_login_item_disables_when_currently_enabled(monkeypatch):
+    calls = []
+    monkeypatch.setattr(app_bundle, "login_item_enabled", lambda: True)
+    monkeypatch.setattr(app_bundle, "enable_login_item", lambda: calls.append("enable"))
+    monkeypatch.setattr(app_bundle, "disable_login_item", lambda: calls.append("disable"))
+    menubar._toggle_login_item()
+    assert calls == ["disable"]
 
 
 def test_quit_darwin_unloads_its_own_launchd_job_before_stopping(monkeypatch):

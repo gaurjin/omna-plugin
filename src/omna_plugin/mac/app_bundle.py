@@ -1,0 +1,94 @@
+"""The ``.app`` wrapper that lets the menu-bar icon come back after Quit.
+
+``omna-plugin`` is installed as a ``uv tool`` CLI — there is nothing Spotlight or
+Launchpad can find once the tray icon is quit, unlike the native Mac app, which ships
+a real bundle at ``/Applications/Omna.app`` with a Launch-at-Login toggle. This module
+gives the plugin the same mechanism: a tiny bundle at ``/Applications/Omna Plugin.app``
+(a distinct name — never ``Omna.app`` — so it can never collide with or overwrite the
+native app's own bundle) whose only job is to exec ``omna menubar``, plus the same
+System-Events login-item registration the native app uses.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from pathlib import Path
+from xml.sax.saxutils import escape as _xml_escape
+
+from .. import config
+
+APP_NAME = "Omna Plugin"
+APP_PATH = Path("/Applications") / f"{APP_NAME}.app"
+BUNDLE_ID = "dev.omna.plugin.app"
+BIN_NAME = "omna-plugin-launcher"
+LOGIN_ITEM_FLAG = "login_item_enabled.flag"
+
+
+def _info_plist() -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key><string>{_xml_escape(APP_NAME)}</string>
+  <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
+  <key>CFBundleExecutable</key><string>{_xml_escape(BIN_NAME)}</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>LSUIElement</key><true/>
+</dict>
+</plist>
+"""
+
+
+def _sh_quote(s: str) -> str:
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _launcher_script(omna_bin: Path) -> str:
+    # Re-execs the real `omna` binary at whatever path `uv tool install` put it —
+    # same shutil.which("omna") resolution mac/setup.py uses, baked in at install time.
+    return f"#!/bin/sh\nexec {_sh_quote(str(omna_bin))} menubar\n"
+
+
+def install(omna_bin: Path, *, dest: Path = APP_PATH) -> Path:
+    """Write (or overwrite) the bundle. Idempotent — safe to call on every `omna init`."""
+    macos_dir = dest / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True, exist_ok=True)
+    (dest / "Contents" / "Info.plist").write_text(_info_plist())
+    launcher = macos_dir / BIN_NAME
+    launcher.write_text(_launcher_script(omna_bin))
+    os.chmod(launcher, 0o755)
+    return dest
+
+
+def remove(dest: Path = APP_PATH) -> None:
+    shutil.rmtree(dest, ignore_errors=True)
+
+
+def login_item_enabled() -> bool:
+    return (config.home() / LOGIN_ITEM_FLAG).exists()
+
+
+def enable_login_item(*, app_path: Path = APP_PATH) -> None:
+    """Mirrors the native Mac app's own enable_login_item() (tray.rs) — same System
+    Events call, same flag-file bookkeeping, just a different app name/path."""
+    subprocess.run(
+        [
+            "osascript", "-e",
+            f'tell application "System Events" to make login item at end with properties '
+            f'{{path:"{app_path}", hidden:false, name:"{APP_NAME}"}}',
+        ],
+        capture_output=True,
+    )
+    config.ensure_home()
+    (config.home() / LOGIN_ITEM_FLAG).touch()
+
+
+def disable_login_item() -> None:
+    subprocess.run(
+        ["osascript", "-e", f'tell application "System Events" to delete login item "{APP_NAME}"'],
+        capture_output=True,
+    )
+    (config.home() / LOGIN_ITEM_FLAG).unlink(missing_ok=True)
