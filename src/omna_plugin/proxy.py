@@ -66,6 +66,7 @@ def create_app(
     pipeline: Pipeline | None = None,
     policy: Policy | None = None,
     doors_state: dict[str, bool] | None = None,
+    system_port: int = config.SYSTEM_PORT,
 ) -> Starlette:
     # When a Pipeline is given, its MaskingSession is the one source of truth
     # (registry, /omna/health counters, etc.) — a separately-passed `session`
@@ -96,7 +97,7 @@ def create_app(
 
     async def pac(_: Request) -> Response:
         return Response(
-            (policy or Policy.load()).pac(system_port=config.SYSTEM_PORT),
+            (policy or Policy.load()).pac(system_port=system_port),
             media_type="application/x-ns-proxy-autoconfig",
         )
 
@@ -212,18 +213,3 @@ def create_app(
     app.state.session = session
     app.state.client = client
     return app
-
-
-def run(port: int = config.DEFAULT_PORT, smart: bool = False, restore_secrets: bool = True, log_level: str = "warning") -> None:
-    """Start the proxy in the foreground (``omna start``)."""
-    import uvicorn
-
-    session = MaskingSession(smart=smart, restore_secrets=restore_secrets)
-    if smart:
-        import omna_pii_mask
-
-        print("omna: preparing the on-device Contextual model (first run downloads ~809 MB)...", flush=True)
-        omna_pii_mask.download_model()
-    app = create_app(session)
-    print(f"omna: masking proxy on {config.base_url(port)}  (engine {engine_version()}, smart={'on' if smart else 'off'}, secrets={'restored locally' if restore_secrets else 'redacted for good'})", flush=True)
-    uvicorn.run(app, host=config.DEFAULT_HOST, port=port, log_level=log_level, access_log=False)

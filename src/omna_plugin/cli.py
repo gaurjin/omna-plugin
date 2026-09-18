@@ -71,9 +71,9 @@ def cmd_start(a) -> int:
             return 0
         print(f"omna: failed to start; see {config.log_path()}", file=sys.stderr)
         return 1
-    from .proxy import run
+    from . import daemon
 
-    run(port=a.port, smart=a.smart, restore_secrets=not a.no_restore_secrets)
+    daemon.run(api_port=a.port, smart=a.smart, restore_secrets=not a.no_restore_secrets)
     return 0
 
 
