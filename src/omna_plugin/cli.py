@@ -71,24 +71,31 @@ def _wait_healthy(port: int, seconds: float) -> dict | None:
 def _restart_daemon(a=None) -> None:
     """Called after every policy save. Real behavior (never exercised by a test,
     which always monkeypatches this by name — see the safety rule): if the Mac
-    launchd job is installed, kick it; else if a foreground/background proxy is
-    already answering health checks, stop it and re-spawn it detached; else there
-    is nothing running to restart, so do nothing."""
+    launchd job is installed, kick it; else if a background (`-d`) proxy is
+    tracked by a pidfile, stop it and re-spawn it detached with the SAME
+    smart/restore_secrets it was already running with; else — including a
+    foreground instance that answers health checks but owns no pidfile, which
+    this process cannot safely restart from the outside — do nothing but say so."""
     from .mac import launchd
 
     if launchd.plist_path().exists():
         launchd.restart()
         return
     port = getattr(a, "port", None) or config.DEFAULT_PORT
-    if _health(port):
-        p = config.pid_path()
-        if p.exists():
-            try:
-                os.kill(int(p.read_text().strip() or 0), signal.SIGTERM)
-            except (ProcessLookupError, ValueError):
-                pass
-            p.unlink(missing_ok=True)
-        _spawn(port, False)
+    p = config.pid_path()
+    if not p.exists():
+        if _health(port):
+            print(f"omna: a proxy is running in the foreground on {config.base_url(port)}; restart it yourself to apply the new policy")
+        return
+    h = _health(port) or {}
+    smart = bool(h.get("smart", False))
+    no_restore_secrets = not h.get("restore_secrets", True)
+    try:
+        os.kill(int(p.read_text().strip() or 0), signal.SIGTERM)
+    except (ProcessLookupError, ValueError):
+        pass
+    p.unlink(missing_ok=True)
+    _spawn(port, smart, no_restore_secrets)
 
 
 def _save_policy(pol: Policy, a=None) -> None:
@@ -160,7 +167,7 @@ def _doors_line(h: dict | None) -> str:
     # A "(PAC on Wi-Fi)" style detail from mac.setup.status() was considered but
     # dropped — that reads real network state via `networksetup` on every
     # `omna status`, which is unnecessary work for a status line (see report).
-    doors = (h or {}).get("doors") or {"api": True, "system": False, "deep": False}
+    doors = (h or {}).get("doors") or {"api": False, "system": False, "deep": False}
     return "doors:        api {} · system {} · deep {}".format(
         *("on" if doors.get(k) else "off" for k in ("api", "system", "deep"))
     )
@@ -244,7 +251,7 @@ def cmd_mask(a) -> int:
     # policy action to "mask") and the original `omna mask TEXT [--smart] [--counts]`
     # (mask a piece of text) can share one subcommand name — see the report for why.
     args: list[str] = a.text
-    if len(args) >= 2 and args[0] == "app":
+    if len(args) == 2 and args[0] == "app":
         name = args[1]
         pol = Policy.load()
         pol.set_app(name, "mask")

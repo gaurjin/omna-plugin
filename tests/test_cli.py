@@ -1,6 +1,7 @@
 import pytest
 
 from omna_plugin.cli import main
+from omna_plugin.cli import _restart_daemon as _real_restart_daemon  # captured before the autouse fixture below can patch it
 from omna_plugin.policy import Policy
 
 
@@ -116,6 +117,18 @@ def test_mask_free_text_still_works_unchanged(capsys):
     assert "AWS_KEY×1" in err and "EMAIL×1" in err
 
 
+def test_mask_unquoted_multiword_text_starting_with_app_is_not_misrouted(capsys):
+    # Regression: nargs="*" used to treat ANY len(args) >= 2 starting with "app" as
+    # the app-policy form, so unquoted text like `omna mask app is down` silently set
+    # a bogus app policy ("is" -> mask) instead of masking the text. Only an EXACT
+    # 2-token ["app", NAME] now takes that branch; anything else falls through to
+    # free-text masking (joined with spaces), which is always safe.
+    assert main(["mask", "app", "is", "down"]) == 0
+    out, _ = capsys.readouterr()
+    assert out.strip() == "app is down"
+    assert "is" not in Policy.load().apps
+
+
 def test_capture_app_sets_deep_apps_and_deep_door(no_restart):
     assert main(["capture", "app", "Slack"]) == 0
     pol = Policy.load()
@@ -193,3 +206,53 @@ def test_status_shows_doors_apps_and_refused_lines(capsys, monkeypatch):
     assert "doors:" in out
     assert "apps today:" in out and "Google Chrome" in out and "×2" in out
     assert "refused:" in out and "Claude Desktop" in out and "api.anthropic.com" in out and "bypass app" in out
+
+
+def test_doors_line_shows_all_off_when_proxy_not_running():
+    # Regression: used to fall back to {"api": True, ...} when /omna/health couldn't
+    # be reached at all, printing "api on" directly under "proxy: NOT running".
+    from omna_plugin.cli import _doors_line
+
+    assert _doors_line(None) == "doors:        api off · system off · deep off"
+
+
+# ---------------------------------------------------------------- _restart_daemon's real logic
+
+def test_restart_daemon_kicks_launchd_when_installed(monkeypatch):
+    calls = []
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: type("P", (), {"exists": lambda self: True})())
+    monkeypatch.setattr("omna_plugin.mac.launchd.restart", lambda: calls.append("restart"))
+
+    _real_restart_daemon()
+    assert calls == ["restart"]
+
+
+def test_restart_daemon_respawns_with_the_same_smart_and_secrets_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: tmp_path / "missing.plist")
+    pidfile = tmp_path / "omna.pid"
+    pidfile.write_text("4242")
+    monkeypatch.setattr("omna_plugin.config.pid_path", lambda: pidfile)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"smart": True, "restore_secrets": False})
+    killed = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
+    spawned = []
+    monkeypatch.setattr("omna_plugin.cli._spawn", lambda port, smart, no_restore_secrets=False: spawned.append((port, smart, no_restore_secrets)))
+
+    _real_restart_daemon()
+    assert killed == [4242]
+    assert not pidfile.exists()
+    assert spawned == [(7788, True, True)]   # same smart=on, same restore_secrets=off (no_restore_secrets=True) it was already running with
+
+
+def test_restart_daemon_does_not_double_spawn_a_foreground_instance(monkeypatch, tmp_path, capsys):
+    # Regression: a foreground `omna start` (no -d) answers health checks but owns
+    # no pidfile. The old code spawned a second process against the same port
+    # anyway; it must instead do nothing but say so.
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: tmp_path / "missing.plist")
+    monkeypatch.setattr("omna_plugin.config.pid_path", lambda: tmp_path / "no-such-pidfile")
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"smart": False, "restore_secrets": True})
+    monkeypatch.setattr("omna_plugin.cli._spawn", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not spawn a second instance")))
+
+    _real_restart_daemon()
+    out, _ = capsys.readouterr()
+    assert "foreground" in out and "restart it yourself" in out
