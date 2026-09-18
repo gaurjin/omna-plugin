@@ -48,6 +48,7 @@ def build(days: int = 7) -> dict:
     by_app: Counter = Counter()
     by_door: Counter = Counter()
     tls_refused: Counter = Counter()
+    bypassed_apps: set = set()
     sessions = set()
     n_secret = n_pii = 0
     ok = refused = failed = bypassed = 0
@@ -70,6 +71,8 @@ def build(days: int = 7) -> dict:
         note = r.get("note")
         if note == "bypassed-by-policy":
             bypassed += 1
+            if r.get("app"):
+                bypassed_apps.add(r["app"])
         if note == "tls-refused":
             tls_refused[(r.get("app") or "unknown app", r.get("host") or "?")] += 1
         if r.get("session"):
@@ -132,6 +135,7 @@ def build(days: int = 7) -> dict:
         "by_app": dict(by_app.most_common()),
         "by_door": ordered_by_door,
         "bypassed": bypassed,
+        "bypassed_apps": sorted(bypassed_apps),
         "refused": refused_struct,
         "avg_ms": int(sum(ms) / len(ms)) if ms else 0,
         "chain": {"intact": chain_ok, "receipts": chain_n, "message": chain_msg},
@@ -148,9 +152,9 @@ def render_text(d: dict) -> str:
     ]
     if d["by_kind"]:
         lines.append("          by kind: " + ", ".join(f"{k} ×{v}" for k, v in d["by_kind"].items()))
-    apps_str = " · ".join(f"{k} {v}" for k, v in d["by_app"].items()) or "none seen"
-    if d["bypassed"]:
-        apps_str += f" · {d['bypassed']} bypassed"
+    apps_str = " · ".join(
+        f"{k} {v}" + (" (bypassed)" if k in d["bypassed_apps"] else "") for k, v in d["by_app"].items()
+    ) or "none seen"
     refused = d["refused"]
     if refused["count"]:
         refused_str = "refused: " + " · ".join(f"{e['app']} → {e['host']} ×{e['count']}" for e in refused["by_app_host"])
@@ -175,7 +179,9 @@ def render_html(d: dict) -> str:
     kinds = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_kind"].items()) or "<tr><td colspan=2>nothing caught</td></tr>"
     days = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_day"].items()) or "<tr><td colspan=2>no requests</td></tr>"
     ups = ", ".join(f"{e(k)} ({v})" for k, v in d["by_upstream"].items()) or "none"
-    apps = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_app"].items()) or "<tr><td colspan=2>no app receipts</td></tr>"
+    apps = "".join(
+        f"<tr><td>{e(k)}{' (bypassed)' if k in d['bypassed_apps'] else ''}</td><td>{v}</td></tr>" for k, v in d["by_app"].items()
+    ) or "<tr><td colspan=2>no app receipts</td></tr>"
     doors = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_door"].items())
     refused_rows = "".join(
         f"<tr><td>{e(r['app'])}</td><td>{e(r['host'])}</td><td>{r['count']}</td></tr>" for r in d["refused"]["by_app_host"]

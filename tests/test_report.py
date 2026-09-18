@@ -86,6 +86,7 @@ def test_render_text_shows_apps_door_and_refused():
     text = report.render_text(d)
     assert "apps:" in text
     assert "Google Chrome" in text
+    assert "Claude 1 (bypassed)" in text   # per-app bypass tag, not just a global count
     assert "refused:" in text
     assert "Claude Desktop" in text and "api.anthropic.com" in text
     assert "by door:" in text
@@ -101,3 +102,18 @@ def test_render_html_shows_apps_and_door_and_stays_safe():
     assert "Claude Desktop" in page
     assert "system" in page and "door" in page.lower()
     assert "@" not in page
+
+
+def test_render_html_escapes_a_hostile_app_or_host_name():
+    # A malicious/renamed app or host string must never break out of its <td>.
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "system",
+                     "app": "<script>evil</script>", "masked": {}, "secrets": 0, "pii": 0})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "host": "<img src=x onerror=evil()>",
+                     "status": 0, "door": "deep", "app": "Claude Desktop", "masked": {}, "secrets": 0, "pii": 0,
+                     "note": "tls-refused"})
+    d = report.build(days=7)
+    page = report.render_html(d)
+    assert "<script>evil</script>" not in page
+    assert "&lt;script&gt;evil&lt;/script&gt;" in page
+    assert "<img src=x onerror=evil()>" not in page
+    assert "&lt;img src=x onerror=evil()&gt;" in page
