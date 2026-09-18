@@ -46,6 +46,18 @@ SSE_FRAMES = (
     b"data: [DONE]\n\n",
 )
 
+# A canned SSE reply where one wire chunk is EXACTLY a token prefix (nothing else in
+# it), so `TextRestorer.feed` holds back the WHOLE chunk and returns "" for it — the
+# regression case for the "mid-stream empty feed must not end the HTTP/1 chunked
+# stream" bug. Frame 3 below is that chunk in isolation.
+SSE_FRAMES_HOLDBACK = (
+    b'data: {"delta":"start "}\n\n',
+    b'data: {"delta":"',
+    b"[EMAIL_",                       # <- a whole wire chunk, entirely a token prefix
+    b'1] end"}\n\n',
+    b"data: [DONE]\n\n",
+)
+
 
 class FakeUpstream:
     """Records the last request; replies with SSE if the path ends in /stream, else a JSON echo."""
@@ -64,9 +76,20 @@ class FakeUpstream:
         self.last_headers = hdrs
         n = int(hdrs.get("content-length", "0"))
         self.last_body = await r.readexactly(n) if n else b""
-        if path.endswith("/stream"):
+        if path.endswith("/stream-abort"):
+            # One valid chunk, then the connection just dies — no "0\r\n\r\n" terminator,
+            # no clean FIN. mitmproxy sees the server connection close while it still
+            # expects more chunked body, i.e. an abnormal stream termination.
             w.write(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n")
-            for frame in SSE_FRAMES:
+            frame = b'data: {"delta":"partial [EMAIL_' b'1]"}\n\n'
+            w.write(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
+            await w.drain()
+            w.transport.abort()
+            return
+        elif path.endswith("/stream") or path.endswith("/stream-holdback"):
+            frames = SSE_FRAMES_HOLDBACK if path.endswith("/stream-holdback") else SSE_FRAMES
+            w.write(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n")
+            for frame in frames:
                 w.write(f"{len(frame):x}\r\n".encode() + frame + b"\r\n")
                 await w.drain()
                 await asyncio.sleep(0.01)

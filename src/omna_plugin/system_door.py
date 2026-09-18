@@ -72,11 +72,20 @@ class OmnaAddon:
         got = self.resolver(getattr(client, "peername", None))
         return got[1] if got else None
 
+    def _door_for_client(self, client) -> str:
+        """Deep vs system, from a raw ``connection.Client`` (works at both TLS-clienthello
+        time and HTTP-flow time: ``flow.client_conn`` and ``data.context.client`` are the
+        same ``connection.Client`` object, and ``proxy_mode`` is fixed once the connection
+        lands on a given listener, before TLS even starts)."""
+        return "deep" if type(client.proxy_mode).__name__ == "LocalMode" else self.door
+
     def _door_for(self, flow: http.HTTPFlow) -> str:
-        mode = flow.client_conn.proxy_mode
-        return "deep" if type(mode).__name__ == "LocalMode" else self.door
+        return self._door_for_client(flow.client_conn)
 
     def _receipt(self, flow: http.HTTPFlow, status: int, stream: bool) -> None:
+        if flow.metadata.get("omna_receipted"):
+            return  # already wrote one for this flow (normal completion or abort) — never double-receipt
+        flow.metadata["omna_receipted"] = True
         t0 = flow.metadata.get("omna_t0") or time.time()
         self.pipeline.receipt(
             door=self._door_for(flow), route=flow.request.path.split("?")[0][:80], host=flow.request.pretty_host,
@@ -89,7 +98,8 @@ class OmnaAddon:
         app = self._app_of(data.context.client)
         if self.policy.app_action(app) == "bypass":
             data.ignore_connection = True
-            self.pipeline.receipt(door=self.door, route="CONNECT", host=data.client_hello.sni or "?", status=0,
+            self.pipeline.receipt(door=self._door_for_client(data.context.client), route="CONNECT",
+                                  host=data.client_hello.sni or "?", status=0,
                                   stats=MaskStats(), nbytes=0, ms=0, stream=False, app=app,
                                   note="bypassed-by-policy", session_id=None)
 
@@ -137,8 +147,10 @@ class OmnaAddon:
         restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"))
         buf = bytearray()
 
-        def cb(chunk: bytes) -> bytes:
+        def cb(chunk: bytes) -> bytes | list[bytes]:
             if chunk == b"":
+                # mitmproxy's real end-of-message signal (ResponseEndOfMessage) — genuinely
+                # ends the stream, so a `bytes` return (even empty) is correct here.
                 tail = restorer.feed(bytes(buf).decode("utf-8", "replace")) + restorer.flush() if buf else restorer.flush()
                 self._receipt(flow, flow.response.status_code if flow.response else 0, stream=True)
                 return tail.encode("utf-8")
@@ -146,7 +158,18 @@ class OmnaAddon:
             text, rest = _utf8_split(buf)
             buf.clear()
             buf.extend(rest)
-            return restorer.feed(text).encode("utf-8")
+            out = restorer.feed(text).encode("utf-8")
+            # A mid-stream chunk with nothing to flush yet (partial token / partial UTF-8
+            # sequence held back) MUST NOT return b"". mitmproxy's HTTP/1 writer serializes
+            # a zero-length ResponseData chunk as b"0\r\n\r\n" under chunked transfer-encoding
+            # — byte-identical to the real terminating chunk — which ends the client's stream
+            # early and silently drops everything after it. An empty list means "nothing to
+            # send yet, stream continues": http/__init__.py's state_stream_response_body just
+            # iterates the returned chunks, so an empty list sends nothing and yields no
+            # ResponseData event at all. (Verified against the installed mitmproxy 12.2.3
+            # source: proxy/layers/http/__init__.py `state_stream_response_body`, and
+            # proxy/layers/http/_http1.py `Http1Server.send`'s ResponseData branch.)
+            return out if out else []
 
         flow.response.stream = cb
         flow.metadata["omna_streamed"] = True
@@ -162,6 +185,16 @@ class OmnaAddon:
             except ValueError:
                 pass
         self._receipt(flow, flow.response.status_code, stream=False)
+
+    def error(self, flow: http.HTTPFlow) -> None:
+        """Client disconnect / upstream error mid-stream: `cb`'s `chunk == b""` branch (the
+        only other place a streamed response gets receipted) never runs on an abnormal
+        termination, so the audit trail would otherwise get no entry at all for this
+        request. `_receipt`'s own `omna_receipted` guard makes this a no-op if a receipt
+        was already written (normal completion raced the abort, or vice versa)."""
+        if flow.metadata.get("omna_streamed") and not flow.metadata.get("omna_receipted"):
+            flow.metadata["omna_note"] = "stream-aborted"
+            self._receipt(flow, flow.response.status_code if flow.response else 0, stream=True)
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
         assert flow.websocket
