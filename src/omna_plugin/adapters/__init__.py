@@ -12,7 +12,7 @@ def register(adapter: SiteAdapter) -> None:
 
 
 def for_host(host: str) -> SiteAdapter:
-    h = (host or "").lower()
+    h = (host or "").lower().rsplit(":", 1)[0]
     for a in _REGISTRY:
         if any(h == s or h.endswith("." + s) for s in a.hosts):
             return a

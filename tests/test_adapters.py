@@ -12,6 +12,11 @@ def test_unknown_ai_host_gets_the_generic_adapter():
     assert for_host("api.some-new-ai.com").name == "generic"
 
 
+def test_for_host_strips_the_port():
+    assert for_host("example.com:443").name == "generic"
+    assert for_host("api.some-new-ai.com:8443").name == "generic"
+
+
 def test_generic_prompt_detection_uses_the_extension_regex():
     a = for_host("example.com")
     assert a.is_prompt(_req("example.com", "/backend-api/conversation", b"{}"))
