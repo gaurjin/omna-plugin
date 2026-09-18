@@ -45,6 +45,8 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
     api.install_signal_handlers = lambda: None   # one handler for the whole process, below
 
     api_ready = threading.Event()
+    api_error: list[BaseException] = []
+    main_loop = asyncio.get_running_loop()
 
     def _run_api() -> None:
         api_loop = asyncio.new_event_loop()
@@ -56,6 +58,10 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
 
         try:
             api_loop.run_until_complete(_serve())
+        except BaseException as exc:   # e.g. the port is already in use
+            api_error.append(exc)
+            api_ready.set()            # don't leave the waiter blocked on an early failure
+            main_loop.call_soon_threadsafe(stop.set)   # don't run headless of the API door
         finally:
             api_loop.close()
 
@@ -88,6 +94,8 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
         master.shutdown()
     await asyncio.gather(*tasks, return_exceptions=True)
     await asyncio.to_thread(api_thread.join, 10)
+    if api_error:
+        raise api_error[0]
 
 
 def run(**kw) -> None:
