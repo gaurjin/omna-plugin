@@ -11,6 +11,11 @@ def test_parse_lsof_empty():
     assert parse_lsof(b"", own_pid=1) is None
 
 
+def test_parse_lsof_skips_a_stray_non_numeric_line():
+    out = b"plsof: WARNING: something\np812\ncGoogle Chrome He\n"
+    assert parse_lsof(out, own_pid=4242) == (812, "Google Chrome He")
+
+
 def test_resolver_caches_and_uses_runner():
     calls = []
 

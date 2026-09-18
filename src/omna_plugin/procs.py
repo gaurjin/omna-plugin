@@ -27,7 +27,10 @@ def parse_lsof(out: bytes, own_pid: int) -> tuple[int, str] | None:
         if line.startswith("p"):
             if pid is not None and pid != own_pid and name:
                 return pid, name
-            pid, name = int(line[1:] or 0), None
+            try:
+                pid, name = int(line[1:] or 0), None
+            except ValueError:
+                pid, name = None, None    # a stray non-numeric line (e.g. a warning) — skip it
         elif line.startswith("c"):
             name = line[1:]
     if pid is not None and pid != own_pid and name:
