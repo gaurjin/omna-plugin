@@ -7,7 +7,7 @@ name = "omna-plugin"
 version = "0.1.0"
 description = "Omna — local privacy proxy for AI coding tools. Masks secrets and PII before a prompt leaves your machine, restores them in the reply."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "gaurav", email = "gaurjin@gmail.com" }]
 keywords = ["privacy", "pii", "secrets", "proxy", "claude-code", "aider", "openai", "anthropic", "dlp"]
@@ -25,6 +25,7 @@ dependencies = [
     "httpx>=0.27",
     "starlette>=0.38",
     "uvicorn>=0.30",
+    "mitmproxy>=12.2,<13",
 ]
 
 [project.optional-dependencies]
@@ -43,3 +44,4 @@ packages = ["src/omna_plugin"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+pythonpath = ["."]   # so a test can import its own helpers as ``tests.<helper>``
