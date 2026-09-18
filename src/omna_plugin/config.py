@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 DEFAULT_PORT = 7788
+SYSTEM_PORT = 7789
 DEFAULT_HOST = "127.0.0.1"
 
 # Where requests go after masking. Overridable so a company gateway (or a
@@ -52,6 +53,14 @@ def pid_path() -> Path:
 
 def log_path() -> Path:
     return home() / "proxy.log"
+
+
+def policy_path() -> Path:
+    return home() / "policy.json"
+
+
+def ca_dir() -> Path:
+    return home() / "ca"
 
 
 def base_url(port: int = DEFAULT_PORT) -> str:
