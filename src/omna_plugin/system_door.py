@@ -108,8 +108,9 @@ class OmnaAddon:
         host = data.context.client.sni or "?"
         key = f"{app} → {host}"
         self.refusals[key] = self.refusals.get(key, 0) + 1
-        self.pipeline.receipt(door=self.door, route="TLS", host=host, status=0, stats=MaskStats(),
-                              nbytes=0, ms=0, stream=False, app=app, note="tls-refused", session_id=None)
+        self.pipeline.receipt(door=self._door_for_client(data.context.client), route="TLS", host=host,
+                              status=0, stats=MaskStats(), nbytes=0, ms=0, stream=False, app=app,
+                              note="tls-refused", session_id=None)
 
     # ---------------------------------------------------------------- HTTP
     def requestheaders(self, flow: http.HTTPFlow) -> None:
