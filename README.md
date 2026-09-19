@@ -33,7 +33,7 @@ That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires C
 proxy. Or by hand:
 
 ```sh
-uv tool install git+https://github.com/gaurjin/omna-plugin@v0.2.1   # PyPI: coming
+uv tool install git+https://github.com/gaurjin/omna-plugin@v0.2.2   # PyPI: coming
 omna init                        # Claude Code: sets ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
 omna start -d                    # background proxy on 127.0.0.1:7788
 omna status
@@ -169,7 +169,7 @@ built from these receipts, per-machine coverage, and org-wide rulesets. See a sa
 
 ```sh
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q          # 156 tests, ~7 s (fake upstream, no network)
+.venv/bin/pytest -q          # 157 tests, ~7 s (fake upstream, no network)
 .venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
 ```
 

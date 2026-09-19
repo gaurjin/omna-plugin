@@ -7,7 +7,7 @@
 set -eu
 
 # Until the PyPI release, install straight from GitHub (a tagged release, not a moving branch).
-SOURCE="${OMNA_SOURCE:-git+https://github.com/gaurjin/omna-plugin@v0.2.1}"
+SOURCE="${OMNA_SOURCE:-git+https://github.com/gaurjin/omna-plugin@v0.2.2}"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "omna: installing uv (Python tool manager)..."

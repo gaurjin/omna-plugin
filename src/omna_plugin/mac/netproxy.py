@@ -37,7 +37,14 @@ def pac_on_commands(services: list[str], pac_url: str) -> list[str]:
 
 
 def pac_off_commands(services: list[str]) -> list[str]:
-    return [f'networksetup -setautoproxystate "{_dq(s)}" off' for s in services]
+    # Turning the state off alone leaves the PAC URL itself sitting in Network
+    # settings (visible, though inert, in System Settings > Network > service >
+    # Details > Proxies) — clear it too so uninstall leaves nothing to find.
+    cmds = []
+    for s in services:
+        cmds.append(f'networksetup -setautoproxystate "{_dq(s)}" off')
+        cmds.append(f'networksetup -setautoproxyurl "{_dq(s)}" ""')
+    return cmds
 
 
 def current_pac(service: str) -> tuple[str, bool]:

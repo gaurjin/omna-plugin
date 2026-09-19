@@ -329,7 +329,7 @@ def cmd_menubar(a) -> int:
 def cmd_uninstall(a) -> int:
     path = claude_code.settings_file("project" if a.project else "user")
     ch = claude_code.uninstall(path)
-    print(f"omna: removed {'env var ' if ch['env'] else ''}{'hook ' if ch['hook'] else ''}from {path}" if any(ch.values()) else f"omna: nothing to remove in {path}")
+    print(f"omna: removed {'env var ' if ch['env'] else ''}{'hook ' if ch['hook'] else ''}{'backup file ' if ch['backup'] else ''}from {path}" if any(ch.values()) else f"omna: nothing to remove in {path}")
     if sys.platform == "darwin":
         from .mac import setup as mac_setup
 

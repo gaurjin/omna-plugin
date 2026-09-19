@@ -14,7 +14,10 @@ def test_pac_on_off_commands():
     on = netproxy.pac_on_commands(["Wi-Fi"], "http://127.0.0.1:7788/omna/proxy.pac")
     assert on == ['networksetup -setautoproxyurl "Wi-Fi" "http://127.0.0.1:7788/omna/proxy.pac"',
                   'networksetup -setautoproxystate "Wi-Fi" on']
-    assert netproxy.pac_off_commands(["Wi-Fi"]) == ['networksetup -setautoproxystate "Wi-Fi" off']
+    assert netproxy.pac_off_commands(["Wi-Fi"]) == [
+        'networksetup -setautoproxystate "Wi-Fi" off',
+        'networksetup -setautoproxyurl "Wi-Fi" ""',
+    ]
 
 
 def test_trust_commands(tmp_path):

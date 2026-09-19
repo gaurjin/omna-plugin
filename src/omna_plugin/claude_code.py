@@ -74,7 +74,11 @@ def init(path: Path, port: int = config.DEFAULT_PORT) -> dict:
 
 def uninstall(path: Path) -> dict:
     """Remove exactly what ``init`` added; leave everything else untouched."""
-    changes = {"env": False, "hook": False}
+    changes = {"env": False, "hook": False, "backup": False}
+    backup = path.with_name(path.name + ".omna-backup")
+    if backup.exists():
+        backup.unlink()
+        changes["backup"] = True
     if not path.exists():
         return changes
     data = _load(path)

@@ -55,6 +55,6 @@ JSON is restored by `body.restore_body`; SSE is restored chunk-by-chunk by `stre
   are ignored — verified in the debug log). Do not build a hooks-based masker until a release accepts them.
 
 ## Publishing (owner-manual)
-The public GitHub repo `gaurjin/omna-plugin` already exists (tags up to `v0.2.1` pushed). Releasing a
+The public GitHub repo `gaurjin/omna-plugin` already exists (tags up to `v0.2.2` pushed). Releasing a
 new version: `git tag vX.Y.Z && git push origin vX.Y.Z` → update the version pin in `README.md` and
 `install.sh` to match → `uv build && uv publish`. The installer URL in README assumes that repo path.
