@@ -76,33 +76,39 @@ def test_plist_text_supports_a_second_label_and_args():
     assert launchd.LABEL not in text.split(f"<string>{launchd.MENUBAR_LABEL}</string>")[0].replace(launchd.MENUBAR_LABEL, "")
 
 
-def test_apply_installs_the_daemon_and_the_menubar_launchd_agents(monkeypatch, tmp_path):
+def test_apply_installs_only_the_menubar_launchd_agent(monkeypatch, tmp_path):
     monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
     monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: tmp_path / "Omna Plugin.app")
-    calls = []
-    monkeypatch.setattr(setup.launchd, "install", lambda omna_bin, **kw: calls.append((omna_bin, kw)) or tmp_path / "p.plist")
+    install_calls = []
+    remove_calls = []
+    monkeypatch.setattr(setup.launchd, "install", lambda omna_bin, **kw: install_calls.append((omna_bin, kw)) or tmp_path / "p.plist")
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: remove_calls.append(label))
 
     out = setup.apply()
 
-    assert len(calls) == 2
-    assert calls[0][1] == {}  # the daemon: default label ("start")
-    assert calls[1][1]["label"] == launchd.MENUBAR_LABEL
-    assert calls[1][1]["args"] == ["menubar"]
+    # The daemon gets no login item of its own — only the menu-bar does, and it
+    # supervises the daemon as a plain subprocess.
+    assert remove_calls == [launchd.LABEL]  # idempotent cleanup of any pre-existing daemon agent
+    assert len(install_calls) == 1
+    assert install_calls[0][1]["label"] == launchd.MENUBAR_LABEL
+    assert install_calls[0][1]["args"] == ["menubar"]
+    assert "launchd" not in out
     assert "menubar_launchd" in out
     assert "app_bundle" in out
 
 
-def test_revert_removes_the_daemon_and_the_menubar_launchd_agents(monkeypatch, tmp_path):
+def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monkeypatch, tmp_path):
     monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)  # no cert on disk -> no sudo batch needed
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
     calls = []
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: calls.append(tuple(cmd)))
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: calls.append(label))
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: calls.append("disable_login_item"))
     monkeypatch.setattr(setup.app_bundle, "remove", lambda: calls.append("remove_app_bundle"))
 
     setup.revert()
 
-    assert calls == [launchd.LABEL, launchd.MENUBAR_LABEL, "disable_login_item", "remove_app_bundle"]
+    assert calls == [("omna", "stop"), launchd.LABEL, launchd.MENUBAR_LABEL, "disable_login_item", "remove_app_bundle"]

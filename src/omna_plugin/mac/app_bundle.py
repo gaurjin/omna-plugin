@@ -24,6 +24,8 @@ APP_PATH = Path("/Applications") / f"{APP_NAME}.app"
 BUNDLE_ID = "dev.omna.plugin.app"
 BIN_NAME = "omna-plugin-launcher"
 LOGIN_ITEM_FLAG = "login_item_enabled.flag"
+ICON_NAME = "AppIcon"
+ICON_SRC = Path(__file__).parent.parent / "assets" / f"{ICON_NAME}.icns"
 
 
 def _info_plist() -> str:
@@ -34,6 +36,7 @@ def _info_plist() -> str:
   <key>CFBundleName</key><string>{_xml_escape(APP_NAME)}</string>
   <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
   <key>CFBundleExecutable</key><string>{_xml_escape(BIN_NAME)}</string>
+  <key>CFBundleIconFile</key><string>{ICON_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
   <key>LSUIElement</key><true/>
@@ -55,11 +58,15 @@ def _launcher_script(omna_bin: Path) -> str:
 def install(omna_bin: Path, *, dest: Path = APP_PATH) -> Path:
     """Write (or overwrite) the bundle. Idempotent — safe to call on every `omna init`."""
     macos_dir = dest / "Contents" / "MacOS"
+    resources_dir = dest / "Contents" / "Resources"
     macos_dir.mkdir(parents=True, exist_ok=True)
+    resources_dir.mkdir(parents=True, exist_ok=True)
     (dest / "Contents" / "Info.plist").write_text(_info_plist())
     launcher = macos_dir / BIN_NAME
     launcher.write_text(_launcher_script(omna_bin))
     os.chmod(launcher, 0o755)
+    if ICON_SRC.exists():
+        shutil.copyfile(ICON_SRC, resources_dir / f"{ICON_NAME}.icns")
     return dest
 
 

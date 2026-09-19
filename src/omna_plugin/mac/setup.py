@@ -40,7 +40,10 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
     pac_url = f"{config.base_url(api_port)}/omna/proxy.pac"
     rc = _run_batch(plan(services=services, cert=cert, pac_url=pac_url), "certificate + system proxy")
     omna_bin = Path(shutil.which("omna") or sys.argv[0]).resolve()
-    plist = launchd.install(omna_bin)
+    # The daemon gets no login item of its own — only the menu-bar does, and it
+    # supervises the daemon as a plain subprocess. `remove()` is idempotent
+    # cleanup for a machine that still has the old daemon plist from before.
+    launchd.remove()
     menubar_plist = launchd.install(omna_bin, label=launchd.MENUBAR_LABEL, args=["menubar"], log=config.menubar_log_path())
     app_path = app_bundle.install(omna_bin)
     return {
@@ -48,7 +51,6 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
         "services": services,
         "pac_url": pac_url,
         "sudo_rc": rc,
-        "launchd": str(plist),
         "menubar_launchd": str(menubar_plist),
         "app_bundle": str(app_path),
     }
@@ -57,6 +59,9 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
 def revert() -> dict:
     cert = config.ca_dir() / "mitmproxy-ca-cert.pem"
     services = netproxy.list_services()
+    # The daemon has no launchd job to bootout anymore; stop the supervised
+    # subprocess directly so it doesn't keep running after uninstall.
+    subprocess.run(["omna", "stop"], capture_output=True)
     launchd.remove()
     launchd.remove(label=launchd.MENUBAR_LABEL)
     app_bundle.disable_login_item()
@@ -68,4 +73,4 @@ def revert() -> dict:
 def status() -> dict:
     cert = config.ca_dir() / "mitmproxy-ca-cert.pem"
     services = netproxy.list_services()
-    return {"cert_exists": cert.exists(), "pac": {s: netproxy.current_pac(s) for s in services}, "launchd": launchd.is_loaded()}
+    return {"cert_exists": cert.exists(), "pac": {s: netproxy.current_pac(s) for s in services}, "launchd": launchd.is_loaded(launchd.MENUBAR_LABEL)}

@@ -26,6 +26,18 @@ def test_install_writes_a_launchable_bundle(tmp_path):
     assert launcher.stat().st_mode & 0o111  # executable
 
 
+def test_install_wires_the_icon_into_info_plist_and_copies_it_into_resources(tmp_path):
+    dest = tmp_path / "Omna Plugin.app"
+    app_bundle.install(Path("/usr/local/bin/omna"), dest=dest)
+
+    plist = (dest / "Contents" / "Info.plist").read_text()
+    assert f"<key>CFBundleIconFile</key><string>{app_bundle.ICON_NAME}</string>" in plist
+
+    icon = dest / "Contents" / "Resources" / f"{app_bundle.ICON_NAME}.icns"
+    assert icon.exists()
+    assert icon.read_bytes() == app_bundle.ICON_SRC.read_bytes()
+
+
 def test_install_is_idempotent(tmp_path):
     dest = tmp_path / "Omna Plugin.app"
     app_bundle.install(Path("/usr/local/bin/omna"), dest=dest)

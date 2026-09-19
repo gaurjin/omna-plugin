@@ -9,23 +9,36 @@ def test_status_lines_not_running():
 
 
 def test_status_lines_api_door_only():
-    h = {"doors": {"api": True, "system": False}, "requests_this_run": 3}
+    h = {
+        "doors": {"api": True, "system": False},
+        "requests_this_run": 3,
+        "distinct_secrets_this_run": 2,
+        "distinct_pii_this_run": 5,
+        "avg_mask_ms_this_run": 16,
+    }
     lines = menubar.status_lines(h)
     assert lines[0] == "Omna: ON · click to pause"
-    assert "coding tools only" in lines[1]
-    assert "3" in lines[1]
+    assert lines[1] == "Secrets kept off the wire: 2"
+    assert lines[2] == "Personal values tokenized: 5"
+    assert lines[3] == "Requests masked this session: 3"
+    assert "coding tools only" in lines[4]
+    assert lines[5] == "Masking overhead: 16 ms/request"
 
 
 def test_status_lines_system_door_on():
     h = {"doors": {"api": True, "system": True}, "requests_this_run": 0}
     lines = menubar.status_lines(h)
-    assert "every app on this Mac" in lines[1]
+    assert "every app on this Mac" in lines[4]
 
 
 def test_status_lines_missing_doors_key_does_not_crash():
     assert menubar.status_lines({"requests_this_run": 1}) == [
         "Omna: ON · click to pause",
-        "Covers: coding tools only (Claude Code etc.) · 1 masked this session",
+        "Secrets kept off the wire: 0",
+        "Personal values tokenized: 0",
+        "Requests masked this session: 1",
+        "Covers: coding tools only (Claude Code etc.)",
+        "Masking overhead: 0 ms/request",
     ]
 
 
@@ -84,38 +97,36 @@ def test_confirm_and_uninstall_darwin_confirm_opens_terminal(monkeypatch):
     assert "omna uninstall" in calls[1][2]
 
 
-def test_toggle_masking_darwin_running_pauses_via_bootout(monkeypatch):
-    monkeypatch.setattr(menubar.sys, "platform", "darwin")
-    calls = []
-    monkeypatch.setattr(launchd, "bootout", lambda label: calls.append(("bootout", label)))
-    monkeypatch.setattr(launchd, "bootstrap", lambda label: calls.append(("bootstrap", label)))
-    menubar._toggle_masking({"doors": {}})
-    assert calls == [("bootout", launchd.LABEL)]
-
-
-def test_toggle_masking_darwin_not_running_resumes_via_bootstrap(monkeypatch):
-    monkeypatch.setattr(menubar.sys, "platform", "darwin")
-    calls = []
-    monkeypatch.setattr(launchd, "bootout", lambda label: calls.append(("bootout", label)))
-    monkeypatch.setattr(launchd, "bootstrap", lambda label: calls.append(("bootstrap", label)))
-    menubar._toggle_masking(None)
-    assert calls == [("bootstrap", launchd.LABEL)]
-
-
-def test_toggle_masking_non_darwin_running_shells_out_to_stop(monkeypatch):
-    monkeypatch.setattr(menubar.sys, "platform", "linux")
+def test_toggle_masking_running_pauses_via_cli_stop_and_sets_paused_flag(monkeypatch):
     calls = []
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
-    menubar._toggle_masking({"doors": {}})
+    state = {"paused": False}
+    menubar._toggle_masking({"doors": {}}, state)
     assert calls == [["omna", "stop"]]
+    assert state["paused"] is True
 
 
-def test_toggle_masking_non_darwin_not_running_shells_out_to_start_daemonized(monkeypatch):
-    monkeypatch.setattr(menubar.sys, "platform", "linux")
+def test_toggle_masking_not_running_resumes_via_cli_start_and_clears_paused_flag(monkeypatch):
     calls = []
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
-    menubar._toggle_masking(None)
+    state = {"paused": True}
+    menubar._toggle_masking(None, state)
     assert calls == [["omna", "start", "-d"]]
+    assert state["paused"] is False
+
+
+def test_ensure_daemon_calls_omna_ensure_when_not_paused(monkeypatch):
+    calls = []
+    monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    menubar._ensure_daemon({"paused": False})
+    assert calls == [["omna", "ensure"]]
+
+
+def test_ensure_daemon_does_nothing_when_paused(monkeypatch):
+    calls = []
+    monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    menubar._ensure_daemon({"paused": True})
+    assert calls == []
 
 
 def test_toggle_login_item_enables_when_currently_disabled(monkeypatch):

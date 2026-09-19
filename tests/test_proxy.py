@@ -174,6 +174,28 @@ async def test_health(env):
 
 
 @pytest.mark.anyio
+async def test_health_reports_live_masking_counters(env):
+    up, session, client = env
+    r = await client.get("/omna/health")
+    body = r.json()
+    assert body["distinct_secrets_this_run"] == 0
+    assert body["distinct_pii_this_run"] == 0
+    assert body["avg_mask_ms_this_run"] == 0
+    r = await client.post(
+        "/v1/messages",
+        json={"model": "m", "messages": [{"role": "user", "content": f"mail {EMAIL} key {KEY}"}]},
+        headers={"x-api-key": "k"},
+    )
+    assert r.status_code == 200
+    r = await client.get("/omna/health")
+    body = r.json()
+    assert body["distinct_secrets_this_run"] == 1
+    assert body["distinct_pii_this_run"] == 1
+    assert isinstance(body["avg_mask_ms_this_run"], int)
+    assert body["requests_this_run"] == 1
+
+
+@pytest.mark.anyio
 async def test_proxy_pac_serves_system_door(env):
     up, session, client = env
     r = await client.get("/omna/proxy.pac")

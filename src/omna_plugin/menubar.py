@@ -2,8 +2,10 @@
 
 Polls the API door's own ``/omna/health`` (the same data ``omna status`` prints); no new
 backend endpoint. Started automatically at login via its own launchd agent (installed by
-``mac/setup.py`` alongside the daemon's), so a non-technical person sees it appear without
-running anything themselves.
+``mac/setup.py``) — the ONLY launchd agent Omna installs. The proxy itself has no separate
+login item; this process supervises it as a plain subprocess (``omna ensure``/``omna stop``/
+``omna start -d``, the same pidfile-based primitives the CLI already uses on its own), so a
+non-technical person sees exactly one entry in System Settings → Login Items.
 """
 
 from __future__ import annotations
@@ -36,14 +38,19 @@ def _health(port: int) -> dict | None:
 def status_lines(h: dict | None) -> list[str]:
     """Pure so it's testable without a running proxy or the tray library. Line 1 is
     the clickable toggle itself — same self-describing pattern as the native Mac
-    app's "PII Masking: ON/OFF" item — so there is no separate Pause/Resume entry."""
+    app's "PII Masking: ON/OFF" item — so there is no separate Pause/Resume entry.
+    Every metric gets its own line — never merged into one run-on sentence."""
     if not h:
         return ["Omna: OFF · click to resume", "omna start -d (or click above)"]
     doors = h.get("doors") or {}
     coverage = "every app on this Mac" if doors.get("system") else "coding tools only (Claude Code etc.)"
     return [
         "Omna: ON · click to pause",
-        f"Covers: {coverage} · {h.get('requests_this_run', 0)} masked this session",
+        f"Secrets kept off the wire: {h.get('distinct_secrets_this_run', 0)}",
+        f"Personal values tokenized: {h.get('distinct_pii_this_run', 0)}",
+        f"Requests masked this session: {h.get('requests_this_run', 0)}",
+        f"Covers: {coverage}",
+        f"Masking overhead: {h.get('avg_mask_ms_this_run', 0)} ms/request",
     ]
 
 
@@ -60,17 +67,28 @@ def _icon_image(on: bool):
     return img
 
 
-def _toggle_masking(h: dict | None) -> None:
+def _toggle_masking(h: dict | None, state: dict) -> None:
     """Pause = stop the proxy so it fails closed (connection refused for any tool
     still pointed at it — nothing is ever forwarded unmasked). Resume starts it
-    again. Uses the same launchd job `omna init` installed, so this works whether
-    Omna was started by the login agent or manually."""
-    from .mac import launchd
+    again. The proxy has no launchd job of its own anymore (it's a plain
+    subprocess this menu-bar process supervises), so both platforms just drive
+    the `omna` CLI's own pidfile-based start/stop. `state["paused"]` records a
+    deliberate pause so the poll loop's crash-recovery doesn't fight it."""
+    if h:
+        state["paused"] = True
+        subprocess.run(["omna", "stop"], capture_output=True)
+    else:
+        state["paused"] = False
+        subprocess.run(["omna", "start", "-d"], capture_output=True)
 
-    if sys.platform != "darwin":
-        subprocess.run(["omna", "stop" if h else "start", *([] if h else ["-d"])], capture_output=True)
+
+def _ensure_daemon(state: dict) -> None:
+    """Crash recovery for the proxy: it no longer has its own launchd `KeepAlive`,
+    so this menu-bar process (which does have a launchd agent) restarts it if it's
+    down and nobody asked for that. Never runs while `state["paused"]` is set."""
+    if state["paused"]:
         return
-    launchd.bootout(launchd.LABEL) if h else launchd.bootstrap(launchd.LABEL)
+    subprocess.run(["omna", "ensure"], capture_output=True)
 
 
 def _toggle_login_item() -> None:
@@ -117,10 +135,12 @@ def _confirm_and_uninstall() -> None:
 def run(port: int = config.DEFAULT_PORT) -> int:
     import pystray
 
+    state = {"paused": False}
+
     def menu_items():
         h = _health(port)
         lines = status_lines(h)
-        items = [pystray.MenuItem(lines[0], lambda: _toggle_masking(h))]
+        items = [pystray.MenuItem(lines[0], lambda: _toggle_masking(h, state), checked=lambda item: bool(h))]
         items += [pystray.MenuItem(line, None, enabled=False) for line in lines[1:]]
         items.append(pystray.Menu.SEPARATOR)
         if sys.platform == "darwin":
@@ -140,6 +160,9 @@ def run(port: int = config.DEFAULT_PORT) -> int:
     def poll() -> None:
         while True:
             h = _health(port)
+            if h is None:
+                _ensure_daemon(state)
+                h = _health(port)
             icon.icon = _icon_image(bool(h))
             icon.title = "\n".join(status_lines(h))
             icon.update_menu()

@@ -82,7 +82,14 @@ def create_app(
     session = pipeline.session if pipeline is not None else (session or MaskingSession())
     pipeline = pipeline or Pipeline(session)
     client = client or httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0))
-    stats = {"requests": 0, "started": time.time()}
+    stats = {
+        "requests": 0,
+        "started": time.time(),
+        "distinct_secrets": set(),
+        "distinct_pii": set(),
+        "mask_ms_total": 0,
+        "mask_ms_count": 0,
+    }
 
     async def health(_: Request) -> Response:
         ok, n, _msg = receipts.verify()
@@ -95,6 +102,9 @@ def create_app(
                 "restore_secrets": session.restore_secrets,
                 "secrets_held_in_memory": session.secrets_held,
                 "requests_this_run": stats["requests"],
+                "distinct_secrets_this_run": len(stats["distinct_secrets"]),
+                "distinct_pii_this_run": len(stats["distinct_pii"]),
+                "avg_mask_ms_this_run": int(stats["mask_ms_total"] / stats["mask_ms_count"]) if stats["mask_ms_count"] else 0,
                 "receipts": n,
                 "chain_intact": ok,
                 "registry_entries": session.registry_size,
@@ -196,6 +206,11 @@ def create_app(
         return Response(data, status_code=resp.status_code, headers=resp_headers)
 
     def _receipt(request: Request, path: str, upstream_host: str, status: int, mstats: MaskStats, nbytes: int, t0: float, stream: bool, note: str | None = None):
+        for tok in mstats.tokens:
+            (stats["distinct_secrets"] if str(tok).startswith("SECRET_") else stats["distinct_pii"]).add(tok)
+        if mstats.mask_ms > 0:  # masking actually ran (not a refusal/passthrough/no-body request)
+            stats["mask_ms_total"] += mstats.mask_ms
+            stats["mask_ms_count"] += 1
         pipeline.receipt(
             door="api",
             route=path,
