@@ -74,14 +74,62 @@ def test_enable_and_disable_claude_code_calls_claude_code_init_and_uninstall(mon
     assert calls[-1][0] == "uninstall"
 
 
-def test_enable_other_tool_only_touches_policy(monkeypatch, no_restart):
-    # Neither claude_code.init nor .uninstall should be touched for a non-claude-code tool.
-    monkeypatch.setattr("omna_plugin.claude_code.init", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call init for aider")))
-    monkeypatch.setattr("omna_plugin.claude_code.uninstall", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call uninstall for aider")))
+def test_enable_an_unrecognised_tool_only_touches_policy(monkeypatch, no_restart):
+    # A tool name omna doesn't specifically wire (e.g. Cursor) is policy-only.
+    monkeypatch.setattr("omna_plugin.claude_code.init", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call init for cursor")))
+    monkeypatch.setattr("omna_plugin.claude_code.uninstall", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not call uninstall for cursor")))
+    assert main(["enable", "cursor"]) == 0
+    assert Policy.load().tools["cursor"] == "on"
+    assert main(["disable", "cursor"]) == 0
+    assert Policy.load().tools["cursor"] == "off"
+
+
+def test_enable_aider_or_codex_refuses_when_not_on_path(monkeypatch, capsys):
+    # Real regression: this used to write straight to the developer's actual
+    # ~/.aider.conf.yml and ~/.env with no shutil.which() guard and no way to
+    # sandbox real per-tool dotfiles the way OMNA_HOME sandboxes Omna's own
+    # state — reproduced live on 2026-09-19, confirmed no data was lost, this
+    # test is what should have caught it.
+    monkeypatch.setattr("omna_plugin.cli.shutil.which", lambda name: None)
+    monkeypatch.setattr("omna_plugin.aider.init", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not touch real dotfiles")))
+    monkeypatch.setattr("omna_plugin.codex.init", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not touch real dotfiles")))
+
+    assert main(["enable", "aider"]) == 1
+    assert "not found on PATH" in capsys.readouterr().out
+    assert Policy.load().tools.get("aider") != "on"
+
+    assert main(["enable", "codex"]) == 1
+    assert "not found on PATH" in capsys.readouterr().out
+    assert Policy.load().tools.get("codex") != "on"
+
+
+def test_enable_aider_and_codex_wire_when_on_path(monkeypatch):
+    monkeypatch.setattr("omna_plugin.cli.shutil.which", lambda name: f"/usr/local/bin/{name}")
+    calls = []
+    monkeypatch.setattr("omna_plugin.aider.init", lambda port: calls.append(("aider", port)))
+    monkeypatch.setattr("omna_plugin.codex.init", lambda path, port: calls.append(("codex", port)))
+
     assert main(["enable", "aider"]) == 0
+    assert main(["enable", "codex"]) == 0
+
+    assert ("aider", 7788) in calls
+    assert ("codex", 7788) in calls
     assert Policy.load().tools["aider"] == "on"
+    assert Policy.load().tools["codex"] == "on"
+
+
+def test_disable_aider_and_codex_always_runs_even_when_not_on_path(monkeypatch):
+    # Uninstall must work regardless of whether the tool is currently
+    # installed, so someone can clean up after uninstalling the tool itself.
+    monkeypatch.setattr("omna_plugin.cli.shutil.which", lambda name: None)
+    calls = []
+    monkeypatch.setattr("omna_plugin.aider.uninstall", lambda: calls.append("aider"))
+    monkeypatch.setattr("omna_plugin.codex.uninstall", lambda path: calls.append("codex"))
+
     assert main(["disable", "aider"]) == 0
-    assert Policy.load().tools["aider"] == "off"
+    assert main(["disable", "codex"]) == 0
+
+    assert calls == ["aider", "codex"]
 
 
 # ---------------------------------------------------------------- apps / bypass / mask app / capture

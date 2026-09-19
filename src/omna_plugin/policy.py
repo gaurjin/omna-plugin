@@ -50,6 +50,7 @@ class Policy:
     apps: dict[str, str] = field(default_factory=dict)      # app name -> mask | bypass
     deep_apps: list[str] = field(default_factory=list)      # Stage 3: captured by the deep door
     doors: dict[str, bool] = field(default_factory=lambda: {"api": True, "system": True, "deep": False})
+    reports_enabled: bool = True   # local receipts (counts only, never values) — off means none are written
 
     # ------------------------------------------------------------ persistence
     @classmethod
@@ -66,6 +67,7 @@ class Policy:
             pol.apps = dict(data.get("apps", {}))
             pol.deep_apps = list(data.get("deep_apps", []))
             pol.doors = {**pol.doors, **data.get("doors", {})}
+            pol.reports_enabled = bool(data.get("reports_enabled", True))
             return pol
         except Exception:
             return cls()
@@ -81,6 +83,7 @@ class Policy:
             "apps": self.apps,
             "deep_apps": self.deep_apps,
             "doors": self.doors,
+            "reports_enabled": self.reports_enabled,
         }
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.fchmod(fd, 0o600)  # Guarantee 0600 even if tmp file existed at different mode

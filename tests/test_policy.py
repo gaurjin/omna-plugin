@@ -105,3 +105,13 @@ def test_load_gracefully_handles_structurally_wrong_json(tmp_path, monkeypatch):
     assert p.apps == {}
     assert p.deep_apps == []
     assert p.doors == {"api": True, "system": True, "deep": False}
+
+
+def test_reports_enabled_defaults_true_and_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    p = policy.Policy.load()
+    assert p.reports_enabled is True
+    p.reports_enabled = False
+    p.save()
+    reloaded = policy.Policy.load()
+    assert reloaded.reports_enabled is False

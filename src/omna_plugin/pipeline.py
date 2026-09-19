@@ -12,6 +12,7 @@ from urllib.parse import parse_qsl, urlencode
 from . import receipts
 from .body import mask_body, restore_body
 from .engine import MaskingSession, TOKEN_RE
+from .policy import Policy
 from .stream import StreamRestorer, TextRestorer
 
 
@@ -134,6 +135,12 @@ class Pipeline:
     def receipt(self, *, door: str, route: str, host: str, status: int, stats: MaskStats,
                 nbytes: int, ms: int, stream: bool, app: str | None, note: str | None,
                 session_id: str | None) -> None:
+        # Keep Local Reports off suppresses ordinary usage receipts, but never a
+        # refusal: that's "this app isn't working, here's why" diagnostic
+        # information (surfaced by `omna status`'s refused line), not usage
+        # tracking, and the person still needs to see it to fix a pinned app.
+        if note != "tls-refused" and not Policy.load().reports_enabled:
+            return
         rec = {
             "door": door, "route": route, "host": host, "upstream": host, "status": status,
             "stream": stream, "masked": stats.counts, "secrets": stats.secrets, "pii": stats.pii,

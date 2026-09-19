@@ -99,6 +99,24 @@ def _toggle_login_item() -> None:
     app_bundle.disable_login_item() if app_bundle.login_item_enabled() else app_bundle.enable_login_item()
 
 
+def _reports_enabled() -> bool:
+    from .policy import Policy
+
+    return Policy.load().reports_enabled
+
+
+def _toggle_reports() -> None:
+    """Local receipts are counts only, never real values, but someone may not
+    want even that kept on their machine. Off takes effect on the very next
+    request — `Pipeline.receipt()` re-reads the policy each time, no restart
+    needed."""
+    from .policy import Policy
+
+    pol = Policy.load()
+    pol.reports_enabled = not pol.reports_enabled
+    pol.save()
+
+
 def _quit(icon) -> None:
     """The menu-bar has no launchd job to fight anymore, so Quit just quits —
     reopen it from Applications/Spotlight, or it comes back on its own at the
@@ -157,6 +175,11 @@ def run(port: int = config.DEFAULT_PORT) -> int:
                 lambda: _toggle_login_item(),
                 checked=lambda item: app_bundle.login_item_enabled(),
             ))
+        items.append(pystray.MenuItem(
+            "Keep Local Reports",
+            lambda: _toggle_reports(),
+            checked=lambda item: _reports_enabled(),
+        ))
         items.append(pystray.MenuItem("Uninstall Omna…", lambda icon: _confirm_and_uninstall(icon, state)))
         items.append(pystray.MenuItem("Quit", lambda icon: _quit(icon)))
         return items

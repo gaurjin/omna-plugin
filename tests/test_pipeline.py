@@ -80,3 +80,34 @@ def test_receipt_carries_door_host_and_app(tmp_path, monkeypatch):
     assert rec["door"] == "system" and rec["host"] == "chatgpt.com" and rec["app"] == "Google Chrome"
     assert rec["masked"] == {"EMAIL": 1} and rec["pii"] == 1 and rec["tokens"] == ["EMAIL_1"]
     assert "jane" not in json.dumps(rec)
+
+
+def test_receipt_writes_nothing_when_reports_are_turned_off(tmp_path, monkeypatch):
+    from omna_plugin.policy import Policy
+
+    p = _pipe(tmp_path, monkeypatch)
+    pol = Policy.load()
+    pol.reports_enabled = False
+    pol.save()
+    _, stats = p.mask_json({"t": EMAIL})
+    p.receipt(door="system", route="/x", host="chatgpt.com", status=200,
+              stats=stats, nbytes=1, ms=1, stream=False, app=None, note=None, session_id=None)
+    assert receipts.tail(10) == []
+
+
+def test_a_refusal_is_still_receipted_when_reports_are_off(tmp_path, monkeypatch):
+    # A refusal is "this app isn't working, here's why" diagnostic information
+    # (surfaced by `omna status`), not usage tracking — it must stay visible
+    # regardless of the Keep Local Reports toggle.
+    from omna_plugin.policy import Policy
+
+    p = _pipe(tmp_path, monkeypatch)
+    pol = Policy.load()
+    pol.reports_enabled = False
+    pol.save()
+    _, stats = p.mask_json({})
+    p.receipt(door="system", route="/x", host="chatgpt.com", status=495,
+               stats=stats, nbytes=1, ms=1, stream=False, app="Some App",
+               note="tls-refused", session_id=None)
+    recs = receipts.tail(10)
+    assert len(recs) == 1 and recs[0]["note"] == "tls-refused"

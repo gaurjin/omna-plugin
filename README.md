@@ -33,11 +33,17 @@ That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires C
 proxy. Or by hand:
 
 ```sh
-uv tool install git+https://github.com/gaurjin/omna-plugin@v0.2.2   # PyPI: coming
+uv tool install git+https://github.com/gaurjin/omna-plugin@v0.3.0   # PyPI: coming
 omna init                        # Claude Code: sets ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
 omna start -d                    # background proxy on 127.0.0.1:7788
 omna status
 ```
+
+`omna init` also wires **aider** and **Codex CLI** automatically if either is already installed —
+aider gets `openai-api-base` in `~/.aider.conf.yml` and `ANTHROPIC_BASE_URL` in `~/.env` (both
+aider's own files); Codex CLI gets `openai_base_url` in `~/.codex/config.toml`. Nothing is added for
+a tool that isn't installed. Wire one later, or a tool you didn't have yet: `omna enable aider` /
+`omna enable codex`; `omna disable aider` / `omna disable codex` reverts it.
 
 On a Mac, `omna init` also does one more thing: it trusts a local certificate ("Omna Local
 Certificate Authority") and points the system proxy at Omna via a PAC file that names only AI
@@ -54,20 +60,23 @@ Quitting the icon only stops that one process: relaunch it any time from Spotlig
 **Omna Plugin** (a small `.app` at `/Applications/Omna Plugin.app`, kept distinct from the native
 Omna Mac app so the two never collide — though it now shares that app's icon, so look for the name
 if you have both installed), or turn on its **Launch at Login** toggle so it comes back on its own
-after every reboot or log-out.
+after every reboot or log-out. Its **Keep Local Reports** toggle turns the receipt log off entirely
+(not just hides it) for anyone who doesn't want even anonymous counts kept on their machine —
+`omna status`/`omna report`/`omna log` still run, they just have nothing new to show while it's off.
 
-Other tools use the same address:
+Cursor (bring-your-own-key mode) and any custom SDK app use the same address, by hand:
 
 ```sh
-export ANTHROPIC_BASE_URL=http://127.0.0.1:7788   # aider (Claude), Anthropic SDK
-export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # Codex CLI, aider (OpenAI), OpenAI SDK, Cursor BYOK
+export ANTHROPIC_BASE_URL=http://127.0.0.1:7788   # Anthropic SDK
+export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # OpenAI SDK, Cursor BYOK
 ```
 
 ## What is covered
 
 | Surface | How | Turn it off |
 |---|---|---|
-| Coding CLIs (Claude Code, aider, Codex CLI, SDKs) | `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` point at the proxy | `omna disable claude-code`, or unset the env var for others |
+| Claude Code, aider, Codex CLI | wired automatically by `omna init` (aider/Codex only if already installed) | `omna disable claude-code` / `omna disable aider` / `omna disable codex` |
+| Cursor (BYOK), custom SDK apps | `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` set by hand | unset the env var |
 | Browsers (claude.ai, chatgpt.com, gemini, …) | the system proxy (PAC + a local certificate), set up by `omna init` on a Mac | `omna init --no-system`, or `omna uninstall` |
 | Desktop AI apps that honour the system proxy | same system proxy as browsers | same as above |
 | Desktop apps that ignore the system proxy | `omna capture app NAME` (Stage 3, per app, its own signed network extension) | `omna bypass app NAME` (stops masking; there's no command yet to release the app from capture itself) |
@@ -90,14 +99,14 @@ omna log --verify
 | `omna start [-d] [--smart] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). `--smart` adds the on-device Contextual model for prose names (809 MB download once, slower). |
 | `omna stop` / `omna ensure` | Stop the background proxy / start it if it is not running (the Claude Code hook calls this). |
 | `omna status` | Running? Claude Code wired? Receipts today. |
-| `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login, or uninstall. |
+| `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login or Keep Local Reports, or uninstall. |
 | `omna log [-n 20] [--verify] [--json]` | Local receipts. `--verify` checks the hash chain. |
 | `omna report [--days 7] [--json] [--html FILE]` | Weekly summary from the receipts: requests enabled, distinct secrets kept off the wire, PII tokenised, destinations, chain status, masking cost. |
 | `omna mask [TEXT or -]` | Mask a string or stdin. |
 | `omna allow VALUE` | Never mask this exact value again (false positive). |
 | `omna forget` | Wipe the token registry (tokens renumber). |
-| `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up your settings first and removes only its own keys on uninstall. |
-| `omna tools` / `omna enable TOOL` / `omna disable TOOL` | Show, or turn on/off, which tools Omna covers. `enable claude-code` / `disable claude-code` also wire/unwire it (same as `init`/`uninstall`); other tool names (aider, Codex, Cursor) just record the policy today. |
+| `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, aider and Codex CLI (the last two only if already installed), and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up every settings file it touches first and removes only its own keys on uninstall. |
+| `omna tools` / `omna enable TOOL` / `omna disable TOOL` | Show, or turn on/off, which tools Omna covers. `enable`/`disable claude-code`, `aider`, or `codex` also wire/unwire it (same as `init`/`uninstall`); other tool names (Cursor) just record the policy today. |
 | `omna apps` / `omna bypass app NAME` / `omna mask app NAME` | Show, or set, what happens to an app's traffic through the system proxy: `mask` (default) tokenises it like everything else, `bypass` tunnels it through untouched (still receipted, so you can see what wasn't masked). |
 | `omna capture app NAME` | Stage 3: deep-capture an app that ignores the system proxy, via its own signed network extension. |
 | `omna hosts` / `omna hosts add HOST` / `omna hosts remove HOST` | Show, or add/remove, the hostnames the system proxy treats as AI traffic. |
@@ -169,7 +178,7 @@ built from these receipts, per-machine coverage, and org-wide rulesets. See a sa
 
 ```sh
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q          # 157 tests, ~7 s (fake upstream, no network)
+.venv/bin/pytest -q          # 176 tests, ~7 s (fake upstream, no network)
 .venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
 ```
 

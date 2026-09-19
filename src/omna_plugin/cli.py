@@ -14,7 +14,7 @@
     omna uninstall [--project]             undo init (Claude Code + Mac system proxy/certificate)
     omna menubar                           a status icon: on/off, what's covered, Uninstall (auto-starts on a Mac)
     omna tools                             show tool policy (on/off)
-    omna enable TOOL / omna disable TOOL   turn a tool on/off (claude-code also wires/unwires it)
+    omna enable TOOL / omna disable TOOL   turn a tool on/off (claude-code, aider, codex also wire/unwire it)
     omna apps                              show app policy (mask/bypass)
     omna bypass app NAME                   never mask this app's traffic (still receipted)
     omna mask app NAME                     mask this app's traffic (the default)
@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -36,7 +37,7 @@ from datetime import date
 
 import httpx
 
-from . import claude_code, config, receipts
+from . import aider, claude_code, codex, config, receipts
 from .policy import Policy
 
 
@@ -217,10 +218,19 @@ def cmd_status(a) -> int:
     cc = claude_code.status(claude_code.settings_file("user"))
     wired = cc["base_url"] == config.base_url(a.port)
     print(f"claude code:  {'wired' if wired else 'not wired'} ({cc['file']}){'  hook ok' if cc['hook'] else ''}{'' if wired else '  → `omna init`'}")
-    ok, n, msg = receipts.verify()
-    print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}")
-    print(f"registry:     {config.registry_path()} ({'exists' if config.registry_path().exists() else 'empty'})")
+    if shutil.which("aider"):
+        ast = aider.status()
+        aw = ast["openai_base"] == f"{config.base_url(a.port)}/v1" or ast["anthropic_base"] == config.base_url(a.port)
+        print(f"aider:        {'wired' if aw else 'not wired'}{'' if aw else '  → `omna enable aider`'}")
+    if shutil.which("codex"):
+        xst = codex.status(codex.settings_file())
+        xw = xst["base_url"] == f"{config.base_url(a.port)}/v1"
+        print(f"codex cli:    {'wired' if xw else 'not wired'}{'' if xw else '  → `omna enable codex`'}")
     pol = Policy.load()
+    ok, n, msg = receipts.verify()
+    off_note = "  (OFF — nothing new is being logged)" if not pol.reports_enabled else ""
+    print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}{off_note}")
+    print(f"registry:     {config.registry_path()} ({'exists' if config.registry_path().exists() else 'empty'})")
     recs_today = _today_receipts()
     print(_doors_line(h))
     print(_apps_today_line(pol, recs_today))
@@ -296,6 +306,32 @@ def cmd_forget(a) -> int:
     return 0
 
 
+def _auto_wire_other_tools(port: int) -> None:
+    """Wire aider and Codex CLI too, but only if they're actually installed —
+    `omna init` shouldn't scatter config files for tools the person doesn't use.
+    Never let one tool's failure (e.g. a read-only config file) stop `omna init`
+    before it reaches the Mac system-proxy + certificate setup that follows."""
+    if shutil.which("aider"):
+        try:
+            ch = aider.init(port)
+            bits = []
+            if ch["openai_base"]:
+                bits.append(f"openai-api-base in {aider.conf_file()}")
+            if ch["anthropic_base"]:
+                bits.append(f"ANTHROPIC_BASE_URL in {aider.env_file()}")
+            if bits:
+                print(f"omna: aider wired — {' · '.join(bits)}")
+        except OSError as e:
+            print(f"omna: WARNING — could not wire aider ({e}); everything else continues")
+    if shutil.which("codex"):
+        try:
+            ch = codex.init(codex.settings_file(), port)
+            if ch["base_url"]:
+                print(f"omna: Codex CLI wired via {codex.settings_file()}")
+        except OSError as e:
+            print(f"omna: WARNING — could not wire Codex CLI ({e}); everything else continues")
+
+
 def cmd_init(a) -> int:
     path = claude_code.settings_file("project" if a.project else "user")
     ch = claude_code.init(path, a.port)
@@ -303,7 +339,8 @@ def cmd_init(a) -> int:
     if ch["backup"]:
         print(f"      backup of your previous settings: {ch['backup']}")
     print(f"      env {claude_code.ENV_KEY}={config.base_url(a.port)}  ·  SessionStart hook `omna ensure`")
-    print("      other tools: export ANTHROPIC_BASE_URL / OPENAI_BASE_URL to the same address (aider, SDKs, Codex CLI).")
+    _auto_wire_other_tools(a.port)
+    print("      other tools: export ANTHROPIC_BASE_URL / OPENAI_BASE_URL to the same address (Cursor BYOK, SDKs).")
     if a.no_system:
         print("      Mac system proxy + certificate: skipped (--no-system) — Claude Code only.")
     elif sys.platform == "darwin":
@@ -330,6 +367,12 @@ def cmd_uninstall(a) -> int:
     path = claude_code.settings_file("project" if a.project else "user")
     ch = claude_code.uninstall(path)
     print(f"omna: removed {'env var ' if ch['env'] else ''}{'hook ' if ch['hook'] else ''}{'backup file ' if ch['backup'] else ''}from {path}" if any(ch.values()) else f"omna: nothing to remove in {path}")
+    ach = aider.uninstall()
+    if ach["openai_base"] or ach["anthropic_base"]:
+        print(f"omna: removed aider's Omna settings from {aider.conf_file()} / {aider.env_file()}")
+    cch = codex.uninstall(codex.settings_file())
+    if cch["base_url"]:
+        print(f"omna: removed Codex CLI's Omna setting from {codex.settings_file()}")
     if sys.platform == "darwin":
         from .mac import setup as mac_setup
 
@@ -360,6 +403,23 @@ def _set_tool(a, state: str) -> int:
             claude_code.init(path, a.port)
         else:
             claude_code.uninstall(path)
+    elif a.tool == "aider":
+        if state == "off":
+            aider.uninstall()
+        elif shutil.which("aider"):
+            aider.init(a.port)
+        else:
+            print("omna: aider not found on PATH — install it first, then `omna enable aider`")
+            return 1
+    elif a.tool == "codex":
+        path = codex.settings_file()
+        if state == "off":
+            codex.uninstall(path)
+        elif shutil.which("codex"):
+            codex.init(path, a.port)
+        else:
+            print("omna: codex not found on PATH — install it first, then `omna enable codex`")
+            return 1
     _save_policy(pol, a)
     print(f"omna: {a.tool} → {state}")
     return 0
@@ -481,8 +541,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--days", type=int, default=7); s.add_argument("--json", action="store_true"); s.add_argument("--html", metavar="FILE")
     s.set_defaults(fn=cmd_report)
     s = sub.add_parser("tools", help="show tool policy (on/off)"); s.set_defaults(fn=cmd_tools)
-    s = sub.add_parser("enable", help="turn a tool on (claude-code also wires it)"); s.add_argument("tool"); add_port(s); s.set_defaults(fn=cmd_enable)
-    s = sub.add_parser("disable", help="turn a tool off (claude-code also unwires it)"); s.add_argument("tool"); add_port(s); s.set_defaults(fn=cmd_disable)
+    s = sub.add_parser("enable", help="turn a tool on (claude-code, aider, codex also wire it)"); s.add_argument("tool"); add_port(s); s.set_defaults(fn=cmd_enable)
+    s = sub.add_parser("disable", help="turn a tool off (claude-code, aider, codex also unwire it)"); s.add_argument("tool"); add_port(s); s.set_defaults(fn=cmd_disable)
     s = sub.add_parser("apps", help="show app policy (mask/bypass)"); s.set_defaults(fn=cmd_apps)
     s = sub.add_parser("bypass", help="`bypass app NAME` — never mask this app's traffic"); add_port(s)
     s.add_argument("kind", choices=["app"]); s.add_argument("name"); s.set_defaults(fn=cmd_bypass)

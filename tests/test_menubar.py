@@ -167,6 +167,15 @@ def test_toggle_login_item_disables_when_currently_enabled(monkeypatch):
     assert calls == ["disable"]
 
 
+def test_toggle_reports_flips_the_policy_flag(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    assert menubar._reports_enabled() is True  # default
+    menubar._toggle_reports()
+    assert menubar._reports_enabled() is False
+    menubar._toggle_reports()
+    assert menubar._reports_enabled() is True
+
+
 def test_quit_darwin_unloads_its_own_launchd_job_before_stopping(monkeypatch):
     monkeypatch.setattr(menubar.sys, "platform", "darwin")
     calls = []
