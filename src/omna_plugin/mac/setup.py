@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .. import config
 from ..system_door import ensure_ca, remove_deep_redirector_app
-from . import app_bundle, certs, launchd, netproxy
+from . import app_bundle, certs, launchd, netproxy, vscode
 
 
 def plan(*, services: list[str], cert: Path, pac_url: str) -> list[str]:
@@ -54,12 +54,20 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
     app_path = app_bundle.install(omna_bin)
     app_bundle.enable_login_item(app_path=app_path)
     subprocess.run(["open", str(app_path)], capture_output=True)
+    vs_code = None
+    if vscode.installed():
+        vs_ch = vscode.init_proxy_setting()
+        ca_ch = vscode.enable_node_ca_trust(cert)
+        if not ca_ch["applied"]:
+            vs_ch["skipped"] = (vs_ch.get("skipped") or "") + (" | " if vs_ch.get("skipped") else "") + ca_ch["skipped"]
+        vs_code = vs_ch
     return {
         "cert": str(cert),
         "services": services,
         "pac_url": pac_url,
         "sudo_rc": rc,
         "app_bundle": str(app_path),
+        "vscode": vs_code,
     }
 
 
@@ -96,6 +104,13 @@ def revert() -> dict:
     app_bundle.disable_login_item()
     app_bundle.remove()
     remove_deep_redirector_app()
+    # Unconditional, unlike apply()'s vscode.installed() gate: if VS Code.app
+    # was removed before `omna uninstall` ran, the settings.json edit,
+    # NODE_EXTRA_CA_CERTS and its LaunchAgent must still be cleaned up rather
+    # than orphaned forever. Each of these already self-guards on the files
+    # it actually touches, same as aider/codex/continue_dev's uninstall().
+    vscode.revert_proxy_setting()
+    vscode.disable_node_ca_trust(cert)
     rc = _run_batch(revert_plan(services=services, cert=cert), "remove certificate + system proxy") if cert.exists() else 0
     # Leave no trace: the cert is untrusted above, but the files themselves —
     # registry, receipts, policy, ruleset, the CA on disk, logs, pidfile — all

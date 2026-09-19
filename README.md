@@ -33,17 +33,19 @@ That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires C
 proxy. Or by hand:
 
 ```sh
-uv tool install git+https://github.com/gaurjin/omna-plugin@v0.3.0   # PyPI: coming
+uv tool install git+https://github.com/gaurjin/omna-plugin@v0.4.0   # PyPI: coming
 omna init                        # Claude Code: sets ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
 omna start -d                    # background proxy on 127.0.0.1:7788
 omna status
 ```
 
-`omna init` also wires **aider** and **Codex CLI** automatically if either is already installed —
-aider gets `openai-api-base` in `~/.aider.conf.yml` and `ANTHROPIC_BASE_URL` in `~/.env` (both
-aider's own files); Codex CLI gets `openai_base_url` in `~/.codex/config.toml`. Nothing is added for
-a tool that isn't installed. Wire one later, or a tool you didn't have yet: `omna enable aider` /
-`omna enable codex`; `omna disable aider` / `omna disable codex` reverts it.
+`omna init` also wires **aider**, **Codex CLI**, **VS Code** (Copilot Chat and similar chat
+extensions), and **Continue** automatically if each is already installed/configured — nothing is
+added for a tool you don't have. Wire one later, or a tool you didn't have yet: `omna enable aider`
+/ `codex` / `continue`; `omna disable` reverts it. VS Code is Mac-only for now (`omna init`'s Mac
+step); see [omna.dev/help/plugin-supported-tools](https://omna.dev/help/plugin-supported-tools) for
+the full list, including the tools that only offer an in-app setting (Cursor, Cline, Windsurf — one
+line, typed once, inside the tool) and the ones not supported yet, with the real reason why.
 
 On a Mac, `omna init` also does one more thing: it trusts a local certificate ("Omna Local
 Certificate Authority") and points the system proxy at Omna via a PAC file that names only AI
@@ -64,7 +66,8 @@ after every reboot or log-out. Its **Keep Local Reports** toggle turns the recei
 (not just hides it) for anyone who doesn't want even anonymous counts kept on their machine —
 `omna status`/`omna report`/`omna log` still run, they just have nothing new to show while it's off.
 
-Cursor (bring-your-own-key mode) and any custom SDK app use the same address, by hand:
+Cursor and Cline only offer an in-app setting (paste `http://127.0.0.1:7788` / `/v1` — see the docs
+link above for the exact menu path). Any custom SDK app uses the same address, by hand:
 
 ```sh
 export ANTHROPIC_BASE_URL=http://127.0.0.1:7788   # Anthropic SDK
@@ -75,8 +78,9 @@ export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # OpenAI SDK, Cursor BYOK
 
 | Surface | How | Turn it off |
 |---|---|---|
-| Claude Code, aider, Codex CLI | wired automatically by `omna init` (aider/Codex only if already installed) | `omna disable claude-code` / `omna disable aider` / `omna disable codex` |
-| Cursor (BYOK), custom SDK apps | `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` set by hand | unset the env var |
+| Claude Code, aider, Codex CLI, VS Code, Continue | wired automatically by `omna init` (each only if already installed) | `omna disable claude-code` / `aider` / `codex` / `continue` |
+| Cursor, Cline, Windsurf | one in-app setting, typed once — [full instructions](https://omna.dev/help/plugin-supported-tools) | unset it in the tool |
+| Custom SDK apps | `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` set by hand | unset the env var |
 | Browsers (claude.ai, chatgpt.com, gemini, …) | the system proxy (PAC + a local certificate), set up by `omna init` on a Mac | `omna init --no-system`, or `omna uninstall` |
 | Desktop AI apps that honour the system proxy | same system proxy as browsers | same as above |
 | Desktop apps that ignore the system proxy | `omna capture app NAME` (Stage 3, per app, its own signed network extension) | `omna bypass app NAME` (stops masking; there's no command yet to release the app from capture itself) |
@@ -105,8 +109,8 @@ omna log --verify
 | `omna mask [TEXT or -]` | Mask a string or stdin. |
 | `omna allow VALUE` | Never mask this exact value again (false positive). |
 | `omna forget` | Wipe the token registry (tokens renumber). |
-| `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, aider and Codex CLI (the last two only if already installed), and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up every settings file it touches first and removes only its own keys on uninstall. |
-| `omna tools` / `omna enable TOOL` / `omna disable TOOL` | Show, or turn on/off, which tools Omna covers. `enable`/`disable claude-code`, `aider`, or `codex` also wire/unwire it (same as `init`/`uninstall`); other tool names (Cursor) just record the policy today. |
+| `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, aider, Codex CLI, VS Code and Continue (each only if already installed), and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up every settings file it touches first and removes only its own keys on uninstall. |
+| `omna tools` / `omna enable TOOL` / `omna disable TOOL` | Show, or turn on/off, which tools Omna covers. `enable`/`disable claude-code`, `aider`, `codex`, or `continue` also wire/unwire it (same as `init`/`uninstall`); other tool names (Cursor) just record the policy today. |
 | `omna apps` / `omna bypass app NAME` / `omna mask app NAME` | Show, or set, what happens to an app's traffic through the system proxy: `mask` (default) tokenises it like everything else, `bypass` tunnels it through untouched (still receipted, so you can see what wasn't masked). |
 | `omna capture app NAME` | Stage 3: deep-capture an app that ignores the system proxy, via its own signed network extension. |
 | `omna hosts` / `omna hosts add HOST` / `omna hosts remove HOST` | Show, or add/remove, the hostnames the system proxy treats as AI traffic. |
@@ -178,7 +182,7 @@ built from these receipts, per-machine coverage, and org-wide rulesets. See a sa
 
 ```sh
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q          # 176 tests, ~7 s (fake upstream, no network)
+.venv/bin/pytest -q          # 203 tests, ~7 s (fake upstream, no network)
 .venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
 ```
 

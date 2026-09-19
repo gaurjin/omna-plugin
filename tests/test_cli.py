@@ -20,6 +20,14 @@ def no_restart(monkeypatch):
     return calls
 
 
+@pytest.fixture(autouse=True)
+def _continue_not_detected(monkeypatch):
+    # Same regression class as aider/codex/vscode (2026-09-19): continue_dev's
+    # paths are real per-tool dotfiles under Path.home(), not OMNA_HOME —
+    # never let a test touch this machine's actual ~/.continue for real.
+    monkeypatch.setattr("omna_plugin.cli.continue_dev.detected", lambda: False)
+
+
 def test_mask_command(capsys):
     assert main(["mask", "key AKIAIOSFODNN7EXAMPLE mail a@example.com", "--counts"]) == 0
     out, err = capsys.readouterr()
@@ -130,6 +138,36 @@ def test_disable_aider_and_codex_always_runs_even_when_not_on_path(monkeypatch):
     assert main(["disable", "codex"]) == 0
 
     assert calls == ["aider", "codex"]
+
+
+def test_enable_continue_refuses_when_not_detected(monkeypatch, capsys):
+    monkeypatch.setattr("omna_plugin.cli.continue_dev.detected", lambda: False)
+    monkeypatch.setattr("omna_plugin.continue_dev.init", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not touch real config")))
+
+    assert main(["enable", "continue"]) == 1
+    assert "no Continue config found" in capsys.readouterr().out
+    assert Policy.load().tools.get("continue") != "on"
+
+
+def test_enable_continue_wires_when_detected(monkeypatch):
+    monkeypatch.setattr("omna_plugin.cli.continue_dev.detected", lambda: True)
+    calls = []
+    monkeypatch.setattr("omna_plugin.continue_dev.init", lambda port: calls.append(("continue", port)))
+
+    assert main(["enable", "continue"]) == 0
+
+    assert ("continue", 7788) in calls
+    assert Policy.load().tools["continue"] == "on"
+
+
+def test_disable_continue_always_runs_even_when_not_detected(monkeypatch):
+    monkeypatch.setattr("omna_plugin.cli.continue_dev.detected", lambda: False)
+    calls = []
+    monkeypatch.setattr("omna_plugin.continue_dev.uninstall", lambda: calls.append("continue"))
+
+    assert main(["disable", "continue"]) == 0
+
+    assert calls == ["continue"]
 
 
 # ---------------------------------------------------------------- apps / bypass / mask app / capture

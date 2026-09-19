@@ -37,7 +37,7 @@ from datetime import date
 
 import httpx
 
-from . import aider, claude_code, codex, config, receipts
+from . import aider, claude_code, codex, config, continue_dev, receipts
 from .policy import Policy
 
 
@@ -226,6 +226,9 @@ def cmd_status(a) -> int:
         xst = codex.status(codex.settings_file())
         xw = xst["base_url"] == f"{config.base_url(a.port)}/v1"
         print(f"codex cli:    {'wired' if xw else 'not wired'}{'' if xw else '  → `omna enable codex`'}")
+    if continue_dev.detected():
+        cst = continue_dev.status()
+        print(f"continue:     {'wired' if cst['wired'] else 'not wired'}{'' if cst['wired'] else '  → `omna enable continue`'}")
     pol = Policy.load()
     ok, n, msg = receipts.verify()
     off_note = "  (OFF — nothing new is being logged)" if not pol.reports_enabled else ""
@@ -330,6 +333,13 @@ def _auto_wire_other_tools(port: int) -> None:
                 print(f"omna: Codex CLI wired via {codex.settings_file()}")
         except OSError as e:
             print(f"omna: WARNING — could not wire Codex CLI ({e}); everything else continues")
+    if continue_dev.detected():
+        try:
+            ch = continue_dev.init(port)
+            if ch["models_wired"]:
+                print(f"omna: Continue wired — {', '.join(ch['models_wired'])} in {continue_dev.config_file()}")
+        except OSError as e:
+            print(f"omna: WARNING — could not wire Continue ({e}); everything else continues")
 
 
 def cmd_init(a) -> int:
@@ -346,10 +356,17 @@ def cmd_init(a) -> int:
     elif sys.platform == "darwin":
         from .mac import setup as mac_setup
 
-        mac_setup.apply(api_port=a.port)
+        res = mac_setup.apply(api_port=a.port)
         print("      Mac: system proxy + certificate installed — every AI app on this Mac is masked, not just Claude Code.")
         print("      Mac: a menu-bar icon now shows Omna's status — click it any time to see what's covered, or to uninstall.")
         print("      Mac: quit the icon any time and re-open \"Omna Plugin\" from Spotlight — turn on its Launch at Login to skip that step.")
+        vs = res.get("vscode")
+        if vs is not None:
+            skip = vs.get("skipped")
+            if vs.get("proxy") and not skip:
+                print("      Mac: VS Code wired too — Copilot Chat, Cline, and similar extensions are masked.")
+            elif skip:
+                print(f"      Mac: WARNING — VS Code was NOT fully wired ({skip}); its AI chat may not be masked.")
     # Printed whether the Mac setup just ran or was intentionally skipped (--no-system
     # or a non-Mac platform); Claude Code is wired either way, which is the sense in
     # which Omna is "active" here.
@@ -373,6 +390,9 @@ def cmd_uninstall(a) -> int:
     cch = codex.uninstall(codex.settings_file())
     if cch["base_url"]:
         print(f"omna: removed Codex CLI's Omna setting from {codex.settings_file()}")
+    xch = continue_dev.uninstall()
+    if xch["models_unwired"]:
+        print(f"omna: removed Continue's Omna setting from {', '.join(xch['models_unwired'])}")
     if sys.platform == "darwin":
         from .mac import setup as mac_setup
 
@@ -419,6 +439,15 @@ def _set_tool(a, state: str) -> int:
             codex.init(path, a.port)
         else:
             print("omna: codex not found on PATH — install it first, then `omna enable codex`")
+            return 1
+    elif a.tool == "continue":
+        if state == "off":
+            continue_dev.uninstall()
+        elif continue_dev.detected():
+            continue_dev.init(a.port)
+        else:
+            print(f"omna: no Continue config found at {continue_dev.config_file()} — "
+                  f"run Continue at least once (it creates this file itself), then `omna enable continue`")
             return 1
     _save_policy(pol, a)
     print(f"omna: {a.tool} → {state}")

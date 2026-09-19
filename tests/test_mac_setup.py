@@ -1,9 +1,25 @@
 import shlex
 from pathlib import Path
 
+import pytest
+
 from omna_plugin.mac import certs, launchd, netproxy, setup
 
 SERVICES = "An asterisk (*) denotes that a network service is disabled.\nThunderbolt Bridge\nWi-Fi\n*iPhone USB\n"
+
+
+@pytest.fixture(autouse=True)
+def _vscode_not_installed(monkeypatch):
+    # Real regression class (2026-09-19, aider/codex): apply()/revert() must
+    # never touch this machine's actual VS Code state just because pytest
+    # happens to run on a Mac that has VS Code installed. revert()'s VS Code
+    # cleanup is unconditional (installed() doesn't gate it, on purpose — see
+    # test_revert_cleans_up_vscode_even_when_vscode_app_is_already_gone), so
+    # every one of these three needs its own default mock, not just installed().
+    # Tests that specifically exercise the VS Code path override these explicitly.
+    monkeypatch.setattr(setup.vscode, "installed", lambda: False)
+    monkeypatch.setattr(setup.vscode, "revert_proxy_setting", lambda: {"proxy": False, "backup": False})
+    monkeypatch.setattr(setup.vscode, "disable_node_ca_trust", lambda cert: None)
 
 
 def test_services_parsing_skips_header_and_disabled():
@@ -238,3 +254,117 @@ def test_revert_reports_a_failed_home_delete_instead_of_swallowing_it(monkeypatc
 
     assert out["home_removed"] is False
     assert "no" in out["home_error"]
+
+
+def test_oneshot_plist_contents():
+    text = launchd.oneshot_plist_text("dev.omna.plugin.node-ca-trust", ["/bin/launchctl", "setenv", "FOO", "/x/ca.pem"])
+    assert "<string>dev.omna.plugin.node-ca-trust</string>" in text
+    assert "<string>/bin/launchctl</string>" in text
+    assert "<string>setenv</string>" in text
+    assert "<string>FOO</string>" in text
+    assert "<key>RunAtLoad</key><true/>" in text
+    assert "KeepAlive" not in text  # one-shot: no supervision, just run and exit
+
+
+def test_apply_wires_vscode_when_installed(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
+    app_path = tmp_path / "Omna Plugin.app"
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: app_path)
+    monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: None)
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.vscode, "installed", lambda: True)
+    calls = []
+    monkeypatch.setattr(setup.vscode, "init_proxy_setting", lambda: calls.append("init_proxy") or {"proxy": True, "skipped": None})
+    monkeypatch.setattr(setup.vscode, "enable_node_ca_trust", lambda cert: calls.append(("ca_trust", cert)) or {"applied": True, "skipped": None})
+
+    out = setup.apply()
+
+    assert calls == ["init_proxy", ("ca_trust", tmp_path / "ca.pem")]
+    assert out["vscode"] == {"proxy": True, "skipped": None}
+
+
+def test_apply_reports_vscode_ca_trust_skip_alongside_a_successful_proxy_write(monkeypatch, tmp_path):
+    # Regression: apply() must surface a skipped cert-trust step even when
+    # the proxy setting itself succeeded — cmd_init only prints "wired" when
+    # BOTH parts of vscode's result are clean, so this combined dict is what
+    # keeps that message honest.
+    monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: tmp_path / "Omna Plugin.app")
+    monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: None)
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.vscode, "installed", lambda: True)
+    monkeypatch.setattr(setup.vscode, "init_proxy_setting", lambda: {"proxy": True, "backup": None, "skipped": None})
+    monkeypatch.setattr(setup.vscode, "enable_node_ca_trust", lambda cert: {"applied": False, "skipped": "already set to something else"})
+
+    out = setup.apply()
+
+    assert out["vscode"]["proxy"] is True
+    assert "already set to something else" in out["vscode"]["skipped"]
+
+
+def test_apply_skips_vscode_entirely_when_not_installed(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: tmp_path / "Omna Plugin.app")
+    monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: None)
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.vscode, "init_proxy_setting", lambda: (_ for _ in ()).throw(AssertionError("must not touch VS Code")))
+    monkeypatch.setattr(setup.vscode, "enable_node_ca_trust", lambda cert: (_ for _ in ()).throw(AssertionError("must not touch VS Code")))
+
+    out = setup.apply()
+
+    assert out["vscode"] is None
+
+
+def test_revert_reverts_vscode_when_installed(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+    monkeypatch.setattr(setup.vscode, "installed", lambda: True)
+    calls = []
+    monkeypatch.setattr(setup.vscode, "revert_proxy_setting", lambda: calls.append("revert_proxy"))
+    monkeypatch.setattr(setup.vscode, "disable_node_ca_trust", lambda cert: calls.append(("disable_ca_trust", cert)))
+
+    setup.revert()
+
+    assert calls == ["revert_proxy", ("disable_ca_trust", tmp_path / "mitmproxy-ca-cert.pem")]
+
+
+def test_revert_cleans_up_vscode_even_when_vscode_app_is_already_gone(monkeypatch, tmp_path):
+    # Regression: if the person deleted VS Code.app before running `omna
+    # uninstall`, vscode.installed() now returns False — but the settings.json
+    # edit, NODE_EXTRA_CA_CERTS and its LaunchAgent must still be cleaned up,
+    # not orphaned forever. revert()'s VS Code cleanup is unconditional.
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+    monkeypatch.setattr(setup.vscode, "installed", lambda: False)  # VS Code.app is gone
+    calls = []
+    monkeypatch.setattr(setup.vscode, "revert_proxy_setting", lambda: calls.append("revert_proxy"))
+    monkeypatch.setattr(setup.vscode, "disable_node_ca_trust", lambda cert: calls.append("disable_ca_trust"))
+
+    setup.revert()
+
+    assert calls == ["revert_proxy", "disable_ca_trust"]

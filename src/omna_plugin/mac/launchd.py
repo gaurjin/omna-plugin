@@ -35,6 +35,32 @@ def plist_text(omna_bin: Path, log: Path, *, label: str = LABEL, args: list[str]
 """
 
 
+def oneshot_plist_text(label: str, program_args: list[str]) -> str:
+    """A LaunchAgent that runs once at login and exits — no KeepAlive, no log
+    redirection; for a command as simple as `launchctl setenv ...` there's
+    nothing worth capturing."""
+    args_x = "".join(f"<string>{_xml_escape(a)}</string>" for a in program_args)
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{_xml_escape(label)}</string>
+  <key>ProgramArguments</key><array>{args_x}</array>
+  <key>RunAtLoad</key><true/>
+</dict>
+</plist>
+"""
+
+
+def install_oneshot(label: str, program_args: list[str]) -> Path:
+    p = plist_path(label)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(oneshot_plist_text(label, program_args))
+    bootout(label)
+    bootstrap(label)
+    return p
+
+
 def _domain() -> str:
     return f"gui/{os.getuid()}"
 
