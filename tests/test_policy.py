@@ -125,7 +125,7 @@ def test_default_hosts_covers_the_major_chat_ai_sites():
     # coding-agent, writing, companion, enterprise, legal/medical and
     # regional-Chinese AI chat products.
     for host in [
-        "meta.ai", "chat.qwen.ai", "poe.com", "character.ai", "pi.ai",
+        "meta.ai", "muse.ai", "chat.qwen.ai", "poe.com", "character.ai", "pi.ai",
         "duck.ai", "kimi.com", "z.ai", "doubao.com", "bolt.new", "lovable.dev",
         "devin.ai", "jasper.ai", "replika.com", "harvey.ai", "midjourney.com",
     ]:

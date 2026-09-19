@@ -38,6 +38,7 @@ DEFAULT_HOSTS = [
     "grok.com",
     "copilot.microsoft.com",
     "meta.ai",
+    "muse.ai",  # Meta's personal AI agent, launched 2026-09-08 — handles real tasks: email, bookings, purchases, forms
     "chat.qwen.ai",
     "poe.com",
     "character.ai",
