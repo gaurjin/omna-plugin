@@ -109,6 +109,9 @@ def test_apply_never_installs_a_raw_launchd_agent_and_uses_the_branded_login_ite
 
 def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monkeypatch, tmp_path):
     monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)  # no cert on disk -> no sudo batch needed
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
     calls = []
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: calls.append(tuple(cmd)))
@@ -119,3 +122,26 @@ def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monk
     setup.revert()
 
     assert calls == [("omna", "stop"), launchd.LABEL, launchd.MENUBAR_LABEL, "disable_login_item", "remove_app_bundle"]
+
+
+def test_revert_deletes_all_local_state_so_nothing_is_left_behind(monkeypatch, tmp_path):
+    # registry.json, receipts.jsonl, policy.json, ruleset.json, the CA files on
+    # disk, logs and the pidfile must all be gone after uninstall — untrusting
+    # the cert from the keychain alone is not "no trace".
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "registry.json").write_text("{}")
+    (home / "receipts.jsonl").write_text("")
+    (home / "ca").mkdir()
+    (home / "ca" / "mitmproxy-ca-cert.pem").write_text("cert")
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+
+    setup.revert()
+
+    assert not home.exists()

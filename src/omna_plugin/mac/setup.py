@@ -73,6 +73,11 @@ def revert() -> dict:
     app_bundle.disable_login_item()
     app_bundle.remove()
     rc = _run_batch(revert_plan(services=services, cert=cert), "remove certificate + system proxy") if cert.exists() else 0
+    # Leave no trace: the cert is untrusted above, but the files themselves —
+    # registry, receipts, policy, ruleset, the CA on disk, logs, pidfile — all
+    # live under config.home() and survive that. Delete the whole directory so
+    # a fresh `omna init` later starts completely clean, same as day one.
+    shutil.rmtree(config.home(), ignore_errors=True)
     return {"services": services, "sudo_rc": rc}
 
 
