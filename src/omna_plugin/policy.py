@@ -42,6 +42,64 @@ DEFAULT_HOSTS = [
     "poe.com",
     "character.ai",
     "pi.ai",
+    # general-purpose chatbots
+    "duck.ai",
+    "huggingface.co",
+    "you.com",
+    "assistant.kagi.com",
+    "lmarena.ai",
+    "kimi.com",
+    "t3.chat",
+    "z.ai",
+    "andisearch.com",
+    # Chinese / regional AI chatbots
+    "chatglm.cn",
+    "yiyan.baidu.com",
+    "xinghuo.xfyun.cn",
+    "doubao.com",
+    "hunyuan.tencent.com",
+    "minimax.io",
+    # AI coding / agent web platforms (browser chat, not IDE extensions)
+    "v0.app",
+    "bolt.new",
+    "lovable.dev",
+    "replit.com",
+    "warp.dev",
+    "devin.ai",
+    "manus.im",
+    # AI writing / productivity assistants
+    "jasper.ai",
+    "copy.ai",
+    "writesonic.com",
+    "rytr.me",
+    "wordtune.com",
+    "quillbot.com",
+    "jenni.ai",
+    "fireflies.ai",
+    # AI companion / character chat
+    "replika.com",
+    "chai-research.com",
+    "polybuzz.ai",
+    "janitorai.com",
+    # enterprise AI assistant
+    "glean.com",
+    # education AI tutor
+    "khanmigo.khanacademy.org",
+    # legal / medical AI (high sensitivity)
+    "harvey.ai",
+    "nabla.com",
+    # research AI
+    "app.reka.ai",
+    "elicit.org",
+    "deepai.org",
+    # creative tools with a real chat/prompt interface
+    "midjourney.com",
+    "ideogram.ai",
+    "leonardo.ai",
+    "elevenlabs.io",
+    "heygen.com",
+    # computation
+    "wolframalpha.com",
 ]
 
 APP_ACTIONS = ("mask", "bypass")

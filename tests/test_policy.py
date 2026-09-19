@@ -120,6 +120,17 @@ def test_reports_enabled_defaults_true_and_round_trips(tmp_path, monkeypatch):
 def test_default_hosts_covers_the_major_chat_ai_sites():
     # A spot-check, not exhaustive: these are the sites a real person is
     # likely to paste sensitive text into. Added 2026-09-19 after the owner
-    # asked specifically about coverage beyond the original short list.
-    for host in ["meta.ai", "chat.qwen.ai", "poe.com", "character.ai", "pi.ai"]:
+    # asked specifically about coverage beyond the original short list, then
+    # widened further the same day to 47 additional verified domains across
+    # coding-agent, writing, companion, enterprise, legal/medical and
+    # regional-Chinese AI chat products.
+    for host in [
+        "meta.ai", "chat.qwen.ai", "poe.com", "character.ai", "pi.ai",
+        "duck.ai", "kimi.com", "z.ai", "doubao.com", "bolt.new", "lovable.dev",
+        "devin.ai", "jasper.ai", "replika.com", "harvey.ai", "midjourney.com",
+    ]:
         assert host in policy.DEFAULT_HOSTS
+
+
+def test_default_hosts_has_no_duplicates():
+    assert len(policy.DEFAULT_HOSTS) == len(set(policy.DEFAULT_HOSTS))
