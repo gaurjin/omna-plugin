@@ -83,9 +83,9 @@ def _toggle_masking(h: dict | None, state: dict) -> None:
 
 
 def _ensure_daemon(state: dict) -> None:
-    """Crash recovery for the proxy: it no longer has its own launchd `KeepAlive`,
-    so this menu-bar process (which does have a launchd agent) restarts it if it's
-    down and nobody asked for that. Never runs while `state["paused"]` is set."""
+    """Crash recovery for the proxy: it has no launchd `KeepAlive` of its own, so
+    this menu-bar process restarts it if it's down and nobody asked for that.
+    Never runs while `state["paused"]` is set."""
     if state["paused"]:
         return
     subprocess.run(["omna", "ensure"], capture_output=True)
@@ -100,11 +100,11 @@ def _toggle_login_item() -> None:
 
 
 def _quit(icon) -> None:
-    """Unloads the menu-bar's OWN launchd job first — its ``KeepAlive`` would
-    otherwise relaunch the icon within a second of this exiting, which is why
-    Quit used to appear to do nothing. The plist stays on disk, so the icon
-    still comes back at the next login -- and, if Launch at Login is on, after a
-    full log-out/log-in too, via the .app wrapper."""
+    """The menu-bar has no launchd job to fight anymore, so Quit just quits —
+    reopen it from Applications/Spotlight, or it comes back on its own at the
+    next login if Launch at Login is on. `launchd.bootout` here is a no-op
+    cleanup for a machine that still has the old raw menu-bar LaunchAgent from
+    before that was replaced by the login item."""
     if sys.platform == "darwin":
         from .mac import launchd
 

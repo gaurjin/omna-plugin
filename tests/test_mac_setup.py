@@ -76,28 +76,35 @@ def test_plist_text_supports_a_second_label_and_args():
     assert launchd.LABEL not in text.split(f"<string>{launchd.MENUBAR_LABEL}</string>")[0].replace(launchd.MENUBAR_LABEL, "")
 
 
-def test_apply_installs_only_the_menubar_launchd_agent(monkeypatch, tmp_path):
+def test_apply_never_installs_a_raw_launchd_agent_and_uses_the_branded_login_item(monkeypatch, tmp_path):
+    # A bare-binary LaunchAgent always shows up in Login Items & Extensions as an
+    # unbranded "exec" entry ("Item from unidentified developer"), no matter what —
+    # `omna init` must never install one for the menu-bar. Only the branded `.app`
+    # login item (System Events, same mechanism as the native Mac app) may start it.
     monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
-    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: tmp_path / "Omna Plugin.app")
+    app_path = tmp_path / "Omna Plugin.app"
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: app_path)
     install_calls = []
     remove_calls = []
+    login_item_calls = []
+    subprocess_calls = []
     monkeypatch.setattr(setup.launchd, "install", lambda omna_bin, **kw: install_calls.append((omna_bin, kw)) or tmp_path / "p.plist")
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: remove_calls.append(label))
+    monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: login_item_calls.append(kw))
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: subprocess_calls.append(tuple(cmd)))
 
     out = setup.apply()
 
-    # The daemon gets no login item of its own — only the menu-bar does, and it
-    # supervises the daemon as a plain subprocess.
-    assert remove_calls == [launchd.LABEL]  # idempotent cleanup of any pre-existing daemon agent
-    assert len(install_calls) == 1
-    assert install_calls[0][1]["label"] == launchd.MENUBAR_LABEL
-    assert install_calls[0][1]["args"] == ["menubar"]
+    assert install_calls == []  # never a raw launchd job for the menu-bar
+    assert remove_calls == [launchd.LABEL, launchd.MENUBAR_LABEL]  # cleanup of any pre-existing agents
+    assert login_item_calls == [{"app_path": app_path}]
+    assert ("open", str(app_path)) in subprocess_calls
     assert "launchd" not in out
-    assert "menubar_launchd" in out
-    assert "app_bundle" in out
+    assert "menubar_launchd" not in out
+    assert out["app_bundle"] == str(app_path)
 
 
 def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monkeypatch, tmp_path):

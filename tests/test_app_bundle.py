@@ -12,7 +12,8 @@ def test_app_name_is_distinct_from_the_native_mac_app():
 
 def test_install_writes_a_launchable_bundle(tmp_path):
     dest = tmp_path / "Omna Plugin.app"
-    out = app_bundle.install(Path("/usr/local/bin/omna"), dest=dest)
+    log = tmp_path / "menubar.log"
+    out = app_bundle.install(Path("/usr/local/bin/omna"), dest=dest, log=log)
 
     assert out == dest
     plist = (dest / "Contents" / "Info.plist").read_text()
@@ -24,6 +25,18 @@ def test_install_writes_a_launchable_bundle(tmp_path):
     assert "/usr/local/bin/omna" in script
     assert "menubar" in script
     assert launcher.stat().st_mode & 0o111  # executable
+
+
+def test_install_redirects_the_launcher_output_to_the_menubar_log(tmp_path):
+    # A login item has no launchd StandardOutPath/StandardErrorPath to capture
+    # output for us, so the launcher script must redirect it itself.
+    dest = tmp_path / "Omna Plugin.app"
+    log = tmp_path / "menubar.log"
+    app_bundle.install(Path("/usr/local/bin/omna"), dest=dest, log=log)
+
+    script = (dest / "Contents" / "MacOS" / app_bundle.BIN_NAME).read_text()
+    assert str(log) in script
+    assert ">>" in script
 
 
 def test_install_wires_the_icon_into_info_plist_and_copies_it_into_resources(tmp_path):

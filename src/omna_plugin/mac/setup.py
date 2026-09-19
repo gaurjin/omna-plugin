@@ -40,18 +40,24 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
     pac_url = f"{config.base_url(api_port)}/omna/proxy.pac"
     rc = _run_batch(plan(services=services, cert=cert, pac_url=pac_url), "certificate + system proxy")
     omna_bin = Path(shutil.which("omna") or sys.argv[0]).resolve()
-    # The daemon gets no login item of its own — only the menu-bar does, and it
-    # supervises the daemon as a plain subprocess. `remove()` is idempotent
-    # cleanup for a machine that still has the old daemon plist from before.
+    # The menu-bar starts via a System Events login item pointed at the branded
+    # `.app` (same mechanism the native Mac app uses) — never a raw launchd job
+    # pointed at the bare `omna` binary. macOS always renders a bare-binary
+    # LaunchAgent in Login Items & Extensions as an unbranded "exec" entry
+    # ("Item from unidentified developer"), no matter what; a login item pointed
+    # at a real .app bundle shows its real name and icon instead. `launchd.remove()`
+    # here is cleanup for a machine that still has an old daemon or menu-bar plist
+    # from before this changed. It supervises the daemon as a plain subprocess.
     launchd.remove()
-    menubar_plist = launchd.install(omna_bin, label=launchd.MENUBAR_LABEL, args=["menubar"], log=config.menubar_log_path())
+    launchd.remove(label=launchd.MENUBAR_LABEL)
     app_path = app_bundle.install(omna_bin)
+    app_bundle.enable_login_item(app_path=app_path)
+    subprocess.run(["open", str(app_path)], capture_output=True)
     return {
         "cert": str(cert),
         "services": services,
         "pac_url": pac_url,
         "sudo_rc": rc,
-        "menubar_launchd": str(menubar_plist),
         "app_bundle": str(app_path),
     }
 
