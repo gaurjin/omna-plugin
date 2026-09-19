@@ -81,7 +81,7 @@ export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # OpenAI SDK, Cursor BYOK
 | Claude Code, aider, Codex CLI, VS Code, Continue | wired automatically by `omna init` (each only if already installed) | `omna disable claude-code` / `aider` / `codex` / `continue` |
 | Cursor, Cline, Windsurf | one in-app setting, typed once — [full instructions](https://omna.dev/help/plugin-supported-tools) | unset it in the tool |
 | Custom SDK apps | `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` set by hand | unset the env var |
-| Browsers (claude.ai, chatgpt.com, gemini, …) | the system proxy (PAC + a local certificate), set up by `omna init` on a Mac | `omna init --no-system`, or `omna uninstall` |
+| Browsers (claude.ai, chatgpt.com, gemini, … — a named list, not every site; add your own with `omna hosts add SITE`) | the system proxy (PAC + a local certificate), set up by `omna init` on a Mac | `omna hosts remove SITE` for one site, `omna init --no-system` or `omna uninstall` for all of them |
 | Desktop AI apps that honour the system proxy | same system proxy as browsers | same as above |
 | Desktop apps that ignore the system proxy | `omna capture app NAME` (Stage 3, per app, its own signed network extension) | `omna bypass app NAME` (stops masking; there's no command yet to release the app from capture itself) |
 | Any specific app, at any layer | `omna bypass app NAME` — tunnelled through untouched, still receipted | `omna mask app NAME` |
