@@ -37,6 +37,11 @@ DEFAULT_HOSTS = [
     "chat.mistral.ai",
     "grok.com",
     "copilot.microsoft.com",
+    "meta.ai",
+    "chat.qwen.ai",
+    "poe.com",
+    "character.ai",
+    "pi.ai",
 ]
 
 APP_ACTIONS = ("mask", "bypass")

@@ -115,3 +115,11 @@ def test_reports_enabled_defaults_true_and_round_trips(tmp_path, monkeypatch):
     p.save()
     reloaded = policy.Policy.load()
     assert reloaded.reports_enabled is False
+
+
+def test_default_hosts_covers_the_major_chat_ai_sites():
+    # A spot-check, not exhaustive: these are the sites a real person is
+    # likely to paste sensitive text into. Added 2026-09-19 after the owner
+    # asked specifically about coverage beyond the original short list.
+    for host in ["meta.ai", "chat.qwen.ai", "poe.com", "character.ai", "pi.ai"]:
+        assert host in policy.DEFAULT_HOSTS
