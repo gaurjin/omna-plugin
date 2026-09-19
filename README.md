@@ -26,7 +26,7 @@ Same compiled engine as the Omna Mac app, browser extension and the `omna` Pytho
 ## Install (macOS Apple Silicon, Linux x86_64/aarch64)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/gaurjin/omna-plugin/main/install.sh | sh
+curl -fsSL https://omna.dev/cli/install.sh | bash
 ```
 
 That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires Claude Code, and starts the
@@ -70,7 +70,7 @@ export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # Codex CLI, aider (OpenAI), O
 | Coding CLIs (Claude Code, aider, Codex CLI, SDKs) | `ANTHROPIC_BASE_URL`/`OPENAI_BASE_URL` point at the proxy | `omna disable claude-code`, or unset the env var for others |
 | Browsers (claude.ai, chatgpt.com, gemini, …) | the system proxy (PAC + a local certificate), set up by `omna init` on a Mac | `omna init --no-system`, or `omna uninstall` |
 | Desktop AI apps that honour the system proxy | same system proxy as browsers | same as above |
-| Desktop apps that ignore the system proxy | `omna capture app NAME` (Stage 3, per app, its own signed network extension) | `omna hosts`/`omna bypass app NAME`/uncapture |
+| Desktop apps that ignore the system proxy | `omna capture app NAME` (Stage 3, per app, its own signed network extension) | `omna bypass app NAME` (stops masking; there's no command yet to release the app from capture itself) |
 | Any specific app, at any layer | `omna bypass app NAME` — tunnelled through untouched, still receipted | `omna mask app NAME` |
 
 ## Try it in 30 seconds
@@ -136,9 +136,11 @@ If the proxy is not running, the tool's requests fail to connect: nothing leaves
 - A pinned app (one that rejects our certificate on purpose, e.g. it checks the cert fingerprint itself) is
   refused, never forwarded unmasked, and named: `omna status` shows `refused: AppName → host ×N (pinned)`
   with the exact `omna bypass app "AppName"` command to let it through untouched instead.
-- If the daemon is down, browsers go DIRECT (unmasked) until `launchd` restarts it (seconds) — this Mac's
-  `file://` PAC is not honoured by Safari/Chrome, so the PAC itself is served by the proxy; an honest,
-  short fail-open window, not a fail-closed guarantee like the coding-CLI door.
+- If the daemon goes down, what a browser does next depends on whether it already loaded the PAC file: one
+  that hasn't yet falls back to DIRECT (unmasked) until `launchd` restarts the daemon (seconds); one that
+  already cached the proxy address instead fails closed (a connection error, nothing loads) until then. This
+  Mac's `file://` PAC is not honoured by Safari/Chrome, so the PAC itself is served by the proxy — an honest
+  limit either way, not a fail-closed guarantee like the coding-CLI door.
 - Firefox needs one manual click to trust the local certificate: `about:config` →
   `security.enterprise_roots.enabled` = `true`.
 - Fast masking (rules + checksums) runs by default. Prose names in free text need `--smart`, which loads a
@@ -167,7 +169,7 @@ built from these receipts, per-machine coverage, and org-wide rulesets. See a sa
 
 ```sh
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q          # 145 tests, ~7 s (fake upstream, no network)
+.venv/bin/pytest -q          # 156 tests, ~7 s (fake upstream, no network)
 .venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
 ```
 

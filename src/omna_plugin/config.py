@@ -20,8 +20,15 @@ OPENAI_UPSTREAM = os.environ.get("OMNA_OPENAI_UPSTREAM", "https://api.openai.com
 
 
 def home() -> Path:
-    """The plugin's state directory (registry, receipts, ruleset, pidfile)."""
-    return Path(os.environ.get("OMNA_HOME", Path.home() / ".omna"))
+    """The plugin's state directory (registry, receipts, ruleset, pidfile).
+
+    `omna uninstall` recursively deletes this whole directory, so an unset OR
+    empty `OMNA_HOME` (`export OMNA_HOME=` in some shell profile) must both fall
+    back to the default — `os.environ.get`'s default only covers unset, and
+    `Path("")` resolves to the current directory, which would turn uninstall
+    into `rm -rf` on wherever the command happened to be run from.
+    """
+    return Path(os.environ.get("OMNA_HOME") or (Path.home() / ".omna"))
 
 
 def ensure_home() -> Path:

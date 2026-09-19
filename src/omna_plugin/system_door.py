@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Callable
@@ -30,6 +31,19 @@ CA_ORG = "Omna"
 CA_CN = "Omna Local Certificate Authority"
 REFUSED_BODY = (b'{"type":"error","error":{"type":"omna_refused",'
                 b'"message":"omna could not mask this request; refused rather than sent unmasked"}}')
+
+# `mitmdump --mode local:...` (the deep door) extracts this Apple-signed bundle to
+# /Applications on first use of `omna capture app NAME`. The bundle file itself is
+# an ordinary file we can delete; the *system extension registration* it triggers
+# is not — macOS refuses `systemextensionsctl uninstall` outright while System
+# Integrity Protection is on (verified 2026-09-19), so only the person, by hand in
+# System Settings → General → Login Items & Extensions → Network Extensions, can
+# fully remove that part. It finishes disappearing on the next reboot once they do.
+DEEP_REDIRECTOR_APP = Path("/Applications/Mitmproxy Redirector.app")
+
+
+def remove_deep_redirector_app() -> None:
+    shutil.rmtree(DEEP_REDIRECTOR_APP, ignore_errors=True)
 
 Resolver = Callable[[tuple[str, int] | None], tuple[int, str] | None]
 

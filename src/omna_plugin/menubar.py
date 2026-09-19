@@ -112,7 +112,7 @@ def _quit(icon) -> None:
     icon.stop()
 
 
-def _confirm_and_uninstall() -> None:
+def _confirm_and_uninstall(icon, state: dict) -> None:
     if sys.platform != "darwin":
         print("omna: run `omna uninstall` in a terminal.")
         return
@@ -126,10 +126,16 @@ def _confirm_and_uninstall() -> None:
     )
     if b"Uninstall" not in dialog.stdout:
         return
+    # This process's own poll loop would otherwise see the daemon go down mid-uninstall
+    # and respawn it via `_ensure_daemon` within POLL_SECONDS, undoing the wipe `omna
+    # uninstall` just did — set paused first (belt), then quit outright (suspenders),
+    # since uninstall is about to delete this very .app anyway.
+    state["paused"] = True
     # Runs in a real Terminal window, not this process, so the person sees the sudo
     # password prompt and types it themselves — same reason `omna init` needs a real
     # terminal for its own sudo batch.
     subprocess.run(["osascript", "-e", 'tell application "Terminal" to do script "omna uninstall"'])
+    icon.stop()
 
 
 def run(port: int = config.DEFAULT_PORT) -> int:
@@ -151,7 +157,7 @@ def run(port: int = config.DEFAULT_PORT) -> int:
                 lambda: _toggle_login_item(),
                 checked=lambda item: app_bundle.login_item_enabled(),
             ))
-        items.append(pystray.MenuItem("Uninstall Omna…", lambda: _confirm_and_uninstall()))
+        items.append(pystray.MenuItem("Uninstall Omna…", lambda icon: _confirm_and_uninstall(icon, state)))
         items.append(pystray.MenuItem("Quit", lambda icon: _quit(icon)))
         return items
 

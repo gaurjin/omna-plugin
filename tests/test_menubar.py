@@ -63,13 +63,23 @@ def test_icon_image_off_state_adds_a_status_dot_without_recoloring_the_logo():
     assert on.getpixel((cx, cy)) != menubar.OFF_DOT_COLOR
 
 
+class _FakeIcon:
+    def __init__(self):
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
 def test_confirm_and_uninstall_non_darwin_never_shells_out(monkeypatch, capsys):
     monkeypatch.setattr(menubar.sys, "platform", "linux")
     calls = []
     monkeypatch.setattr(menubar.subprocess, "run", lambda *a, **k: calls.append(a))
-    menubar._confirm_and_uninstall()
+    icon, state = _FakeIcon(), {"paused": False}
+    menubar._confirm_and_uninstall(icon, state)
     assert calls == []
     assert "omna uninstall" in capsys.readouterr().out
+    assert not icon.stopped
 
 
 def test_confirm_and_uninstall_darwin_cancel_runs_only_the_dialog(monkeypatch):
@@ -80,11 +90,18 @@ def test_confirm_and_uninstall_darwin_cancel_runs_only_the_dialog(monkeypatch):
         stdout = b"button returned:Cancel"
 
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd) or R())
-    menubar._confirm_and_uninstall()
+    icon, state = _FakeIcon(), {"paused": False}
+    menubar._confirm_and_uninstall(icon, state)
     assert len(calls) == 1
+    assert not icon.stopped
+    assert state["paused"] is False
 
 
-def test_confirm_and_uninstall_darwin_confirm_opens_terminal(monkeypatch):
+def test_confirm_and_uninstall_darwin_confirm_opens_terminal_then_stops_itself(monkeypatch):
+    # Regression: this process's own crash-recovery poll loop must not be left
+    # running to respawn the daemon `omna uninstall` (in the Terminal window it
+    # just opened) is in the middle of wiping — belt (paused) and suspenders
+    # (icon.stop(), which ends this whole process).
     monkeypatch.setattr(menubar.sys, "platform", "darwin")
     calls = []
 
@@ -92,9 +109,12 @@ def test_confirm_and_uninstall_darwin_confirm_opens_terminal(monkeypatch):
         stdout = b"button returned:Uninstall"
 
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd) or R())
-    menubar._confirm_and_uninstall()
+    icon, state = _FakeIcon(), {"paused": False}
+    menubar._confirm_and_uninstall(icon, state)
     assert len(calls) == 2
     assert "omna uninstall" in calls[1][2]
+    assert state["paused"] is True
+    assert icon.stopped
 
 
 def test_toggle_masking_running_pauses_via_cli_stop_and_sets_paused_flag(monkeypatch):

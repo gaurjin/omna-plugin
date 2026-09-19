@@ -163,3 +163,23 @@ async def test_slow_resolver_does_not_serialize_concurrent_flows(tmp_path, monke
     # ~1.6s would mean all 4 resolver calls (2 flows x 2 hooks) ran serially (the bug);
     # ~0.8-0.9s is two flows' own ~0.8s critical paths running concurrently (the fix).
     assert elapsed < 1.2, f"two concurrent flows took {elapsed:.2f}s — looks serialized, not concurrent"
+
+
+def test_remove_deep_redirector_app_deletes_the_bundle(monkeypatch, tmp_path):
+    from omna_plugin import system_door
+
+    bundle = tmp_path / "Mitmproxy Redirector.app"
+    (bundle / "Contents").mkdir(parents=True)
+    monkeypatch.setattr(system_door, "DEEP_REDIRECTOR_APP", bundle)
+
+    system_door.remove_deep_redirector_app()
+
+    assert not bundle.exists()
+
+
+def test_remove_deep_redirector_app_on_a_missing_bundle_does_not_raise(monkeypatch, tmp_path):
+    from omna_plugin import system_door
+
+    monkeypatch.setattr(system_door, "DEEP_REDIRECTOR_APP", tmp_path / "does-not-exist.app")
+
+    system_door.remove_deep_redirector_app()  # no error

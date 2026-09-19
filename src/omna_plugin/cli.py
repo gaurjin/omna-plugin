@@ -333,8 +333,11 @@ def cmd_uninstall(a) -> int:
     if sys.platform == "darwin":
         from .mac import setup as mac_setup
 
-        mac_setup.revert()
+        res = mac_setup.revert()
         print("      Mac: system proxy + certificate removed, menu-bar app and Launch at Login removed.")
+        if not res.get("home_removed", True):
+            print(f"      Mac: WARNING — could not delete {config.home()} ({res['home_error']}); "
+                  f"registry/receipts may still hold real values, remove it by hand.")
     return 0
 
 

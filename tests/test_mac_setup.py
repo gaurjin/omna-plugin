@@ -107,6 +107,38 @@ def test_apply_never_installs_a_raw_launchd_agent_and_uses_the_branded_login_ite
     assert out["app_bundle"] == str(app_path)
 
 
+def test_wait_for_daemon_exit_returns_as_soon_as_the_pid_is_gone(monkeypatch):
+    calls = []
+
+    def fake_kill(pid, sig):
+        calls.append(pid)
+        if len(calls) >= 3:
+            raise ProcessLookupError()
+
+    monkeypatch.setattr(setup.os, "kill", fake_kill)
+    monkeypatch.setattr(setup.time, "sleep", lambda s: None)
+
+    setup._wait_for_daemon_exit(1234, timeout=5.0)
+
+    assert calls == [1234, 1234, 1234]
+
+
+def test_wait_for_daemon_exit_gives_up_after_the_timeout(monkeypatch):
+    # A daemon that ignores SIGTERM must never hang `omna uninstall` forever.
+    t = [0.0]
+    monkeypatch.setattr(setup.time, "monotonic", lambda: t[0])
+
+    def fake_sleep(s):
+        t[0] += s
+
+    monkeypatch.setattr(setup.time, "sleep", fake_sleep)
+    monkeypatch.setattr(setup.os, "kill", lambda pid, sig: None)  # always "still alive"
+
+    setup._wait_for_daemon_exit(1234, timeout=2.0)  # must return, not hang
+
+    assert t[0] >= 2.0
+
+
 def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monkeypatch, tmp_path):
     monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)  # no cert on disk -> no sudo batch needed
     home = tmp_path / "home"
@@ -118,30 +150,88 @@ def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monk
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: calls.append(label))
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: calls.append("disable_login_item"))
     monkeypatch.setattr(setup.app_bundle, "remove", lambda: calls.append("remove_app_bundle"))
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: calls.append("remove_deep_redirector_app"))
 
     setup.revert()
 
-    assert calls == [("omna", "stop"), launchd.LABEL, launchd.MENUBAR_LABEL, "disable_login_item", "remove_app_bundle"]
+    assert calls == [
+        ("omna", "stop"), launchd.LABEL, launchd.MENUBAR_LABEL,
+        "disable_login_item", "remove_app_bundle", "remove_deep_redirector_app",
+    ]
 
 
 def test_revert_deletes_all_local_state_so_nothing_is_left_behind(monkeypatch, tmp_path):
     # registry.json, receipts.jsonl, policy.json, ruleset.json, the CA files on
     # disk, logs and the pidfile must all be gone after uninstall — untrusting
-    # the cert from the keychain alone is not "no trace".
-    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)
+    # the cert from the keychain alone is not "no trace". ca_dir points AT the
+    # real cert location under home (not some unrelated tmp_path) so the cert
+    # actually exists and the untrust batch runs alongside the full wipe.
     home = tmp_path / "home"
     home.mkdir()
     (home / "registry.json").write_text("{}")
     (home / "receipts.jsonl").write_text("")
     (home / "ca").mkdir()
     (home / "ca" / "mitmproxy-ca-cert.pem").write_text("cert")
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: home / "ca")
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+
+    class R:
+        returncode = 0
+
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: R())
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+
+    out = setup.revert()
+
+    assert out["sudo_rc"] == 0
+    assert out["home_removed"] is True
+
+    assert not home.exists()
+
+
+def test_revert_removes_the_deep_door_redirector_app(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
     monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    calls = []
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: calls.append("called"))
 
     setup.revert()
 
-    assert not home.exists()
+    assert calls == ["called"]
+
+
+def test_revert_reports_a_failed_home_delete_instead_of_swallowing_it(monkeypatch, tmp_path):
+    # A permission error, or ~/.omna relocated to a symlink, must be reported —
+    # never presented to the person as a clean "no trace" uninstall while
+    # registry.json (real secret/PII values) is still sitting on disk.
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+
+    def _boom(path):
+        raise PermissionError("no")
+
+    monkeypatch.setattr(setup.shutil, "rmtree", _boom)
+
+    out = setup.revert()
+
+    assert out["home_removed"] is False
+    assert "no" in out["home_error"]

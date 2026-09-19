@@ -8,10 +8,11 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .. import config
-from ..system_door import ensure_ca
+from ..system_door import ensure_ca, remove_deep_redirector_app
 from . import app_bundle, certs, launchd, netproxy
 
 
@@ -62,23 +63,56 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
     }
 
 
+def _wait_for_daemon_exit(pid: int, timeout: float = 2.0) -> None:
+    """`omna stop` (cli.py:cmd_stop) sends SIGTERM and returns immediately — it does
+    not wait for the process to actually exit — so without this, the daemon can
+    still be mid-write into config.home() when revert() deletes it moments later.
+    Bounded so a daemon that ignores SIGTERM can never hang `omna uninstall`."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.05)
+
+
 def revert() -> dict:
     cert = config.ca_dir() / "mitmproxy-ca-cert.pem"
     services = netproxy.list_services()
     # The daemon has no launchd job to bootout anymore; stop the supervised
-    # subprocess directly so it doesn't keep running after uninstall.
+    # subprocess directly so it doesn't keep running after uninstall. Read its
+    # pid before stopping it (cmd_stop unlinks the pidfile immediately), then
+    # give it a moment to actually exit before the files under it get deleted.
+    try:
+        pid = int(config.pid_path().read_text().strip() or 0)
+    except (FileNotFoundError, ValueError):
+        pid = 0
     subprocess.run(["omna", "stop"], capture_output=True)
+    if pid:
+        _wait_for_daemon_exit(pid)
     launchd.remove()
     launchd.remove(label=launchd.MENUBAR_LABEL)
     app_bundle.disable_login_item()
     app_bundle.remove()
+    remove_deep_redirector_app()
     rc = _run_batch(revert_plan(services=services, cert=cert), "remove certificate + system proxy") if cert.exists() else 0
     # Leave no trace: the cert is untrusted above, but the files themselves —
     # registry, receipts, policy, ruleset, the CA on disk, logs, pidfile — all
     # live under config.home() and survive that. Delete the whole directory so
     # a fresh `omna init` later starts completely clean, same as day one.
-    shutil.rmtree(config.home(), ignore_errors=True)
-    return {"services": services, "sudo_rc": rc}
+    # Errors are NOT swallowed (no ignore_errors) — a permission error or a
+    # relocated ~/.omna (e.g. a symlink into an iCloud-synced folder) must be
+    # reported, not silently presented to the person as a clean uninstall while
+    # registry.json (real secret/PII values) is still sitting on disk.
+    home = config.home()
+    home_error = None
+    if home.exists():
+        try:
+            shutil.rmtree(home)
+        except OSError as e:
+            home_error = str(e)
+    return {"services": services, "sudo_rc": rc, "home_removed": home_error is None, "home_error": home_error}
 
 
 def status() -> dict:
