@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 import json
+import math
 from collections import Counter
 from datetime import datetime, timedelta
 
@@ -26,6 +27,17 @@ def _parse_ts(ts: str) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def _pct(values: list[int], pct: float) -> int:
+    """Nearest-rank percentile. An average hides the tail — if one request in
+    twenty takes two seconds, the mean still reads fine and the person still
+    feels it. p95 is the number that tells the truth about the slow ones."""
+    if not values:
+        return 0
+    ordered = sorted(values)
+    idx = max(0, math.ceil(pct * len(ordered)) - 1)
+    return int(ordered[idx])
 
 
 def build(days: int = 7) -> dict:
@@ -129,6 +141,9 @@ def build(days: int = 7) -> dict:
         "distinct_secrets": len(distinct_secret),
         "distinct_pii": len(distinct_pii),
         "avg_mask_ms": int(sum(mask_ms) / len(mask_ms)) if mask_ms else 0,
+        "p95_mask_ms": _pct(mask_ms, 0.95),
+        "p50_ms": _pct(ms, 0.50),
+        "p95_ms": _pct(ms, 0.95),
         "by_kind": dict(by_kind.most_common()),
         "by_day": dict(sorted(by_day.items())),
         "by_upstream": dict(by_upstream.most_common()),

@@ -91,6 +91,7 @@ def create_app(
         "mask_ms_count": 0,
         "extension_last_seen": None,
         "extension_version": None,
+        "sent_as_is": 0,
     }
 
     async def health(_: Request) -> Response:
@@ -130,9 +131,26 @@ def create_app(
         if not isinstance(body, dict):
             body = {}
         stats["extension_last_seen"] = time.time()
+        # The extension owns this counter (it is the only door with a UI that
+        # can offer the choice), so it reports it here rather than the plugin
+        # trying to infer it. Counts only, like everything else in a receipt.
+        n = body.get("sent_as_is")
+        if isinstance(n, int) and n >= 0:
+            stats["sent_as_is"] = n
         version = body.get("version")
         stats["extension_version"] = version if isinstance(version, str) else None
         return JSONResponse({"ok": True})
+
+    async def dashboard(_: Request) -> Response:
+        from . import dashboard as dash
+
+        d = dash.snapshot(days=7, sent_as_is=stats.get("sent_as_is", 0))
+        return Response(dash.render(d), media_type="text/html; charset=utf-8")
+
+    async def dashboard_json(_: Request) -> Response:
+        from . import dashboard as dash
+
+        return JSONResponse(dash.snapshot(days=7, sent_as_is=stats.get("sent_as_is", 0)))
 
     async def pac(_: Request) -> Response:
         return Response(
@@ -252,6 +270,8 @@ def create_app(
             Route("/omna/health", health, methods=["GET"]),
             Route("/omna/proxy.pac", pac, methods=["GET"]),
             Route("/omna/extension-checkin", extension_checkin, methods=["POST"]),
+            Route("/omna/dashboard", dashboard, methods=["GET"]),
+            Route("/omna/dashboard.json", dashboard_json, methods=["GET"]),
             Route("/{path:path}", relay, methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]),
         ]
     )

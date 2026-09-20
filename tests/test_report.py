@@ -199,3 +199,23 @@ def test_merge_refuses_a_plain_json_report_with_a_clear_message():
     receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "masked": {}, "ms": 1})
     with pytest.raises(ValueError, match="not Omna share exports"):
         report.merge([report.build(days=7)])
+
+
+def test_percentiles_expose_the_tail_an_average_hides():
+    # 18 fast requests and 2 slow ones. Nearest-rank p95 over 20 samples is the
+    # 19th value, so the slow tail has to be at least 5% of the data to show up
+    # there at all — which is exactly the point: one freak request is noise, a
+    # consistent slow 10% is a real experience the mean still reads past.
+    for _ in range(18):
+        receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "masked": {}, "ms": 100, "mask_ms": 2})
+    for _ in range(2):
+        receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "masked": {}, "ms": 5000, "mask_ms": 2})
+    d = report.build(days=7)
+    assert d["avg_ms"] == 590          # the mean still looks survivable
+    assert d["p50_ms"] == 100          # the typical request really is fast
+    assert d["p95_ms"] == 5000, "p95 must surface the slow tail the average buried"
+
+
+def test_percentiles_on_no_data_are_zero_not_a_crash():
+    d = report.build(days=7)
+    assert d["p50_ms"] == 0 and d["p95_ms"] == 0 and d["p95_mask_ms"] == 0

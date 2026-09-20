@@ -293,3 +293,37 @@ async def test_secret_restored_inside_streamed_tool_input(env):
     assert r.status_code == 200
     assert KEY not in up.calls[-1]["raw"] and "[SECRET_AWS_KEY_1]" in up.calls[-1]["raw"]
     assert KEY in r.text and "[SECRET_AWS_KEY_1]" not in r.text
+
+
+@pytest.mark.anyio
+async def test_dashboard_serves_html_and_json(env):
+    up, session, client = env
+    r = await client.get("/omna/dashboard")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    body = r.text
+    assert "Omna" in body and "receipt chain" in body
+    # A privacy tool's own dashboard must not fetch anything from the internet.
+    for bad in ("http://", "https://", "cdn.", "<script src"):
+        assert bad not in body, f"dashboard reaches outside for {bad!r}"
+
+    j = await client.get("/omna/dashboard.json")
+    assert j.status_code == 200
+    assert "p95_ms" in j.json() and "sent_as_is" in j.json()
+
+
+@pytest.mark.anyio
+async def test_dashboard_shows_the_sent_as_is_count_the_extension_reports(env):
+    up, session, client = env
+    await client.post("/omna/extension-checkin", json={"version": "0.6.0", "sent_as_is": 7})
+    j = (await client.get("/omna/dashboard.json")).json()
+    assert j["sent_as_is"] == 7
+
+
+@pytest.mark.anyio
+async def test_a_bogus_sent_as_is_is_ignored_not_trusted(env):
+    up, session, client = env
+    for bad in ("many", -3, None, {"n": 1}):
+        await client.post("/omna/extension-checkin", json={"version": "0.6.0", "sent_as_is": bad})
+    j = (await client.get("/omna/dashboard.json")).json()
+    assert j["sent_as_is"] == 0

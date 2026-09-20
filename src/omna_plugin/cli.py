@@ -542,6 +542,22 @@ def cmd_enroll(a) -> int:
     return 0
 
 
+def cmd_dashboard(a) -> int:
+    """Open the live dashboard in the browser. The daemon serves it, so it has
+    to be running — say so plainly rather than opening a dead tab."""
+    import webbrowser
+
+    url = f"{config.base_url(a.port)}/omna/dashboard"
+    if not _health(a.port):
+        print(f"omna: the proxy isn't running, so there's nothing to show yet.", file=sys.stderr)
+        print("  start it with `omna start -d`, then run this again.", file=sys.stderr)
+        return 1
+    print(f"omna: opening {url}")
+    if not webbrowser.open(url):
+        print(f"  (couldn't open a browser — paste this in yourself: {url})")
+    return 0
+
+
 def cmd_report(a) -> int:
     from . import report
 
@@ -633,6 +649,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--export", metavar="FILE", help="write a counts-only file safe to hand to a company admin")
     s.add_argument("--merge", nargs="+", metavar="FILE", help="add up exported files into a company + per-department view")
     s.set_defaults(fn=cmd_report)
+    s = sub.add_parser("dashboard", help="open the live dashboard in your browser")
+    add_port(s); s.set_defaults(fn=cmd_dashboard)
     s = sub.add_parser("enroll", help="tag this machine with an organisation/department for company reports")
     s.add_argument("--org", default="", help="organisation name")
     s.add_argument("--dept", default="", help="department name")
