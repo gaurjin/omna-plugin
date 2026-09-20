@@ -60,6 +60,10 @@ def _bars(by_day: dict) -> str:
     return f'<div class="bars">{"".join(cells)}</div>'
 
 
+def _share(part: int, whole: int) -> int:
+    return max(2, round(100 * part / whole)) if whole else 2
+
+
 def _rows(d: dict, limit: int = 8) -> str:
     items = list(d.items())[:limit]
     if not items:
@@ -140,6 +144,18 @@ code{{background:var(--line);padding:1px 5px;border-radius:4px;font-size:11.5px}
   <div class="card"><b>{d['p95_ms']}<small style="font-size:13px"> ms</small></b><span>round trip p95 · median {d['p50_ms']} ms</span></div>
   <div class="card"><b class="{chain_cls}">{chain_txt}</b><span>receipt chain · {d['chain']['receipts']} receipts</span></div>
   <div class="card"><b>{d['requests_refused']}</b><span>refused, never forwarded</span></div>
+</div>
+
+<h2>How certain each catch was</h2>
+<div class="panel">
+  <div class="row"><span class="row-k">checksum-proven</span>
+    <span class="row-bar"><i style="width:{_share(d['validated'], d['secrets_caught'] + d['pii_caught'])}%"></i></span>
+    <span class="row-v">{d['validated']}</span></div>
+  {_rows(d['by_layer'])}
+  <p class="empty">L1 deterministic (pattern + checksum) · L2 secret rules · L3 the contextual model.
+  Checksum-proven means arithmetic confirmed it — a validated card number isn't a guess.
+  We don't show an average confidence: blending fixed rule weights with model
+  probabilities produces a number that reads meaningful and isn't.</p>
 </div>
 
 <h2>Requests per day</h2>

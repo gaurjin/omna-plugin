@@ -219,3 +219,27 @@ def test_percentiles_expose_the_tail_an_average_hides():
 def test_percentiles_on_no_data_are_zero_not_a_crash():
     d = report.build(days=7)
     assert d["p50_ms"] == 0 and d["p95_ms"] == 0 and d["p95_mask_ms"] == 0
+
+
+def test_report_surfaces_checksum_proven_catches_and_the_layer_that_found_them():
+    # We deliberately do NOT publish an average confidence score. L1/L2
+    # confidences are fixed per-rule weights; averaging them with L3's real
+    # model probabilities yields a number that looks meaningful and isn't.
+    # "A checksum proved it" is the honest statistic, so it must survive into
+    # the report — this test is what stops it being quietly dropped again.
+    receipts.append({"route": "/api/chat", "upstream": "claude.ai", "status": 200,
+                     "masked": {"CREDIT_CARD": 1, "IBAN": 1, "EMAIL": 1}, "secrets": 0, "pii": 3,
+                     "validated": 2, "by_layer": {"L1": 3}, "ms": 100, "mask_ms": 3})
+    receipts.append({"route": "/api/chat", "upstream": "claude.ai", "status": 200,
+                     "masked": {"AWS_KEY": 1}, "secrets": 1, "pii": 0,
+                     "validated": 0, "by_layer": {"L2": 1}, "ms": 100, "mask_ms": 2})
+    d = report.build(days=7)
+    assert d["validated"] == 2, "checksum-proven count must survive into the report"
+    assert d["by_layer"] == {"L1": 3, "L2": 1}
+
+
+def test_report_tolerates_old_receipts_written_before_these_fields_existed():
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200,
+                     "masked": {"EMAIL": 1}, "secrets": 0, "pii": 1, "ms": 10, "mask_ms": 1})
+    d = report.build(days=7)
+    assert d["validated"] == 0 and d["by_layer"] == {}

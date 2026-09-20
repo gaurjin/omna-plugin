@@ -23,6 +23,11 @@ class MaskStats:
     pii: int = 0
     mask_ms: int = 0
     tokens: list[str] = field(default_factory=list)
+    # Catches a checksum proved (IBAN, card, national IDs) — certainty, not a
+    # probability. See MaskResult.validated for why we surface this rather
+    # than an average confidence score.
+    validated: int = 0
+    by_layer: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -42,6 +47,9 @@ def _merge(total: MaskStats, st: MaskStats) -> None:
     total.secrets += st.secrets
     total.pii += st.pii
     total.mask_ms += st.mask_ms
+    total.validated += st.validated
+    for k, v in st.by_layer.items():
+        total.by_layer[k] = total.by_layer.get(k, 0) + v
     total.tokens = sorted(set(total.tokens) | set(st.tokens))
 
 
@@ -54,9 +62,12 @@ class Pipeline:
         t0 = time.time()
         masked, counts = mask_body(self.session, obj)
         c = dict(counts)
+        by_layer = {k[len("_layer_"):]: c.pop(k) for k in [x for x in list(c) if x.startswith("_layer_")]}
         stats = MaskStats(
             secrets=c.pop("_secrets", 0),
             pii=c.pop("_pii", 0),
+            validated=c.pop("_validated", 0),
+            by_layer=by_layer,
             counts=c,
             mask_ms=int((time.time() - t0) * 1000),
             tokens=_tokens_in(json.dumps(masked, ensure_ascii=False)),
@@ -67,6 +78,7 @@ class Pipeline:
         t0 = time.time()
         r = self.session.mask_text(text)
         return r.masked, MaskStats(counts=dict(r.counts), secrets=r.secrets, pii=r.pii,
+                                    validated=r.validated, by_layer=dict(r.by_layer),
                                     mask_ms=int((time.time() - t0) * 1000), tokens=_tokens_in(r.masked))
 
     def mask_bytes(self, body: bytes, content_type: str) -> MaskedBody:
@@ -144,6 +156,7 @@ class Pipeline:
         rec = {
             "door": door, "route": route, "host": host, "upstream": host, "status": status,
             "stream": stream, "masked": stats.counts, "secrets": stats.secrets, "pii": stats.pii,
+            "validated": stats.validated, "by_layer": stats.by_layer,
             "mask_ms": stats.mask_ms, "tokens": stats.tokens, "bytes_in": nbytes, "ms": ms,
             "app": app,
         }

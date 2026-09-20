@@ -58,6 +58,16 @@ class MaskResult:
     counts: dict[str, int] = field(default_factory=dict)  # entity name -> occurrences
     secrets: int = 0  # spans from L2 (Secrets)
     pii: int = 0      # every other span
+    # Which layer found each catch: L1 deterministic (regex+checksum), L2
+    # secrets, L3 the contextual model. Worth keeping separate because these
+    # are NOT the same kind of certainty — see `validated`.
+    by_layer: dict[str, int] = field(default_factory=dict)
+    # Catches a checksum actually validated (IBAN, card, national IDs). This
+    # is stronger than any confidence score: a validated card number is not
+    # "92% likely a card", it is arithmetically a card. A confidence average
+    # across layers would blend fixed per-rule weights with real model
+    # probabilities and mean nothing, so we surface this instead.
+    validated: int = 0
 
 
 class MaskingSession:
@@ -238,10 +248,15 @@ class MaskingSession:
                 return hit
         raw = omna_pii_mask.mask(text, model=self.smart, ruleset=self._ruleset_arg())
         counts: dict[str, int] = {}
-        n_secret = n_pii = 0
+        by_layer: dict[str, int] = {}
+        n_secret = n_pii = n_validated = 0
         for span in raw["spans"]:
             counts[span["entity"]] = counts.get(span["entity"], 0) + 1
-            if span.get("layer") == "L2":
+            layer = span.get("layer") or "?"
+            by_layer[layer] = by_layer.get(layer, 0) + 1
+            if span.get("validated"):
+                n_validated += 1
+            if layer == "L2":
                 n_secret += 1
             else:
                 n_pii += 1
@@ -249,7 +264,7 @@ class MaskingSession:
             masked, changed = self._rebuild(text, raw["spans"]) if raw["spans"] else (text, False)
             if changed:
                 self._save_registry()
-            result = MaskResult(masked, counts, n_secret, n_pii)
+            result = MaskResult(masked, counts, n_secret, n_pii, by_layer, n_validated)
             self._cache[key] = result
             if len(self._cache) > _CACHE_SIZE:
                 self._cache.popitem(last=False)

@@ -84,7 +84,9 @@ def test_openai_request_masked(session):
     masked, counts = mask_body(session, body)
     assert EMAIL not in str(masked)
     assert masked["messages"][0]["content"] == "You are helpful."
-    assert counts == {"EMAIL": 2, "_pii": 2}
+    # Reserved keys (leading underscore) are popped off by the receipt writer;
+    # `_layer_*` records which detection layer found each catch.
+    assert counts == {"EMAIL": 2, "_pii": 2, "_layer_L1": 2}
 
 
 def test_response_restore_puts_values_back(session):

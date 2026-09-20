@@ -68,11 +68,15 @@ def build(days: int = 7) -> dict:
     mask_ms = []
     distinct_secret: set = set()
     distinct_pii: set = set()
+    n_validated = 0
+    by_layer: Counter = Counter()
     for t, r in recs:
         for k, v in (r.get("masked") or {}).items():
             by_kind[k] += v
         n_secret += r.get("secrets", 0)
         n_pii += r.get("pii", 0)
+        n_validated += r.get("validated", 0) or 0
+        by_layer.update(r.get("by_layer") or {})
         by_day[t.strftime("%Y-%m-%d")] += 1
         by_upstream[r.get("upstream", "?")] += 1
         if r.get("app"):
@@ -140,6 +144,13 @@ def build(days: int = 7) -> dict:
         "pii_caught": n_pii,
         "distinct_secrets": len(distinct_secret),
         "distinct_pii": len(distinct_pii),
+        # Checksum-proven catches. Deliberately NOT an average confidence
+        # score: our L1/L2 confidences are fixed per-rule weights, so
+        # averaging them with L3's real model probabilities would produce a
+        # number that looks meaningful and isn't. "Proved by arithmetic" is
+        # the honest statistic.
+        "validated": n_validated,
+        "by_layer": dict(by_layer.most_common()),
         "avg_mask_ms": int(sum(mask_ms) / len(mask_ms)) if mask_ms else 0,
         "p95_mask_ms": _pct(mask_ms, 0.95),
         "p50_ms": _pct(ms, 0.50),

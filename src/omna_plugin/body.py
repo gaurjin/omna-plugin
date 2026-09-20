@@ -61,8 +61,9 @@ def _walk(obj, fn, counts: dict[str, int], key: str | None = None):
 def mask_body(session: MaskingSession, obj):
     """Return (masked_copy, counts). ``obj`` is not modified.
 
-    ``counts`` maps entity name -> occurrences and carries two reserved keys,
-    ``_secrets`` and ``_pii`` (totals by layer) that the receipt writer pops off.
+    ``counts`` maps entity name -> occurrences and carries reserved keys that
+    the receipt writer pops off: ``_secrets`` / ``_pii`` (totals by layer),
+    ``_validated`` (catches a checksum actually proved) and ``_layer_L1`` etc.
     """
     counts: dict[str, int] = {}
 
@@ -74,6 +75,11 @@ def mask_body(session: MaskingSession, obj):
             c["_secrets"] = c.get("_secrets", 0) + r.secrets
         if r.pii:
             c["_pii"] = c.get("_pii", 0) + r.pii
+        if r.validated:
+            c["_validated"] = c.get("_validated", 0) + r.validated
+        for layer, n in r.by_layer.items():
+            k = f"_layer_{layer}"
+            c[k] = c.get(k, 0) + n
         return r.masked
 
     return _walk(obj, fn, counts), counts
