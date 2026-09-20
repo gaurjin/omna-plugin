@@ -117,12 +117,21 @@ def create_app(
         )
 
     async def extension_checkin(request: Request) -> Response:
+        # The body is untrusted (localhost, but still someone else's process).
+        # Two distinct ways it can be unusable: unparseable (bad JSON syntax —
+        # surfaces as ValueError/JSONDecodeError, a ValueError subclass, from
+        # Request.json()) and wrong-shaped (valid JSON that isn't an object,
+        # e.g. `null` or `[1,2,3]`, which parses fine but has no `.get`). Both
+        # land on the same soft-fail fallback rather than a 500.
         try:
             body = await request.json()
-        except Exception:
+        except ValueError:
+            body = {}
+        if not isinstance(body, dict):
             body = {}
         stats["extension_last_seen"] = time.time()
-        stats["extension_version"] = body.get("version")
+        version = body.get("version")
+        stats["extension_version"] = version if isinstance(version, str) else None
         return JSONResponse({"ok": True})
 
     async def pac(_: Request) -> Response:

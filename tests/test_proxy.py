@@ -213,6 +213,41 @@ async def test_extension_checkin_updates_health(env):
 
 
 @pytest.mark.anyio
+async def test_extension_checkin_without_version_key_reports_none(env):
+    up, session, client = env
+    r = await client.post("/omna/extension-checkin", json={})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    r = await client.get("/omna/health")
+    body = r.json()
+    assert body["extension_last_seen"] is not None
+    assert body["extension_version"] is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("malformed_body", [b"null", b"[1, 2, 3]"])
+async def test_extension_checkin_rejects_non_dict_json_without_500(env, malformed_body):
+    # `null` and a JSON array are both VALID JSON, so request.json() succeeds
+    # and returns None/list — the soft-fail must come from a shape guard, not
+    # from a JSON-parse failure. Regression test for the AttributeError found
+    # in review: body.get("version") on a non-dict used to blow up as a 500.
+    up, session, client = env
+    r = await client.post(
+        "/omna/extension-checkin",
+        content=malformed_body,
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    r = await client.get("/omna/health")
+    body = r.json()
+    assert body["extension_last_seen"] is not None
+    assert body["extension_version"] is None
+
+
+@pytest.mark.anyio
 async def test_proxy_pac_serves_system_door(env):
     up, session, client = env
     r = await client.get("/omna/proxy.pac")

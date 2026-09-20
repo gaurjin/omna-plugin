@@ -294,6 +294,53 @@ def test_status_shows_doors_apps_and_refused_lines(capsys, monkeypatch):
     assert "refused:" in out and "Claude Desktop" in out and "api.anthropic.com" in out and "bypass app" in out
 
 
+# ---------------------------------------------------------------- status extension line
+
+def _fake_health(extension_last_seen, extension_version=None):
+    return {
+        "ok": True,
+        "smart": False,
+        "restore_secrets": True,
+        "requests_this_run": 0,
+        "extension_last_seen": extension_last_seen,
+        "extension_version": extension_version,
+    }
+
+
+def test_status_shows_extension_connected_when_recently_seen(capsys, monkeypatch):
+    # No CLI-output-testing pattern in this repo mocks `_health` directly elsewhere,
+    # but it's the same monkeypatch-a-collaborator style as `no_restart`/`_continue_not_detected`
+    # above, applied to the one function cmd_status calls to reach the proxy.
+    now = 1_000_000.0
+    monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: _fake_health(now - 5, "0.6.0"))
+
+    assert main(["status"]) == 0
+    out, _ = capsys.readouterr()
+    assert "extension:    connected (v0.6.0)" in out
+
+
+def test_status_shows_extension_not_connected_when_stale(capsys, monkeypatch):
+    now = 1_000_000.0
+    monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
+    # Older than the 120s freshness window used by cmd_status.
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: _fake_health(now - 121, "0.5.0"))
+
+    assert main(["status"]) == 0
+    out, _ = capsys.readouterr()
+    assert "extension:    not connected  → install from the Chrome Web Store" in out
+
+
+def test_status_shows_extension_not_connected_when_never_seen(capsys, monkeypatch):
+    now = 1_000_000.0
+    monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: _fake_health(None))
+
+    assert main(["status"]) == 0
+    out, _ = capsys.readouterr()
+    assert "extension:    not connected  → install from the Chrome Web Store" in out
+
+
 def test_doors_line_shows_all_off_when_proxy_not_running():
     # Regression: used to fall back to {"api": True, ...} when /omna/health couldn't
     # be reached at all, printing "api on" directly under "proxy: NOT running".
