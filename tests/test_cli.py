@@ -550,10 +550,37 @@ def test_forget_wipes_the_key_too(monkeypatch, capsys):
 
 
 # -------------------------------------------------------- crash log (#132)
-def test_crash_command_is_empty_and_says_nothing_is_sent(capsys):
+def test_crash_command_is_empty_and_says_nothing_was_sent(capsys):
     main(["crash"])
     out = capsys.readouterr()[0]
-    assert "no crashes" in out and "Nothing is ever sent anywhere" in out
+    assert "no crashes" in out and "Nothing has been sent anywhere" in out
+
+
+def test_crash_listing_states_the_current_answer(capsys):
+    from omna_plugin import crashlog
+
+    try:
+        raise ValueError("x")
+    except ValueError as e:
+        crashlog.record(e, where="cli")
+
+    main(["crash"])
+    assert "you have not been asked yet" in capsys.readouterr()[0]
+
+    main(["crash", "--never"])
+    capsys.readouterr()
+    main(["crash"])
+    assert "never sent" in capsys.readouterr()[0]
+
+
+def test_never_and_always_are_remembered(capsys):
+    from omna_plugin.policy import Policy
+
+    main(["crash", "--never"])
+    assert Policy.load().crash_reports == "off"
+    assert "never be sent" in capsys.readouterr()[0]
+    main(["crash", "--always"])
+    assert Policy.load().crash_reports == "on"
 
 
 def test_a_crashing_command_is_recorded_and_then_still_raises(monkeypatch, capsys):

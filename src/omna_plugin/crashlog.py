@@ -1,31 +1,28 @@
 """Crash reports a privacy buyer can actually audit (#132).
 
 We were blind to failures in the field: when the plugin broke on someone's
-Mac, we never learned. The obvious fix is what Kiji does — an opt-in Sentry
-that promises never to send prompts. But for a company whose entire claim is
-"your data does not leave this machine", a crash reporter that phones home is
-the wrong shape even when it is off by default: the customer has to *trust*
-the promise, and a security reviewer has one more outbound path to argue about.
+Mac, we never learned. Kiji ships an opt-in Sentry that *promises* never to
+send prompts. We do the same job while making the promise checkable:
 
-So Omna does it the other way round, and it is strictly stronger:
-
-1. **Nothing is ever sent.** There is no network code in this module at all,
-   and a test asserts that by reading this file's own source. A crash is
-   appended to ``~/.omna/crashes.jsonl`` (0600) and stays there.
-2. **The report is masked by the same engine that masks prompts.** Every
-   string is run through fast masking (L1+L2) before it is written, so a
-   secret or an address that leaked into an exception message is a token in
-   the file — not just absent from the network, absent from the *disk*.
+1. **This module cannot send anything.** There is no network code here, and a
+   test reads this file's own source and fails the build if any appears. The
+   actual sending lives in ``crashsend.py``, so the guarantee on the code that
+   touches your data survives no matter what the sending side grows into.
+2. **The report is masked by the same engine that masks prompts**, before it
+   is written. So a secret that leaked into an exception message is a token on
+   *disk* — not merely absent from the network. We cannot receive what we
+   never had.
 3. **Paths are reduced to bare filenames** and the home directory is replaced
    with ``~``, because ``/Users/jane/...`` is the person's real name.
 4. **Only allowlisted keys survive**, so no caller can smuggle a prompt or a
    request body in as "context".
-5. **Sending is a person typing a command.** ``omna crash --send`` opens a
-   GitHub issue pre-filled with the report they have already read.
+5. **Off by default, asked once.** Nothing is sent until the person answers
+   yes to one plain question, asked the first time something actually breaks.
+   A no is written down and never asked again. What is sent is byte-for-byte
+   the row they can read with ``omna crash``.
 
-The result: the person can `cat` the exact bytes that would ever reach us, and
-the claim "never your prompts" stops being a promise and becomes something
-they verified. That is the version of this feature worth selling.
+The claim "never your prompts" stops being a promise and becomes something
+they can verify. That is the version worth selling.
 
 Masking here uses the engine's own per-call numbering, NOT the stable
 ``MaskingSession`` — a crash must never mint registry entries, because those
@@ -99,6 +96,8 @@ def record(exc: BaseException, *, where: str, extra: dict | None = None) -> None
                 "fn": f.name,
             })
         row = {
+            # Local bookkeeping only; stripped from anything that would be sent.
+            "id": __import__("secrets").token_hex(8),
             "ts": __import__("datetime").datetime.now().astimezone().isoformat(timespec="seconds"),
             "where": str(where)[:32],
             "error": type(exc).__name__,
@@ -115,18 +114,24 @@ def record(exc: BaseException, *, where: str, extra: dict | None = None) -> None
                 row[k] = _scrub(extra[k])[:200]
 
         config.ensure_home()
-        p = path()
-        rows = _read(p)
+        rows = _read(path())
         rows.append(row)
-        rows = rows[-MAX_ROWS:]
-        tmp = p.with_suffix(".jsonl.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as f:
-            for r in rows:
-                f.write(json.dumps(r) + "\n")
-        os.replace(tmp, p)
+        _write_all(rows[-MAX_ROWS:])
     except Exception:
         return
+
+
+def _write_all(rows: list[dict]) -> None:
+    """Rewrite the whole file atomically at 0600. Small and capped, so a full
+    rewrite is cheaper than tracking offsets."""
+    config.ensure_home()
+    p = path()
+    tmp = p.with_suffix(".jsonl.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+    os.replace(tmp, p)
 
 
 def _read(p: Path) -> list[dict]:
@@ -152,6 +157,69 @@ def _read(p: Path) -> list[dict]:
 
 def tail(n: int = 20) -> list[dict]:
     return _read(path())[-n:]
+
+
+# ------------------------------------------------------------------ consent
+# The decision (owner, 2026-09-20): **off by default, asked once.**
+#
+# The first version of this made sending a command (`omna crash --send`) that
+# nobody would ever run, so we would have learned nothing. The fix for that is
+# a better ASK, not a different DEFAULT — turning it on by default would have
+# made us more invasive than the competitor we are claiming to beat, which is
+# incoherent. So the default stays off and we ask one clear question at the
+# only moment the person cares: just after something broke.
+#
+# A "no" is final. It is written down and never asked again.
+def should_ask() -> bool:
+    """Is there something to ask about, and have we not asked yet?"""
+    from .policy import Policy
+
+    return Policy.load().crash_reports == "unset" and bool(unsent())
+
+
+def may_send() -> bool:
+    from .policy import Policy
+
+    return Policy.load().crash_reports == "on"
+
+
+def remember_choice(send: bool) -> None:
+    from .policy import Policy
+
+    pol = Policy.load()
+    pol.crash_reports = "on" if send else "off"
+    pol.save()
+
+
+# --------------------------------------------------------------- the payload
+def unsent() -> list[dict]:
+    return [r for r in _read(path()) if not r.get("sent")]
+
+
+def mark_sent(rows: list[dict]) -> None:
+    """Flag these as sent WITHOUT deleting them — the local copy is the whole
+    point, so the person can always check what left."""
+    ids = {r.get("id") for r in rows if r.get("id")}
+    if not ids:
+        return
+    all_rows = _read(path())
+    for r in all_rows:
+        if r.get("id") in ids:
+            r["sent"] = True
+    _write_all(all_rows)
+
+
+def payload(rows: list[dict]) -> dict:
+    """Exactly what would go over the wire, built from the rows already on disk.
+
+    Nothing is gathered again at send time, so what the person read with
+    ``omna crash`` is precisely what we would receive. The bookkeeping fields
+    (``id``, ``sent``) are local only and are stripped.
+    """
+    return {
+        "schema": 1,
+        "crashes": [{k: v for k, v in r.items() if k not in ("id", "sent")} for r in rows],
+    }
 
 
 def clear() -> bool:

@@ -103,7 +103,18 @@ def create_app(
     # reporting on the wrong registry.
     session = pipeline.session if pipeline is not None else (session or MaskingSession())
     pipeline = pipeline or Pipeline(session)
-    client = client or httpx.AsyncClient(timeout=httpx.Timeout(None, connect=30.0))
+    # Outbound TLS. Omna opens the request, so verifying the provider on the way
+    # out is our responsibility, not the caller's (#137/security menu). Default
+    # is unchanged (the machine's trust store); `omna tls strict` swaps in a
+    # fixed certifi bundle so the CA `omna init` added for the INBOUND side
+    # cannot vouch for Anthropic on the outbound side.
+    if client is None:
+        from .upstream_tls import ssl_context
+
+        client = httpx.AsyncClient(
+            timeout=httpx.Timeout(None, connect=30.0),
+            verify=ssl_context(policy),
+        )
     stats = {
         "requests": 0,
         "started": time.time(),
@@ -285,6 +296,21 @@ def create_app(
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _DROP_REQ}
         headers["host"] = upstream_host
         headers["accept-encoding"] = "identity"
+
+        # If this host is pinned, check it BEFORE anything is forwarded — the
+        # whole point is to not hand a masked prompt and a real API key to an
+        # impostor. No pins configured (the default) means this returns at once.
+        try:
+            from .upstream_tls import PinnedVerificationError, ensure_pinned
+
+            await run_in_threadpool(ensure_pinned, upstream_host.split(":")[0], policy)
+        except PinnedVerificationError as e:
+            _receipt(request, path, upstream_host, 526, mstats, len(body), time.time(),
+                     stream=False, note="pin-mismatch")
+            return JSONResponse(
+                {"type": "error", "error": {"type": "omna_pin_mismatch", "message": str(e)}},
+                status_code=526, headers=cors,
+            )
 
         t0 = time.time()
         stats["requests"] += 1

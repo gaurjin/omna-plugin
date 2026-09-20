@@ -1,0 +1,499 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-09-20T21:16:37+00:00",
+    "component": {
+      "type": "application",
+      "name": "omna-plugin",
+      "version": "0.6.0",
+      "purl": "pkg:pypi/omna-plugin@0.6.0",
+      "description": "Omna \u2014 local privacy proxy for AI coding tools. Masks secrets and PII before a prompt leaves your machine, restores them in the reply.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ]
+    },
+    "tools": [
+      {
+        "name": "omna scripts/make-sbom.py"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "name": "aioquic",
+      "version": "1.2.0",
+      "purl": "pkg:pypi/aioquic@1.2.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "anyio",
+      "version": "4.14.2",
+      "purl": "pkg:pypi/anyio@4.14.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "argon2-cffi",
+      "version": "25.1.0",
+      "purl": "pkg:pypi/argon2-cffi@25.1.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "argon2-cffi-bindings",
+      "version": "26.1.0",
+      "purl": "pkg:pypi/argon2-cffi-bindings@26.1.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "asgiref",
+      "version": "3.11.1",
+      "purl": "pkg:pypi/asgiref@3.11.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "attrs",
+      "version": "26.1.0",
+      "purl": "pkg:pypi/attrs@26.1.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "bcrypt",
+      "version": "5.0.0",
+      "purl": "pkg:pypi/bcrypt@5.0.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "blinker",
+      "version": "1.9.0",
+      "purl": "pkg:pypi/blinker@1.9.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "brotli",
+      "version": "1.2.0",
+      "purl": "pkg:pypi/brotli@1.2.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "certifi",
+      "version": "2026.7.22",
+      "purl": "pkg:pypi/certifi@2026.7.22",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "cffi",
+      "version": "2.1.1",
+      "purl": "pkg:pypi/cffi@2.1.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "click",
+      "version": "8.5.0",
+      "purl": "pkg:pypi/click@8.5.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "colorama",
+      "version": "0.4.6",
+      "purl": "pkg:pypi/colorama@0.4.6",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "cryptography",
+      "version": "48.0.1",
+      "purl": "pkg:pypi/cryptography@48.0.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "flask",
+      "version": "3.1.3",
+      "purl": "pkg:pypi/flask@3.1.3",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "h11",
+      "version": "0.16.0",
+      "purl": "pkg:pypi/h11@0.16.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "h2",
+      "version": "4.3.0",
+      "purl": "pkg:pypi/h2@4.3.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "hpack",
+      "version": "4.2.0",
+      "purl": "pkg:pypi/hpack@4.2.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "httpcore",
+      "version": "1.0.9",
+      "purl": "pkg:pypi/httpcore@1.0.9",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "httpx",
+      "version": "0.28.1",
+      "purl": "pkg:pypi/httpx@0.28.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "hyperframe",
+      "version": "6.1.0",
+      "purl": "pkg:pypi/hyperframe@6.1.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "idna",
+      "version": "3.20",
+      "purl": "pkg:pypi/idna@3.20",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "iniconfig",
+      "version": "2.3.0",
+      "purl": "pkg:pypi/iniconfig@2.3.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "itsdangerous",
+      "version": "2.2.0",
+      "purl": "pkg:pypi/itsdangerous@2.2.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "jinja2",
+      "version": "3.1.6",
+      "purl": "pkg:pypi/jinja2@3.1.6",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "kaitaistruct",
+      "version": "0.11",
+      "purl": "pkg:pypi/kaitaistruct@0.11",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "ldap3",
+      "version": "2.9.1",
+      "purl": "pkg:pypi/ldap3@2.9.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "markupsafe",
+      "version": "3.0.3",
+      "purl": "pkg:pypi/markupsafe@3.0.3",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "mitmproxy",
+      "version": "12.2.3",
+      "purl": "pkg:pypi/mitmproxy@12.2.3",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "mitmproxy-linux",
+      "version": "0.12.11",
+      "purl": "pkg:pypi/mitmproxy-linux@0.12.11",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "mitmproxy-macos",
+      "version": "0.12.11",
+      "purl": "pkg:pypi/mitmproxy-macos@0.12.11",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "mitmproxy-rs",
+      "version": "0.12.11",
+      "purl": "pkg:pypi/mitmproxy-rs@0.12.11",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "mitmproxy-windows",
+      "version": "0.12.11",
+      "purl": "pkg:pypi/mitmproxy-windows@0.12.11",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "msgpack",
+      "version": "1.1.2",
+      "purl": "pkg:pypi/msgpack@1.1.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "omna-pii-mask",
+      "version": "0.2.6",
+      "purl": "pkg:pypi/omna-pii-mask@0.2.6",
+      "scope": "required",
+      "description": "The Omna masking engine. Closed-source kernel, distributed as a compiled binary wheel; built in CI from a private repository."
+    },
+    {
+      "type": "library",
+      "name": "packaging",
+      "version": "26.3",
+      "purl": "pkg:pypi/packaging@26.3",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pillow",
+      "version": "12.3.0",
+      "purl": "pkg:pypi/pillow@12.3.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pluggy",
+      "version": "1.6.0",
+      "purl": "pkg:pypi/pluggy@1.6.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "publicsuffix2",
+      "version": "2.20191221",
+      "purl": "pkg:pypi/publicsuffix2@2.20191221",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyasn1",
+      "version": "0.6.4",
+      "purl": "pkg:pypi/pyasn1@0.6.4",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pycparser",
+      "version": "3.0",
+      "purl": "pkg:pypi/pycparser@3.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pydivert",
+      "version": "2.1.0",
+      "purl": "pkg:pypi/pydivert@2.1.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pygments",
+      "version": "2.21.0",
+      "purl": "pkg:pypi/pygments@2.21.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pylsqpack",
+      "version": "0.3.24",
+      "purl": "pkg:pypi/pylsqpack@0.3.24",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyobjc-core",
+      "version": "12.2.2",
+      "purl": "pkg:pypi/pyobjc-core@12.2.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyobjc-framework-cocoa",
+      "version": "12.2.2",
+      "purl": "pkg:pypi/pyobjc-framework-cocoa@12.2.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyobjc-framework-quartz",
+      "version": "12.2.2",
+      "purl": "pkg:pypi/pyobjc-framework-quartz@12.2.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyopenssl",
+      "version": "26.2.0",
+      "purl": "pkg:pypi/pyopenssl@26.2.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyparsing",
+      "version": "3.3.2",
+      "purl": "pkg:pypi/pyparsing@3.3.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyperclip",
+      "version": "1.11.0",
+      "purl": "pkg:pypi/pyperclip@1.11.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pystray",
+      "version": "0.19.5",
+      "purl": "pkg:pypi/pystray@0.19.5",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pytest",
+      "version": "9.1.1",
+      "purl": "pkg:pypi/pytest@9.1.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pytest-asyncio",
+      "version": "1.4.0",
+      "purl": "pkg:pypi/pytest-asyncio@1.4.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "python-xlib",
+      "version": "0.33",
+      "purl": "pkg:pypi/python-xlib@0.33",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "ruamel-yaml",
+      "version": "0.19.1",
+      "purl": "pkg:pypi/ruamel-yaml@0.19.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "service-identity",
+      "version": "26.1.0",
+      "purl": "pkg:pypi/service-identity@26.1.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "six",
+      "version": "1.17.0",
+      "purl": "pkg:pypi/six@1.17.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "sortedcontainers",
+      "version": "2.4.0",
+      "purl": "pkg:pypi/sortedcontainers@2.4.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "starlette",
+      "version": "1.6.0",
+      "purl": "pkg:pypi/starlette@1.6.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "tornado",
+      "version": "6.5.5",
+      "purl": "pkg:pypi/tornado@6.5.5",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "typing-extensions",
+      "version": "4.14.0",
+      "purl": "pkg:pypi/typing-extensions@4.14.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "urwid",
+      "version": "3.0.5",
+      "purl": "pkg:pypi/urwid@3.0.5",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "uvicorn",
+      "version": "0.53.0",
+      "purl": "pkg:pypi/uvicorn@0.53.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "wcwidth",
+      "version": "0.8.4",
+      "purl": "pkg:pypi/wcwidth@0.8.4",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "werkzeug",
+      "version": "3.1.8",
+      "purl": "pkg:pypi/werkzeug@3.1.8",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "wsproto",
+      "version": "1.3.2",
+      "purl": "pkg:pypi/wsproto@1.3.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "zstandard",
+      "version": "0.25.0",
+      "purl": "pkg:pypi/zstandard@0.25.0",
+      "scope": "required"
+    }
+  ]
+}

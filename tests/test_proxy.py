@@ -472,3 +472,39 @@ def test_only_local_origins_pass_the_check():
     # an explicitly configured extra origin is honoured, exact-match only
     assert cors_origin_allowed("https://app.acme.com", ["https://app.acme.com"])
     assert not cors_origin_allowed("https://app.acme.com.evil.net", ["https://app.acme.com"])
+
+
+# --------------------------------------------- pinning, end to end (security menu)
+@pytest.mark.anyio
+async def test_the_proxy_refuses_to_forward_to_a_host_that_fails_its_pin(env, monkeypatch):
+    """The function being correct is not the point — this proves the relay
+    actually calls it, and refuses BEFORE the body is forwarded."""
+    from omna_plugin import upstream_tls
+    from omna_plugin.policy import Policy
+
+    up, session, client = env
+    upstream_tls.forget_cached_verdicts()
+    monkeypatch.setattr(upstream_tls, "fetch_pins", lambda h, **k: ["IMPOSTOR"])
+    pol = Policy()
+    pol.tls_pins = {"anthropic.test": ["EXPECTED"]}
+    pol.save()
+
+    before = len(up.calls)
+    r = await client.post("/v1/messages", json={"model": "claude-sonnet-5",
+                                                "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 526
+    assert r.json()["error"]["type"] == "omna_pin_mismatch"
+    assert len(up.calls) == before, "nothing may reach the upstream when the pin fails"
+
+
+@pytest.mark.anyio
+async def test_an_unpinned_host_is_forwarded_exactly_as_before(env, monkeypatch):
+    from omna_plugin import upstream_tls
+
+    up, session, client = env
+    upstream_tls.forget_cached_verdicts()
+    monkeypatch.setattr(upstream_tls, "fetch_pins",
+                        lambda *a, **k: pytest.fail("must not probe an unpinned host"))
+    r = await client.post("/v1/messages", json={"model": "claude-sonnet-5",
+                                                "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200

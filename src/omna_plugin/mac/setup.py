@@ -130,7 +130,10 @@ def revert() -> dict:
     # The registry's encryption key lives in the Keychain, not under home(), so
     # rmtree does not reach it. Leaving it behind is litter that opens a file
     # that no longer exists (#131).
-    key_removed = vault.delete_key()
+    key_removed = vault.delete_key(vault.ACCOUNT)
+    # Receipts have their own key (so `omna forget` cannot blind the evidence
+    # trail). Uninstall must take BOTH, or one is left opening nothing.
+    vault.delete_key(vault.RECEIPTS_ACCOUNT)
     return {"services": services, "sudo_rc": rc, "home_removed": home_error is None,
             "home_error": home_error, "key_removed": key_removed}
 

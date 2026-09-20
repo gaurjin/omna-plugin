@@ -129,6 +129,20 @@ class Policy:
     # deliberate widening — a page from that origin can then use this machine's
     # proxy — so it stays empty unless someone sets it.
     cors_origins: list[str] = field(default_factory=list)
+    # Crash reports: "unset" | "on" | "off". OFF until the person says yes —
+    # same posture as Kiji, and the only posture consistent with "nothing is
+    # sent to Omna". The difference from a hidden opt-in is that we ASK, once,
+    # the first time it actually matters. "off" is final and never re-asked.
+    crash_reports: str = "unset"
+    # Outbound TLS (see upstream_tls.py). Omna opens your request, so verifying
+    # the provider on the way out is our job. Both OFF by default:
+    #   tls_strict — verify providers against certifi, NOT your machine's trust
+    #     store (which `omna init` itself added a CA to, for the inbound side).
+    #   tls_pins   — {host: [base64 SHA-256 of SubjectPublicKeyInfo, ...]}.
+    #     Empty by design: an unattended pin is a time bomb, because providers
+    #     rotate certificates. You add the ones you will maintain.
+    tls_strict: bool = False
+    tls_pins: dict[str, list[str]] = field(default_factory=dict)
     # Set only when a company enrols this machine (`omna enroll`, or --org/--dept
     # on the install line). Empty on a personal install, and nothing about them
     # ever leaves the machine on its own — they exist so that a report EXPORTED
@@ -158,6 +172,11 @@ class Policy:
             pol.reports_enabled = bool(data.get("reports_enabled", True))
             pol.restore_browser = bool(data.get("restore_browser", True))
             pol.cors_origins = [str(o) for o in data.get("cors_origins", [])]
+            cr = str(data.get("crash_reports", "unset"))
+            pol.crash_reports = cr if cr in ("unset", "on", "off") else "unset"
+            pol.tls_strict = bool(data.get("tls_strict", False))
+            pol.tls_pins = {str(k).lower(): [str(v) for v in (vs or [])]
+                            for k, vs in (data.get("tls_pins") or {}).items()}
             pol.org = str(data.get("org", "") or "")
             pol.dept = str(data.get("dept", "") or "")
             pol.device_id = str(data.get("device_id", "") or "")
@@ -179,6 +198,9 @@ class Policy:
             "reports_enabled": self.reports_enabled,
             "restore_browser": self.restore_browser,
             "cors_origins": self.cors_origins,
+            "crash_reports": self.crash_reports,
+            "tls_strict": self.tls_strict,
+            "tls_pins": self.tls_pins,
             "org": self.org,
             "dept": self.dept,
             "device_id": self.device_id,

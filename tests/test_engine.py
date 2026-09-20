@@ -154,19 +154,41 @@ def test_plaintext_registry_from_an_older_install_is_encrypted_on_first_run(home
     assert s.restore_text(tok) == "a@example.com"
 
 
-def test_a_missing_key_locks_the_registry_and_never_overwrites_it(home, keychain):
+def test_a_lost_key_retires_the_dead_file_and_starts_fresh(home, keychain):
+    """The Keychain WORKS and still cannot open the file: the key is gone for
+    good, so the file is unreadable forever. Refusing to save would leave a
+    permanently broken masker that renumbers on every restart, so Omna sets the
+    dead file aside and starts a new encrypted registry (owner call 2026-09-20).
+    """
     s1 = MaskingSession()
     s1.mask_text("mail a@example.com")
     before = (home / "registry.json").read_text()
 
     keychain.clear()  # key gone: Keychain wiped, restored from another Mac, etc.
     s2 = MaskingSession()
-    assert s2.locked is True
-    # It still masks — a lost key must not take the product down...
+    assert s2.locked is False and s2.encrypted is True
     assert "a@example.com" not in s2.mask_text("mail a@example.com").masked
-    # ...but it must NOT write a fresh registry over the one it cannot read,
-    # which would destroy every mapping the person still has.
-    assert (home / "registry.json").read_text() == before
+
+    # the dead file was kept, not deleted, and not overwritten
+    dead = list(home.glob("registry.json.unreadable-*"))
+    assert len(dead) == 1 and dead[0].read_text() == before
+    # and saving works again, with a brand-new key
+    assert (home / "registry.json").read_text() != before
+    assert MaskingSession().registry_size == 1
+
+
+def test_an_unreachable_keychain_locks_instead_of_retiring(home, keychain, monkeypatch):
+    """The OTHER case, which must NOT destroy anything: we cannot reach the
+    Keychain at all, so the key may be perfectly fine. Wait, do not retire."""
+    MaskingSession().mask_text("mail a@example.com")
+    before = (home / "registry.json").read_text()
+
+    monkeypatch.setenv("OMNA_REGISTRY_ENCRYPTION", "off")
+    s = MaskingSession()
+    assert s.locked is True
+    assert "a@example.com" not in s.mask_text("mail a@example.com").masked
+    assert (home / "registry.json").read_text() == before      # untouched
+    assert list(home.glob("registry.json.unreadable-*")) == []  # nothing retired
 
 
 def test_forget_deletes_both_the_file_and_the_key(home, keychain):
@@ -178,11 +200,13 @@ def test_forget_deletes_both_the_file_and_the_key(home, keychain):
     assert keychain == {}
 
 
-def test_forget_recovers_a_locked_registry(home, keychain):
+def test_forget_recovers_a_locked_registry(home, keychain, monkeypatch):
     MaskingSession().mask_text("mail a@example.com")
     keychain.clear()
+    monkeypatch.setenv("OMNA_REGISTRY_ENCRYPTION", "off")   # unreachable => locked
     s = MaskingSession()
     assert s.locked is True
+    monkeypatch.delenv("OMNA_REGISTRY_ENCRYPTION")
     s.forget()
     assert not (home / "registry.json").exists()
     # A new session after the wipe is healthy again, with a fresh key.

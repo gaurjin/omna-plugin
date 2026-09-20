@@ -8,7 +8,7 @@
     omna mask [TEXT|-] [--smart]           mask a piece of text and print it
     omna allow VALUE                       never mask this exact value again (false positive)
     omna forget                            wipe the token registry (tokens will renumber)
-    omna crash [--show N|--send|--clear]   what broke on this machine; masked on disk, never sent
+    omna crash [--show N|--send|--always|--never]  what broke here; masked on disk, sent only if you said yes
     omna verify-model                      check the on-device model against its pinned hash
     omna report [--days 7] [--json|--html F] weekly summary from the receipts
     omna init [--project] [--no-system]    wire Claude Code (settings.json env + SessionStart hook);
@@ -636,22 +636,41 @@ def cmd_report(a) -> int:
 
 
 def cmd_crash(a) -> int:
-    """Show what broke on THIS machine. Nothing here has ever been sent."""
-    rows = crashlog.tail(200)
+    """What broke on THIS machine, and who (if anyone) has seen it.
+
+    The local copy is always the source of truth: sending never deletes it, so
+    the person can check afterwards exactly what left.
+    """
+    from . import crashsend
+
+    if a.always or a.never:
+        crashlog.remember_choice(bool(a.always))
+        if a.always:
+            n = crashsend.send_pending()
+            print(f"omna: crash reports will be sent automatically."
+                  + (f" Sent {n} pending." if n else ""))
+        else:
+            print("omna: crash reports will never be sent. They stay in "
+                  f"{crashlog.path()} for you to read.")
+        return 0
+
     if a.clear:
         crashlog.clear()
         print("omna: crash log cleared.")
         return 0
+
+    rows = crashlog.tail(200)
     if not rows:
-        print("omna: no crashes recorded. (Nothing is ever sent anywhere — this file is local.)")
+        print("omna: no crashes recorded. Nothing has been sent anywhere.")
         return 0
-    if a.send or a.show:
+
+    if a.show or a.issue:
         n = a.show or len(rows)
         if not 1 <= n <= len(rows):
             print(f"omna: there are {len(rows)} crashes; pick 1..{len(rows)}", file=sys.stderr)
             return 1
         row = rows[n - 1]
-        if a.send:
+        if a.issue:
             url = crashlog.issue_url(row)
             print("omna: this opens a GitHub issue pre-filled with the report below.")
             print("      It is already masked, and it is exactly what you see here — nothing")
@@ -665,13 +684,35 @@ def cmd_crash(a) -> int:
             return 0
         _print_crash(row)
         return 0
-    print(f"{'#':>3}  {'when':<20} {'where':<12} what")
+
+    if a.send:
+        pending = crashlog.unsent()
+        if not pending:
+            print("omna: nothing pending — everything here has already been sent.")
+            return 0
+        n = crashsend.send_now(pending)
+        if n:
+            print(f"omna: sent {n} report(s). Your local copy is unchanged — `omna crash` still shows them.")
+            return 0
+        print("omna: could not reach omna.dev; nothing was sent. It stays pending and will retry.",
+              file=sys.stderr)
+        return 1
+
+    print(f"{'#':>3}  {'when':<20} {'where':<12} {'sent':<5} what")
     for i, r in enumerate(rows, 1):
         ts = str(r.get("ts", ""))[:19].replace("T", " ")
-        print(f"{i:>3}  {ts:<20} {str(r.get('where',''))[:12]:<12} {r.get('error','')}")
-    print(f"\nStored in {crashlog.path()} — masked by Omna's own engine before it was written,")
-    print("and never sent anywhere. `omna crash --show N` for one in full, `--send N` to")
-    print("open a pre-filled GitHub issue, `--clear` to delete them all.")
+        sent = "yes" if r.get("sent") else "no"
+        print(f"{i:>3}  {ts:<20} {str(r.get('where',''))[:12]:<12} {sent:<5} {r.get('error','')}")
+
+    pol = Policy.load()
+    setting = {"on": "sent automatically", "off": "never sent",
+               "unset": "not sent — you have not been asked yet"}[pol.crash_reports]
+    print(f"\nStored in {crashlog.path()}, masked by Omna's own engine before it was written.")
+    print(f"Right now these are: {setting}.")
+    print("  omna crash --show N   read one in full")
+    print("  omna crash --send     send the pending ones now")
+    print("  omna crash --always / --never   change the answer")
+    print("  omna crash --issue    open a pre-filled GitHub issue instead")
     return 0
 
 
@@ -715,6 +756,86 @@ def cmd_verify_model(a) -> int:
               "      Omna was built against. Delete the model cache and let it download again.")
         return 1
     print("\nomna: every model file matches the hash this engine was built against.")
+    return 0
+
+
+def cmd_tls(a) -> int:
+    """Show or change how Omna verifies the AI provider on the way OUT.
+
+    Worth a command of its own because this is the leg people forget: Omna
+    opens your request, so if something could impersonate the provider to
+    Omna, it would receive a masked prompt AND your real API key.
+    """
+    from . import upstream_tls
+
+    pol = Policy.load()
+
+    if a.action == "strict" or a.action == "default":
+        pol.tls_strict = (a.action == "strict")
+        _save_policy(pol, a)
+        if pol.tls_strict:
+            print("omna: providers are now verified against the certifi bundle, not this\n"
+                  "      machine's trust store — so the certificate `omna init` installed for\n"
+                  "      the inbound side cannot vouch for a provider on the outbound side.")
+        else:
+            print("omna: back to the default — providers are verified against this machine's trust store.")
+        return 0
+
+    if a.action == "pin":
+        if not a.host:
+            print("omna: which host? e.g. `omna tls pin api.anthropic.com`", file=sys.stderr)
+            return 1
+        host = a.host.lower()
+        try:
+            pins = upstream_tls.fetch_pins(host)
+        except OSError as e:
+            print(f"omna: could not reach {host}: {e}", file=sys.stderr)
+            return 1
+        if not pins:
+            print(f"omna: {host} presented no certificate to pin", file=sys.stderr)
+            return 1
+        print(f"omna: {host} is currently presenting these public keys, leaf first:")
+        for i, pin in enumerate(pins):
+            print(f"  [{i}] {pin}" + ("   <- leaf (rotates most often)" if i == 0 else
+                                      "   <- intermediate (safer to pin)"))
+        if not a.save:
+            print("\nNothing was saved. Add `--save` to pin, and read this first:")
+            print("  Pinning means Omna REFUSES to send if the certificate stops matching.")
+            print("  Providers rotate certificates. When they do, you must run this again")
+            print("  or Omna will stop working against that host. Pin the intermediate if")
+            print("  you can — it survives leaf rotation.")
+            return 0
+        pol.tls_pins[host] = pins
+        _save_policy(pol, a)
+        print(f"\nomna: pinned {len(pins)} key(s) for {host}. Remove with `omna tls unpin {host}`.")
+        return 0
+
+    if a.action == "unpin":
+        if not a.host:
+            print("omna: which host?", file=sys.stderr)
+            return 1
+        if pol.tls_pins.pop(a.host.lower(), None) is None:
+            print(f"omna: {a.host} was not pinned")
+            return 0
+        _save_policy(pol, a)
+        print(f"omna: unpinned {a.host}")
+        return 0
+
+    # no action: show the state
+    mode = "strict (certifi bundle)" if pol.tls_strict else "this machine's trust store (default)"
+    print(f"outbound verification: {mode}")
+    if pol.tls_pins:
+        print("pinned hosts:")
+        for host, pins in sorted(pol.tls_pins.items()):
+            print(f"  {host}: {len(pins)} key(s)")
+        print("\nA pinned host stops working if its certificate rotates. Re-run")
+        print("`omna tls pin <host> --save` when that happens.")
+    else:
+        print("pinned hosts: none  (pinning is off by default — an unattended pin is a time bomb)")
+    print("\n  omna tls strict          verify providers against certifi, not your trust store")
+    print("  omna tls default         back to your machine's trust store")
+    print("  omna tls pin HOST        show the live keys for HOST (add --save to pin them)")
+    print("  omna tls unpin HOST      remove a pin")
     return 0
 
 
@@ -780,21 +901,61 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("hosts", help="show, or add/remove, the hostnames counted as AI"); add_port(s)
     s.add_argument("action", nargs="?", choices=["add", "remove"]); s.add_argument("host", nargs="?")
     s.set_defaults(fn=cmd_hosts)
-    s = sub.add_parser("crash", help="what broke on this machine (local only — nothing is ever sent)")
+    s = sub.add_parser("crash", help="what broke on this machine (kept locally; sent only if you said yes)")
     s.add_argument("--show", type=int, metavar="N", help="print crash N in full")
-    s.add_argument("--send", action="store_true", help="open a GitHub issue pre-filled with the report you just read")
+    s.add_argument("--send", action="store_true", help="send the pending reports now")
+    s.add_argument("--issue", action="store_true", help="open a GitHub issue pre-filled with the report instead")
+    s.add_argument("--always", action="store_true", help="send crash reports automatically from now on")
+    s.add_argument("--never", action="store_true", help="never send crash reports (they stay on this machine)")
     s.add_argument("--clear", action="store_true", help="delete the local crash log")
     s.set_defaults(fn=cmd_crash)
     s = sub.add_parser("verify-model", help="re-hash the on-device model and check it against its pinned hash")
     s.set_defaults(fn=cmd_verify_model)
+    s = sub.add_parser("tls", help="how Omna verifies the AI provider on the way out")
+    s.add_argument("action", nargs="?", choices=["strict", "default", "pin", "unpin"])
+    s.add_argument("host", nargs="?")
+    s.add_argument("--save", action="store_true", help="actually store the pins that `pin` shows")
+    add_port(s); s.set_defaults(fn=cmd_tls)
     s = sub.add_parser("version"); s.set_defaults(fn=cmd_version)
     return p
+
+
+def maybe_ask_about_crashes(cmd: str) -> None:
+    """Ask the one crash-reporting question, at the right moment or not at all.
+
+    Four gates, all of which must pass (#132):
+      - something actually broke and has not been sent;
+      - we have never asked (a "no" is final);
+      - there is a real terminal — never prompt a script, a hook, or a daemon;
+      - this is not `ensure`, which the Claude Code SessionStart hook runs, and
+        which must stay silent because anything it prints becomes model context.
+    After a yes, anything still pending is sent immediately.
+    """
+    if cmd in ("ensure", "menubar", "start"):
+        return
+    try:
+        if not (sys.stdin.isatty() and sys.stderr.isatty()):
+            return
+        if not crashlog.should_ask():
+            if crashlog.may_send():
+                from . import crashsend
+
+                crashsend.send_pending()
+            return
+        from . import crashsend
+
+        if crashsend.ask_and_remember(crashlog.unsent()):
+            crashsend.send_pending()
+    except Exception:
+        return  # consent plumbing must never break a command
 
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
     try:
-        return a.fn(a)
+        rc = a.fn(a)
+        maybe_ask_about_crashes(a.cmd)
+        return rc
     except (KeyboardInterrupt, SystemExit):
         raise
     except BaseException as e:

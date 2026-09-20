@@ -4,6 +4,19 @@ Each record carries ``prev`` (the previous record's hash) and ``hash``
 (SHA-256 over ``prev`` + the canonical JSON of the record without ``hash``).
 Editing or deleting a line in the middle breaks the chain, which
 ``verify()`` reports. This is the free, local seed of the paid evidence report.
+
+**At rest:** each line is sealed individually with AES-256-GCM (key in the
+macOS Keychain, its own key — not the registry's, so ``omna forget`` cannot
+make the evidence trail unreadable). Per-LINE rather than whole-file because
+the file is append-only and rewriting it on every request would be both slow
+and a chance to corrupt the chain.
+
+There are no real values in a receipt, so why bother? Because "counts only" is
+still your working day: which AI tools you use, which providers, when, how
+much. That is worth the same protection as the dashboard (#134).
+
+The chain is computed over the DECRYPTED record, so ``verify()`` is unchanged
+and an old plaintext file keeps verifying — ``_iter`` reads both forms.
 """
 
 from __future__ import annotations
@@ -15,7 +28,7 @@ import threading
 import time
 from typing import Iterator
 
-from . import config
+from . import config, vault
 
 GENESIS = "0" * 64
 
@@ -34,13 +47,34 @@ def _hash(prev: str, rec: dict) -> str:
     return hashlib.sha256((prev + _canonical(rec)).encode()).hexdigest()
 
 
+def _key() -> bytes | None:
+    return vault.load_key(create=True, account=vault.RECEIPTS_ACCOUNT)
+
+
 def _iter(path) -> Iterator[dict]:
+    """Every record, sealed or plaintext.
+
+    Reads both forms so a file written before encryption existed keeps working
+    and keeps verifying. A line we cannot open is surfaced as ``_corrupt``, the
+    same as unparseable JSON, so `verify()` reports it instead of skipping it —
+    a receipt you cannot read is exactly as bad as one that was tampered with.
+    """
     if not path.exists():
         return
+    key = None
+    key_loaded = False
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
+                continue
+            if vault.is_sealed(line):
+                if not key_loaded:
+                    key, key_loaded = _key(), True
+                try:
+                    yield vault.open_sealed(line, key)
+                except vault.RegistryLocked:
+                    yield {"_corrupt": "sealed line could not be opened"}
                 continue
             try:
                 yield json.loads(line)
@@ -64,9 +98,12 @@ def append(record: dict) -> dict:
     with _LOCK:
         rec["prev"] = last_hash()
         rec["hash"] = _hash(rec["prev"], rec)
+        key = _key()
+        line = (vault.seal(rec, key) if key
+                else json.dumps(rec, sort_keys=True, separators=(",", ":")))
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n")
+            f.write(line + "\n")
     return rec
 
 

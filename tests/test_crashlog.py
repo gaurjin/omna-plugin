@@ -138,3 +138,51 @@ def test_issue_url_is_prefilled_and_carries_no_values(home):
     assert url.startswith("https://github.com/gaurjin/omna-plugin/issues/new")
     assert "sk_live" not in url
     assert "RuntimeError" in url
+
+
+# ------------------------------------------------- asking once, off by default (#132)
+def test_sending_is_off_until_the_person_says_yes(home):
+    """Off by default, same posture as Kiji. Nothing is sent on the strength of
+    a default — the difference is that we ASK, once, at the moment it matters."""
+    from omna_plugin.policy import Policy
+
+    assert Policy().crash_reports == "unset"
+    assert crashlog.may_send() is False
+
+
+def test_unset_means_we_still_have_something_to_ask_about(home):
+    from omna_plugin.policy import Policy
+
+    crashlog.record(_boom("x"), where="cli")
+    assert crashlog.should_ask() is True
+    pol = Policy(); pol.crash_reports = "off"; pol.save()
+    assert crashlog.should_ask() is False, "a no must never be asked again"
+    pol.crash_reports = "on"; pol.save()
+    assert crashlog.should_ask() is False and crashlog.may_send() is True
+
+
+def test_nothing_to_ask_about_when_nothing_crashed(home):
+    assert crashlog.should_ask() is False
+
+
+def test_unsent_rows_are_tracked_so_we_never_send_twice(home):
+    crashlog.record(_boom("one"), where="cli")
+    crashlog.record(_boom("two"), where="cli")
+    assert len(crashlog.unsent()) == 2
+    crashlog.mark_sent(crashlog.unsent())
+    assert crashlog.unsent() == []
+    assert len(crashlog.tail(10)) == 2, "marking sent must not delete the local copy"
+
+
+def test_the_payload_is_the_row_we_already_masked(home):
+    """What goes over the wire is exactly the row on disk — nothing is gathered
+    again at send time, so what the person read is what we receive."""
+    crashlog.record(_boom(f"auth failed for {FAKE_STRIPE}"), where="proxy")
+    row = crashlog.tail(1)[0]
+    payload = crashlog.payload([row])
+    blob = json.dumps(payload)
+    assert "sk_live" not in blob
+    assert payload["crashes"][0]["message"] == row["message"]
+    # no identity of any kind rides along
+    for banned in ("user", "username", "hostname", "device_id", "email", "path", "home"):
+        assert banned not in blob.lower(), banned

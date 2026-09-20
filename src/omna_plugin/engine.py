@@ -100,12 +100,22 @@ class MaskingSession:
     def _load_registry(self) -> None:
         """Read the registry, minting or fetching its key, and record the at-rest state.
 
-        Three outcomes, all of which must leave a working masker behind:
-        healthy-encrypted, healthy-plaintext (no Keychain here), and *locked* —
-        the file is sealed but the key is gone. Locked keeps masking with
-        fresh in-memory numbering and refuses to save, because writing a new
-        registry over one we cannot read would destroy every mapping the
-        person still has.
+        A sealed file we cannot open splits into two VERY different cases, and
+        treating them the same was the bug (owner, 2026-09-20):
+
+        - **The Keychain is out of reach** (``OMNA_REGISTRY_ENCRYPTION=off``, a
+          Linux box, a locked login keychain). The key may be perfectly fine —
+          we simply cannot get to it right now. Touching the file here could
+          destroy mappings that are still recoverable, so we go ``locked``:
+          keep masking, save nothing, say so loudly.
+        - **The Keychain works and still cannot open this file.** The key is
+          gone for good, so the file is unreadable *forever* — no amount of
+          waiting brings it back. Refusing to save just leaves a permanently
+          broken masker that renumbers on every restart. So we move the dead
+          file aside and start a fresh encrypted registry.
+
+        The old mappings are lost either way; the difference is whether Omna
+        keeps working afterwards.
         """
         # create=True only matters the first time; after that it is a read.
         self._key = vault.load_key(create=True)
@@ -121,9 +131,12 @@ class MaskingSession:
             try:
                 data = vault.open_sealed(text, self._key)
             except vault.RegistryLocked:
-                self.locked = True
                 self.encrypted = True
-                return
+                if not vault.keychain_supported():
+                    self.locked = True   # recoverable later; do not touch the file
+                    return
+                self._retire_unreadable_registry()
+                data = {}
         else:
             try:
                 data = json.loads(text)
@@ -145,6 +158,25 @@ class MaskingSession:
             # Upgrade path: a registry written before #131 is sealed on the
             # first run that has a key, without waiting for the next mask.
             self._save_registry()
+
+    def _retire_unreadable_registry(self) -> None:
+        """Move a permanently-unreadable registry aside so a fresh one can start.
+
+        Renamed rather than deleted: it costs nothing, it leaves evidence that
+        something happened, and if the key ever turns up (restored from a
+        backup keychain, say) the file is still there to open. The new name
+        carries a timestamp so a second occurrence cannot overwrite the first.
+        """
+        stamp = __import__("datetime").datetime.now().strftime("%Y%m%d-%H%M%S")
+        dead = self._registry_file.with_name(f"{self._registry_file.name}.unreadable-{stamp}")
+        try:
+            os.replace(self._registry_file, dead)
+        except OSError:
+            return
+        print(f"omna: the registry key is missing from your Keychain, so "
+              f"{self._registry_file.name} can no longer be opened. It was kept as "
+              f"{dead.name} and a new encrypted registry was started. Tokens restart from 1.",
+              file=__import__("sys").stderr)
 
     def _save_registry(self) -> None:
         if self.locked:

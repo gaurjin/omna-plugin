@@ -40,6 +40,10 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 # can read its own items back without prompting the person every time.
 SERVICE = "omna"
 ACCOUNT = "registry-key"
+# Receipts get their OWN key, deliberately. `omna forget` wipes the registry
+# and its key; that must not also make the receipt history unreadable, because
+# the receipts are the evidence trail and contain no real values to forget.
+RECEIPTS_ACCOUNT = "receipts-key"
 
 ALGORITHM = "aes-256-gcm"
 KEY_BYTES = 32
@@ -110,8 +114,8 @@ def new_key() -> bytes:
     return os.urandom(KEY_BYTES)
 
 
-def load_key(create: bool = False) -> bytes | None:
-    """The registry key, or None if this machine cannot hold one.
+def load_key(create: bool = False, account: str = ACCOUNT) -> bytes | None:
+    """A key from the Keychain, or None if this machine cannot hold one.
 
     ``create=True`` mints one on first use. Never raises: a Keychain that is
     locked, missing or refusing means "no key", which the caller turns into
@@ -119,7 +123,7 @@ def load_key(create: bool = False) -> bytes | None:
     """
     if not keychain_supported():
         return None
-    stored = _kc_read(ACCOUNT)
+    stored = _kc_read(account)
     if stored:
         try:
             raw = base64.b64decode(stored, validate=True)
@@ -135,13 +139,13 @@ def load_key(create: bool = False) -> bytes | None:
         return None
     key = new_key()
     try:
-        _kc_write(ACCOUNT, base64.b64encode(key).decode())
+        _kc_write(account, base64.b64encode(key).decode())
     except (OSError, subprocess.SubprocessError):
         return None
     return key
 
 
-def delete_key() -> bool:
+def delete_key(account: str = ACCOUNT) -> bool:
     """Remove the key from the Keychain (``omna forget`` / ``omna uninstall``).
 
     Honours the off-switch exactly like every other function here, because
@@ -152,7 +156,7 @@ def delete_key() -> bool:
     """
     if not keychain_supported():
         return False
-    return _kc_delete(ACCOUNT)
+    return _kc_delete(account)
 
 
 # ------------------------------------------------------------------- envelope
