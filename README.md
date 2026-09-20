@@ -33,7 +33,7 @@ That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires C
 proxy. Or by hand:
 
 ```sh
-uv tool install git+https://github.com/gaurjin/omna-plugin@v0.4.3   # PyPI: coming
+uv tool install git+https://github.com/gaurjin/omna-plugin@v0.5.0   # PyPI: coming
 omna init                        # Claude Code: sets ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
 omna start -d                    # background proxy on 127.0.0.1:7788
 omna status
@@ -106,6 +106,9 @@ omna log --verify
 | `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login or Keep Local Reports, or uninstall. |
 | `omna log [-n 20] [--verify] [--json]` | Local receipts. `--verify` checks the hash chain. |
 | `omna report [--days 7] [--json] [--html FILE]` | Weekly summary from the receipts: requests enabled, distinct secrets kept off the wire, PII tokenised, destinations, chain status, masking cost. |
+| `omna report --export FILE` | Write a **counts-only** copy of that report, safe to hand to a company admin — numbers plus your org/department tags. No prompt text, no real values, no usernames, no file paths, no app names. |
+| `omna report --merge FILE...` | Add up exported files into one company view plus a per-department view. A machine whose file is collected twice is counted once. |
+| `omna enroll [--org NAME] [--dept NAME] [--forget]` | Tag this machine so its exports can be grouped. With no arguments, shows the current tags. Nothing is sent anywhere — see below. |
 | `omna mask [TEXT or -]` | Mask a string or stdin. |
 | `omna allow VALUE` | Never mask this exact value again (false positive). |
 | `omna forget` | Wipe the token registry (tokens renumber). |
@@ -136,6 +139,26 @@ The proxy relays the stream as it arrives (pings included), forwards `anthropic-
 | `receipts.jsonl` | one hash-chained line per request: route, status, ms, counts per entity. No values. | 0600 |
 | `ruleset.json` | your allowlist and custom patterns (`{"allowlist": [...], "custom_rules": [{"label": "CUSTOMER_ID", "pattern": "ACME-\\d{6}"}]}`). Created with loopback addresses (`127.0.0.1`, `0.0.0.0`, `::1`, `localhost`) allowlisted. | |
 | `proxy.log`, `omna.pid` | background-process housekeeping | |
+| `policy.json` | which tools/apps/hosts are covered, and — only if you ran `omna enroll` — an organisation name, a department name, and a random device id. | 0600 |
+
+## Company reports, without a server
+
+A company with 100 laptops does not want 100 separate reports, and Omna does not
+want their prompts. So the rollup is done with files, not a backend:
+
+1. IT tags each machine at install time (or later with `omna enroll`):
+   `curl -fsSL https://omna.dev/cli/install.sh | sh -s -- --org "Acme Inc" --dept engineering`
+2. Each machine writes a counts-only file: `omna report --export machine.json`
+3. Whoever is collecting them runs `omna report --merge *.json` and gets a
+   company total plus a per-department breakdown.
+
+**Nothing is uploaded.** There is no Omna server in this picture at all — the
+files move however that company already moves files. The export is an
+allowlist of number fields, so a new field added to the report later cannot
+quietly start riding along. It deliberately leaves out your home path (which
+carries your username) and which apps you run. The device id is random and
+local; it exists so two files can be told apart and a duplicate can be spotted,
+and `omna enroll --forget` deletes it.
 
 ## What it refuses
 
