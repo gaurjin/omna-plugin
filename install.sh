@@ -24,7 +24,7 @@ while [ $# -gt 0 ]; do
 done
 
 # Until the PyPI release, install straight from GitHub (a tagged release, not a moving branch).
-SOURCE="${OMNA_SOURCE:-git+https://github.com/gaurjin/omna-plugin@v0.5.0}"
+SOURCE="${OMNA_SOURCE:-git+https://github.com/gaurjin/omna-plugin@v0.5.1}"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "omna: installing uv (Python tool manager)..."
