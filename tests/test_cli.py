@@ -407,3 +407,83 @@ def test_restart_daemon_warns_when_the_respawned_proxy_never_comes_up(monkeypatc
     _real_restart_daemon()
     out, err = capsys.readouterr()
     assert "did not come back up" in err
+
+
+# ---------------------------------------------------------------- enrolment
+def test_enroll_sets_org_dept_and_mints_a_device_id(capsys):
+    main(["enroll", "--org", "Acme Inc", "--dept", "engineering"])
+    pol = Policy.load()
+    assert pol.org == "Acme Inc"
+    assert pol.dept == "engineering"
+    assert len(pol.device_id) == 16  # token_hex(8)
+    out, _ = capsys.readouterr()
+    assert "Acme Inc" in out and "engineering" in out
+
+
+def test_enroll_keeps_the_same_device_id_when_only_the_department_changes():
+    main(["enroll", "--org", "Acme Inc", "--dept", "engineering"])
+    first = Policy.load().device_id
+    main(["enroll", "--dept", "sales"])
+    pol = Policy.load()
+    assert pol.device_id == first, "re-tagging a machine must not look like a new machine"
+    assert pol.org == "Acme Inc", "--dept alone must not clear the org"
+    assert pol.dept == "sales"
+
+
+def test_enroll_forget_clears_the_device_id_too():
+    main(["enroll", "--org", "Acme Inc"])
+    assert Policy.load().device_id
+    main(["enroll", "--forget"])
+    pol = Policy.load()
+    assert pol.org == "" and pol.dept == "" and pol.device_id == ""
+
+
+def test_enroll_with_no_args_reports_not_enrolled(capsys):
+    main(["enroll"])
+    out, _ = capsys.readouterr()
+    assert "not enrolled" in out
+
+
+def test_status_shows_enrolment_when_tagged(monkeypatch, capsys):
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)
+    main(["enroll", "--org", "Acme Inc", "--dept", "engineering"])
+    capsys.readouterr()
+    main(["status"])
+    out, _ = capsys.readouterr()
+    assert "enrolled:" in out and "Acme Inc" in out and "engineering" in out
+
+
+def test_report_export_then_merge_roundtrip(tmp_path, capsys):
+    """The whole company story end to end: two machines export, an admin merges."""
+    import json as _json
+    from omna_plugin import receipts
+
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "masked": {"EMAIL": 2}, "secrets": 0, "pii": 2, "ms": 10, "mask_ms": 2, "tokens": ["EMAIL_1", "EMAIL_2"]})
+    main(["enroll", "--org", "Acme Inc", "--dept", "engineering"])
+    a = tmp_path / "machine-a.json"
+    main(["report", "--export", str(a)])
+    assert a.exists()
+    payload = _json.loads(a.read_text())
+    assert payload["format"] == "omna-share-1" and payload["dept"] == "engineering"
+
+    # A second machine, different department, written by hand from the first.
+    b = tmp_path / "machine-b.json"
+    other = dict(payload, device_id="otherdevice", dept="sales", requests=7)
+    b.write_text(_json.dumps(other))
+
+    capsys.readouterr()
+    main(["report", "--merge", str(a), str(b)])
+    out, _ = capsys.readouterr()
+    assert "engineering" in out and "sales" in out and "2 machines" in out
+
+
+def test_report_export_warns_when_the_machine_is_not_enrolled(tmp_path, capsys):
+    main(["report", "--export", str(tmp_path / "x.json")])
+    _, err = capsys.readouterr()
+    assert "isn't enrolled" in err
+
+
+def test_report_merge_on_a_missing_file_fails_cleanly(tmp_path, capsys):
+    rc = main(["report", "--merge", str(tmp_path / "nope.json")])
+    _, err = capsys.readouterr()
+    assert rc == 1 and "no such file" in err

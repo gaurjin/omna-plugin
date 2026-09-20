@@ -34,6 +34,7 @@ import subprocess
 import sys
 import time
 from datetime import date
+from pathlib import Path
 
 import httpx
 
@@ -236,6 +237,8 @@ def cmd_status(a) -> int:
         cst = continue_dev.status()
         print(f"continue:     {'wired' if cst['wired'] else 'not wired'}{'' if cst['wired'] else '  → `omna enable continue`'}")
     pol = Policy.load()
+    if pol.org or pol.dept:
+        print(f"enrolled:     {pol.org or '(no org)'} / {pol.dept or '(no department)'}  (device {pol.device_id})")
     ok, n, msg = receipts.verify()
     off_note = "  (OFF — nothing new is being logged)" if not pol.reports_enabled else ""
     print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}{off_note}")
@@ -516,10 +519,63 @@ def cmd_hosts(a) -> int:
     return 0
 
 
+def cmd_enroll(a) -> int:
+    pol = Policy.load()
+    if a.forget:
+        pol.unenroll()
+        pol.save()
+        print("omna: this machine is no longer tagged with an organisation or department.")
+        return 0
+    if not a.org and not a.dept:
+        if pol.org or pol.dept:
+            print(f"organisation: {pol.org or '(none)'}")
+            print(f"department:   {pol.dept or '(none)'}")
+            print(f"device id:    {pol.device_id or '(none)'}")
+        else:
+            print("omna: this machine is not enrolled.")
+            print("  omna enroll --org \"Acme Inc\" --dept engineering")
+        return 0
+    pol.enroll(org=a.org or "", dept=a.dept or "")
+    pol.save()
+    print(f"omna: enrolled as {pol.org or '(no org)'} / {pol.dept or '(no department)'} (device {pol.device_id}).")
+    print("  Nothing is sent anywhere. `omna report --export FILE` writes a counts-only file you can hand in.")
+    return 0
+
+
 def cmd_report(a) -> int:
     from . import report
 
+    if getattr(a, "merge", None):
+        shares = []
+        for path in a.merge:
+            try:
+                shares.append(json.loads(Path(path).read_text()))
+            except FileNotFoundError:
+                print(f"omna: no such file: {path}", file=sys.stderr)
+                return 1
+            except json.JSONDecodeError as e:
+                print(f"omna: {path} is not valid JSON ({e})", file=sys.stderr)
+                return 1
+        try:
+            merged = report.merge(shares)
+        except ValueError as e:
+            print(f"omna: {e}", file=sys.stderr)
+            return 1
+        print(report.to_json(merged) if a.json else report.render_merge_text(merged))
+        return 0
+
     d = report.build(days=a.days)
+    if getattr(a, "export", None):
+        payload = report.share(d)
+        if not payload["org"] and not payload["dept"]:
+            print(
+                "omna: this machine isn't enrolled, so the export has no organisation or department.\n"
+                "  Run `omna enroll --org \"Acme Inc\" --dept engineering` first if it should be grouped.",
+                file=sys.stderr,
+            )
+        Path(a.export).write_text(report.to_json(payload) + "\n")
+        print(f"omna: counts-only export written to {a.export}")
+        return 0
     if a.json:
         print(report.to_json(d))
         return 0
@@ -572,9 +628,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_init)
     s = sub.add_parser("uninstall", help="undo init (Claude Code + Mac system proxy/certificate)"); s.add_argument("--project", action="store_true"); s.set_defaults(fn=cmd_uninstall)
     s = sub.add_parser("menubar", help="a status icon: on/off, what's covered, Uninstall"); add_port(s); s.set_defaults(fn=cmd_menubar)
-    s = sub.add_parser("report", help="weekly summary from the receipts (text, --json, or --html FILE)")
+    s = sub.add_parser("report", help="weekly summary from the receipts (text, --json, --html FILE, --export FILE, --merge FILES)")
     s.add_argument("--days", type=int, default=7); s.add_argument("--json", action="store_true"); s.add_argument("--html", metavar="FILE")
+    s.add_argument("--export", metavar="FILE", help="write a counts-only file safe to hand to a company admin")
+    s.add_argument("--merge", nargs="+", metavar="FILE", help="add up exported files into a company + per-department view")
     s.set_defaults(fn=cmd_report)
+    s = sub.add_parser("enroll", help="tag this machine with an organisation/department for company reports")
+    s.add_argument("--org", default="", help="organisation name")
+    s.add_argument("--dept", default="", help="department name")
+    s.add_argument("--forget", action="store_true", help="remove the tags and the device id")
+    s.set_defaults(fn=cmd_enroll)
     s = sub.add_parser("tools", help="show tool policy (on/off)"); s.set_defaults(fn=cmd_tools)
     s = sub.add_parser("enable", help="turn a tool on (claude-code, aider, codex also wire it)"); s.add_argument("tool"); add_port(s); s.set_defaults(fn=cmd_enable)
     s = sub.add_parser("disable", help="turn a tool off (claude-code, aider, codex also unwire it)"); s.add_argument("tool"); add_port(s); s.set_defaults(fn=cmd_disable)

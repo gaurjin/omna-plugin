@@ -212,5 +212,139 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 </body></html>"""
 
 
+# Keys from build() that are safe to hand to someone else. Everything outside
+# this list is dropped by share() — not filtered "if it looks sensitive", but
+# dropped unless it is named here, so a field added to build() later can never
+# leak into an export by default. Notably absent: "home" (a filesystem path,
+# which carries the username) and "by_app" (which app names a person runs is
+# their business, not the company's).
+SHAREABLE_KEYS = (
+    "period_days", "since", "engine",
+    "requests", "requests_ok", "requests_refused", "requests_failed",
+    "requests_with_catch", "sessions",
+    "secrets_caught", "pii_caught", "distinct_secrets", "distinct_pii",
+    "avg_mask_ms", "avg_ms",
+    "by_kind", "by_day", "by_door", "bypassed",
+)
+
+
+def share(d: dict, pol=None) -> dict:
+    """Counts-only view of a report, safe to send to a company admin.
+
+    This is the piece that answers "how do 100 machines become one report"
+    without anyone standing up a server: each machine writes one of these,
+    an admin collects them however they already move files around, and
+    merge() adds them up.
+
+    What is in here is numbers, plus the org/department tags the machine was
+    enrolled with. What is NOT in here: prompt text, tokens, real values,
+    hostnames, usernames, file paths, app names. The device id is random and
+    machine-local — it exists so two files can be told apart, and so the same
+    file sent twice can be spotted, nothing else.
+    """
+    from .policy import Policy
+
+    pol = pol or Policy.load()
+    out = {k: d[k] for k in SHAREABLE_KEYS if k in d}
+    out["org"] = pol.org
+    out["dept"] = pol.dept
+    out["device_id"] = pol.device_id
+    out["generated"] = d.get("generated", "")
+    out["format"] = "omna-share-1"
+    return out
+
+
+def _is_share(d: dict) -> bool:
+    return d.get("format") == "omna-share-1"
+
+
+def merge(shares: list[dict]) -> dict:
+    """Add up exported reports into a company view plus a per-department view.
+
+    A device that appears twice (the same file collected from two places, or
+    an admin re-running a collection) is counted ONCE — the later `generated`
+    timestamp wins. Without that, a rollup silently double-counts, which is
+    the sort of error nobody catches because the number still looks plausible.
+    """
+    bad = [s for s in shares if not _is_share(s)]
+    if bad:
+        raise ValueError(
+            f"{len(bad)} file(s) are not Omna share exports "
+            "(expected \"format\": \"omna-share-1\" — did you pass a plain `--json` report?)"
+        )
+
+    latest: dict[str, dict] = {}
+    anonymous: list[dict] = []
+    for s in shares:
+        did = str(s.get("device_id") or "")
+        if not did:
+            # A machine that was never enrolled still has numbers worth adding;
+            # it just cannot be de-duplicated, so keep every one of them.
+            anonymous.append(s)
+            continue
+        prev = latest.get(did)
+        if prev is None or str(s.get("generated", "")) >= str(prev.get("generated", "")):
+            latest[did] = s
+    used = list(latest.values()) + anonymous
+
+    def totals(group: list[dict]) -> dict:
+        by_kind: Counter = Counter()
+        by_day: Counter = Counter()
+        by_door: Counter = Counter()
+        acc = {k: 0 for k in (
+            "requests", "requests_ok", "requests_refused", "requests_failed",
+            "requests_with_catch", "sessions", "secrets_caught", "pii_caught",
+            "distinct_secrets", "distinct_pii", "bypassed",
+        )}
+        for s in group:
+            for k in acc:
+                acc[k] += int(s.get(k, 0) or 0)
+            by_kind.update(s.get("by_kind") or {})
+            by_day.update(s.get("by_day") or {})
+            by_door.update(s.get("by_door") or {})
+        acc["devices"] = len(group)
+        acc["by_kind"] = dict(by_kind.most_common())
+        acc["by_day"] = dict(sorted(by_day.items()))
+        acc["by_door"] = dict(by_door.most_common())
+        return acc
+
+    by_dept: dict[str, list[dict]] = {}
+    for s in used:
+        by_dept.setdefault(str(s.get("dept") or "(no department)"), []).append(s)
+
+    orgs = sorted({str(s.get("org") or "") for s in used} - {""})
+    return {
+        "format": "omna-merge-1",
+        "org": orgs[0] if len(orgs) == 1 else ", ".join(orgs) if orgs else "(no organisation)",
+        "devices": len(used),
+        "files_read": len(shares),
+        "duplicates_dropped": len(shares) - len(used),
+        "company": totals(used),
+        "departments": {d: totals(g) for d, g in sorted(by_dept.items())},
+    }
+
+
+def render_merge_text(m: dict) -> str:
+    c = m["company"]
+    lines = [
+        f"Omna company report  ·  {m['org']}",
+        f"{m['devices']} machines reporting"
+        + (f"  ·  {m['duplicates_dropped']} duplicate file(s) ignored" if m["duplicates_dropped"] else ""),
+        "",
+        f"COMPANY   {c['requests']} AI requests  ·  {c['secrets_caught']} secrets kept off the wire  "
+        f"·  {c['pii_caught']} personal values masked",
+        "",
+        "BY DEPARTMENT",
+    ]
+    width = max((len(d) for d in m["departments"]), default=10)
+    for dept, t in m["departments"].items():
+        lines.append(
+            f"  {dept.ljust(width)}  {t['devices']:>3} machines  "
+            f"{t['requests']:>6} requests  {t['secrets_caught']:>5} secrets  {t['pii_caught']:>5} personal"
+        )
+    lines += ["", "Counts only. No prompt text, no real values, no usernames — see `omna report --export`."]
+    return "\n".join(lines)
+
+
 def to_json(d: dict) -> str:
     return json.dumps(d, indent=2)

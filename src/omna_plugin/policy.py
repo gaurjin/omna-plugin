@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 from dataclasses import dataclass, field
 
 from . import config
@@ -115,6 +116,16 @@ class Policy:
     deep_apps: list[str] = field(default_factory=list)      # Stage 3: captured by the deep door
     doors: dict[str, bool] = field(default_factory=lambda: {"api": True, "system": True, "deep": False})
     reports_enabled: bool = True   # local receipts (counts only, never values) — off means none are written
+    # Set only when a company enrols this machine (`omna enroll`, or --org/--dept
+    # on the install line). Empty on a personal install, and nothing about them
+    # ever leaves the machine on its own — they exist so that a report EXPORTED
+    # by hand can be grouped by department and company. See report.share().
+    org: str = ""
+    dept: str = ""
+    # Stable, random, machine-local. Lets an admin tell two exported reports
+    # apart (and spot a re-send of the same one) without a username, hostname,
+    # serial or any other real identifier being involved.
+    device_id: str = ""
 
     # ------------------------------------------------------------ persistence
     @classmethod
@@ -132,6 +143,9 @@ class Policy:
             pol.deep_apps = list(data.get("deep_apps", []))
             pol.doors = {**pol.doors, **data.get("doors", {})}
             pol.reports_enabled = bool(data.get("reports_enabled", True))
+            pol.org = str(data.get("org", "") or "")
+            pol.dept = str(data.get("dept", "") or "")
+            pol.device_id = str(data.get("device_id", "") or "")
             return pol
         except Exception:
             return cls()
@@ -148,6 +162,9 @@ class Policy:
             "deep_apps": self.deep_apps,
             "doors": self.doors,
             "reports_enabled": self.reports_enabled,
+            "org": self.org,
+            "dept": self.dept,
+            "device_id": self.device_id,
         }
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.fchmod(fd, 0o600)  # Guarantee 0600 even if tmp file existed at different mode
@@ -155,6 +172,30 @@ class Policy:
             json.dump(payload, f, indent=2)
             f.write("\n")
         os.replace(tmp, p)
+
+    # ------------------------------------------------------------ enrolment
+    def enroll(self, org: str = "", dept: str = "") -> None:
+        """Tag this machine as belonging to a company/department.
+
+        Mints a random device id on first enrolment so exported reports can be
+        told apart without ever carrying a username or hostname. Passing an
+        empty string leaves that field alone, so `--dept` can be changed later
+        without re-stating `--org`.
+        """
+        if org:
+            self.org = org.strip()
+        if dept:
+            self.dept = dept.strip()
+        if (self.org or self.dept) and not self.device_id:
+            self.device_id = secrets.token_hex(8)
+
+    def unenroll(self) -> None:
+        """Drop the company tags. The device id goes too — keeping it would
+        leave a stable identifier behind for a machine that is no longer part
+        of any company report."""
+        self.org = ""
+        self.dept = ""
+        self.device_id = ""
 
     # ------------------------------------------------------------ hosts
     def is_ai_host(self, host: str) -> bool:
