@@ -74,5 +74,41 @@ def ca_dir() -> Path:
     return home() / "ca"
 
 
+def dashboard_token_path() -> Path:
+    return home() / "dashboard.token"
+
+
+def dashboard_token(create: bool = True) -> str:
+    """The secret that `/omna/dashboard` requires (#134).
+
+    The dashboard is loopback-only and shows counts, never values — but "only
+    counts" is still your day: which tools you use, how much, when you stopped.
+    Before this, any other program running as you could read it over HTTP
+    without touching a single file.
+
+    The token is a random string in ``~/.omna/dashboard.token`` (0600), so
+    reading it needs the same file access that reading the registry would.
+    That is the honest bar: it does not defend against something already
+    running as you with disk access, and nothing local can.
+    """
+    import secrets
+
+    p = dashboard_token_path()
+    try:
+        tok = p.read_text().strip()
+        if tok:
+            return tok
+    except OSError:
+        pass
+    if not create:
+        return ""
+    ensure_home()
+    tok = secrets.token_urlsafe(24)
+    fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(tok + "\n")
+    return tok
+
+
 def base_url(port: int = DEFAULT_PORT) -> str:
     return f"http://{DEFAULT_HOST}:{port}"

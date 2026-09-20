@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from omna_plugin import vault
 from omna_plugin.engine import MaskingSession, TOKEN_RE
 
 # Built at runtime so secret scanners (GitHub push protection) do not flag a fake key.
@@ -12,6 +13,18 @@ FAKE_STRIPE = "sk_live_" + "51H8xk2KJ3mN4oP5qR6sT7uV8wX9yZ0aB1cD2eF3gH4iJ5kL6mN7
 def home(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNA_HOME", str(tmp_path))
     return tmp_path
+
+
+@pytest.fixture
+def keychain(monkeypatch):
+    """A working Keychain in a dict — never the real machine's. See test_vault.py."""
+    store: dict[str, str] = {}
+    monkeypatch.delenv("OMNA_REGISTRY_ENCRYPTION", raising=False)
+    monkeypatch.setattr(vault, "_kc_supported", lambda: True)
+    monkeypatch.setattr(vault, "_kc_read", lambda a: store.get(a))
+    monkeypatch.setattr(vault, "_kc_write", lambda a, v: store.__setitem__(a, v))
+    monkeypatch.setattr(vault, "_kc_delete", lambda a: store.pop(a, None) is not None)
+    return store
 
 
 def test_secret_is_numbered_restorable_in_memory_and_never_on_disk(home):
@@ -104,6 +117,86 @@ def test_cache_returns_identical_result(home):
     b = s.mask_text(text)
     assert a.masked == b.masked and a.counts == b.counts
     assert s.cache_hits == 1
+
+
+# ------------------------------------------------------- registry at rest (#131)
+def test_registry_holds_no_real_value_when_encrypted(home, keychain):
+    s = MaskingSession()
+    s.mask_text("Email john.smith@acme.com today")
+    text = (home / "registry.json").read_text()
+    assert "john.smith@acme.com" not in text
+    assert "acme" not in text
+    assert vault.file_state(home / "registry.json") == "encrypted"
+    assert s.encrypted is True and s.locked is False
+
+
+def test_encrypted_registry_round_trips_across_sessions(home, keychain):
+    s1 = MaskingSession()
+    tok = TOKEN_RE.search(s1.mask_text("mail a@example.com").masked).group(0)
+    s2 = MaskingSession()
+    assert s2.restore_text(tok) == "a@example.com"
+    assert TOKEN_RE.search(s2.mask_text("mail a@example.com").masked).group(0) == tok
+
+
+def test_plaintext_registry_from_an_older_install_is_encrypted_on_first_run(home, monkeypatch, keychain):
+    # An install that predates #131: plaintext on disk, real value in the clear.
+    monkeypatch.setenv("OMNA_REGISTRY_ENCRYPTION", "off")
+    old = MaskingSession()
+    tok = TOKEN_RE.search(old.mask_text("mail a@example.com").masked).group(0)
+    assert "a@example.com" in (home / "registry.json").read_text()
+
+    # Upgrade: same file, Keychain now available.
+    monkeypatch.delenv("OMNA_REGISTRY_ENCRYPTION", raising=False)
+    s = MaskingSession()
+    assert s.encrypted is True
+    assert "a@example.com" not in (home / "registry.json").read_text()
+    # and the mappings survived the migration — the token did not renumber
+    assert s.restore_text(tok) == "a@example.com"
+
+
+def test_a_missing_key_locks_the_registry_and_never_overwrites_it(home, keychain):
+    s1 = MaskingSession()
+    s1.mask_text("mail a@example.com")
+    before = (home / "registry.json").read_text()
+
+    keychain.clear()  # key gone: Keychain wiped, restored from another Mac, etc.
+    s2 = MaskingSession()
+    assert s2.locked is True
+    # It still masks — a lost key must not take the product down...
+    assert "a@example.com" not in s2.mask_text("mail a@example.com").masked
+    # ...but it must NOT write a fresh registry over the one it cannot read,
+    # which would destroy every mapping the person still has.
+    assert (home / "registry.json").read_text() == before
+
+
+def test_forget_deletes_both_the_file_and_the_key(home, keychain):
+    s = MaskingSession()
+    s.mask_text("mail a@example.com")
+    assert keychain and (home / "registry.json").exists()
+    s.forget()
+    assert not (home / "registry.json").exists()
+    assert keychain == {}
+
+
+def test_forget_recovers_a_locked_registry(home, keychain):
+    MaskingSession().mask_text("mail a@example.com")
+    keychain.clear()
+    s = MaskingSession()
+    assert s.locked is True
+    s.forget()
+    assert not (home / "registry.json").exists()
+    # A new session after the wipe is healthy again, with a fresh key.
+    s2 = MaskingSession()
+    assert s2.locked is False and s2.encrypted is True
+
+
+def test_without_a_keychain_the_registry_stays_plaintext(home):
+    # The whole suite runs with OMNA_REGISTRY_ENCRYPTION=off, which is also
+    # what Linux/CI/headless looks like: today's behaviour, no crash.
+    s = MaskingSession()
+    s.mask_text("mail a@example.com")
+    assert s.encrypted is False and s.locked is False
+    assert "a@example.com" in (home / "registry.json").read_text()
 
 
 def test_assignment_keeps_the_name_outside_the_secret_token(home):

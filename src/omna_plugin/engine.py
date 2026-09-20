@@ -7,8 +7,9 @@ between turns, which defeats prompt caching and trips Claude Code's
 preserved-thinking check. So we rebuild the masked text ourselves from the
 engine's spans, using two registries:
 
-- **PII registry** (persisted to ``OMNA_HOME/registry.json``, 0600): reversible
-  personal data such as ``[EMAIL_1]`` / ``[PERSON_2]``.
+- **PII registry** (persisted to ``OMNA_HOME/registry.json``, 0600, and
+  encrypted with a key in the macOS Keychain — see ``vault.py``): reversible
+  personal data such as an EMAIL or PERSON token.
 - **Secrets registry** (memory only, never written to disk): ``[SECRET_AWS_KEY_1]``.
   The provider never sees the secret. It is put back only in what comes BACK
   from the model (replies and tool calls), so an edit to a line containing a
@@ -31,7 +32,7 @@ from dataclasses import dataclass, field
 
 import omna_pii_mask
 
-from . import config
+from . import config, vault
 
 # Reversible tokens: [PERSON_1], [EMAIL_12], [GOV_ID_3], [SECRET_AWS_KEY_2] ...
 TOKEN_RE = re.compile(r"\[([A-Z][A-Z0-9_]*?)_(\d+)\]")
@@ -88,30 +89,72 @@ class MaskingSession:
         self._secret_value_to_token: dict[str, str] = {}
         self._secret_token_to_value: dict[str, str] = {}
         self._secret_counters: dict[str, int] = {}
+        # At-rest state (#131), surfaced by `omna status` and /omna/health.
+        self._key: bytes | None = None
+        self.encrypted = False  # the file on disk is sealed
+        self.locked = False     # the file is sealed and we CANNOT open it
         self._load_registry()
         self._ensure_default_ruleset()
 
     # ------------------------------------------------------------------ registry
     def _load_registry(self) -> None:
+        """Read the registry, minting or fetching its key, and record the at-rest state.
+
+        Three outcomes, all of which must leave a working masker behind:
+        healthy-encrypted, healthy-plaintext (no Keychain here), and *locked* —
+        the file is sealed but the key is gone. Locked keeps masking with
+        fresh in-memory numbering and refuses to save, because writing a new
+        registry over one we cannot read would destroy every mapping the
+        person still has.
+        """
+        # create=True only matters the first time; after that it is a read.
+        self._key = vault.load_key(create=True)
         if not self._registry_file.exists():
+            self.encrypted = self._key is not None
             return
         try:
-            data = json.loads(self._registry_file.read_text())
-        except (OSError, ValueError):
+            text = self._registry_file.read_text()
+        except OSError:
             return
+        was_sealed = vault.is_sealed(text)
+        if was_sealed:
+            try:
+                data = vault.open_sealed(text, self._key)
+            except vault.RegistryLocked:
+                self.locked = True
+                self.encrypted = True
+                return
+        else:
+            try:
+                data = json.loads(text)
+            except ValueError:
+                # Same as before #131: an unreadable plaintext file starts over.
+                self.encrypted = self._key is not None
+                return
+            if not isinstance(data, dict):
+                self.encrypted = self._key is not None
+                return
         self._token_to_value = dict(data.get("tokens", {}))
         self._counters = dict(data.get("counters", {}))
         for tok, val in self._token_to_value.items():
             m = TOKEN_RE.fullmatch(tok)
             if m:
                 self._value_to_token[f"{m.group(1)}\x00{val}"] = tok
+        self.encrypted = self._key is not None
+        if self.encrypted and not was_sealed:
+            # Upgrade path: a registry written before #131 is sealed on the
+            # first run that has a key, without waiting for the next mask.
+            self._save_registry()
 
     def _save_registry(self) -> None:
-        tmp = self._registry_file.with_suffix(".json.tmp")
+        if self.locked:
+            return
         payload = {"tokens": self._token_to_value, "counters": self._counters}
+        body = vault.seal(payload, self._key) if self._key else json.dumps(payload)
+        tmp = self._registry_file.with_suffix(".json.tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump(payload, f)
+            f.write(body)
         os.replace(tmp, self._registry_file)
 
     def _stable_token(self, kind: str, value: str) -> str:
@@ -139,7 +182,11 @@ class MaskingSession:
         return tok
 
     def forget(self) -> None:
-        """Wipe the registries and cache (``omna forget``)."""
+        """Wipe the registries, the cache and the key (``omna forget``).
+
+        The key goes too: leaving it in the Keychain after the file it opens is
+        gone is litter, and this is also the only way out of a locked registry.
+        """
         with self._lock:
             self._value_to_token.clear()
             self._token_to_value.clear()
@@ -150,10 +197,21 @@ class MaskingSession:
             self._cache.clear()
             if self._registry_file.exists():
                 self._registry_file.unlink()
+            vault.delete_key()
+            self._key = None
+            self.locked = False
+            self.encrypted = False
 
     @property
     def registry_size(self) -> int:
         return len(self._token_to_value)
+
+    @property
+    def at_rest(self) -> str:
+        """'encrypted' | 'locked' | 'plaintext' — what protects registry.json."""
+        if self.locked:
+            return "locked"
+        return "encrypted" if self.encrypted else "plaintext"
 
     @property
     def secrets_held(self) -> int:
@@ -284,3 +342,36 @@ class MaskingSession:
 
 def engine_version() -> str:
     return omna_pii_mask.version()
+
+
+def registry_status() -> dict:
+    """What protects ``registry.json`` and how much it holds — cheaply.
+
+    ``omna status`` must be able to answer "where do the real values live, and
+    are they encrypted?" without building an engine or minting a key, so this
+    reads the file and only *looks up* an existing key (``create=False``).
+    ``entries`` is None when the file is locked, because the count itself is
+    inside the sealed part.
+    """
+    path = config.registry_path()
+    out = {"path": str(path), "at_rest": "empty", "entries": 0,
+           "keychain": vault.keychain_supported()}
+    state = vault.file_state(path)
+    if state == "missing":
+        return out
+    try:
+        text = path.read_text()
+    except OSError:
+        return out
+    if state == "encrypted":
+        try:
+            data = vault.open_sealed(text, vault.load_key(create=False))
+        except vault.RegistryLocked:
+            return {**out, "at_rest": "locked", "entries": None}
+        return {**out, "at_rest": "encrypted", "entries": len(data.get("tokens", {}))}
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = {}
+    n = len(data.get("tokens", {})) if isinstance(data, dict) else 0
+    return {**out, "at_rest": "plaintext", "entries": n}

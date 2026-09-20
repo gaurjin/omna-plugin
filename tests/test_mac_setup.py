@@ -368,3 +368,30 @@ def test_revert_cleans_up_vscode_even_when_vscode_app_is_already_gone(monkeypatc
     setup.revert()
 
     assert calls == ["revert_proxy", "disable_ca_trust"]
+
+
+def test_revert_removes_the_registry_key_from_the_keychain(monkeypatch, tmp_path):
+    # rmtree(~/.omna) cannot reach the Keychain, so the key that opened
+    # registry.json would otherwise outlive the file forever (#131).
+    from omna_plugin import vault
+
+    store = {vault.ACCOUNT: "whatever"}
+    monkeypatch.delenv("OMNA_REGISTRY_ENCRYPTION", raising=False)
+    monkeypatch.setattr(vault, "_kc_supported", lambda: True)
+    monkeypatch.setattr(vault, "_kc_delete", lambda a: store.pop(a, None) is not None)
+
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+
+    res = setup.revert()
+
+    assert res["key_removed"] is True
+    assert store == {}

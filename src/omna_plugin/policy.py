@@ -123,6 +123,12 @@ class Policy:
     # `[SECRET_AWS_KEY_1]` into your file instead of editing the real line.
     # Masking is NOT affected by this and never optional.
     restore_browser: bool = True
+    # Extra browser origins allowed to read replies through the API door
+    # (#137a). Local origins (localhost / 127.0.0.1 / [::1], any port) are
+    # always allowed and are not listed here. Anything added here is a
+    # deliberate widening — a page from that origin can then use this machine's
+    # proxy — so it stays empty unless someone sets it.
+    cors_origins: list[str] = field(default_factory=list)
     # Set only when a company enrols this machine (`omna enroll`, or --org/--dept
     # on the install line). Empty on a personal install, and nothing about them
     # ever leaves the machine on its own — they exist so that a report EXPORTED
@@ -151,6 +157,7 @@ class Policy:
             pol.doors = {**pol.doors, **data.get("doors", {})}
             pol.reports_enabled = bool(data.get("reports_enabled", True))
             pol.restore_browser = bool(data.get("restore_browser", True))
+            pol.cors_origins = [str(o) for o in data.get("cors_origins", [])]
             pol.org = str(data.get("org", "") or "")
             pol.dept = str(data.get("dept", "") or "")
             pol.device_id = str(data.get("device_id", "") or "")
@@ -171,6 +178,7 @@ class Policy:
             "doors": self.doors,
             "reports_enabled": self.reports_enabled,
             "restore_browser": self.restore_browser,
+            "cors_origins": self.cors_origins,
             "org": self.org,
             "dept": self.dept,
             "device_id": self.device_id,

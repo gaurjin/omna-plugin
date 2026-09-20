@@ -297,8 +297,11 @@ async def test_secret_restored_inside_streamed_tool_input(env):
 
 @pytest.mark.anyio
 async def test_dashboard_serves_html_and_json(env):
+    from omna_plugin import config
+
     up, session, client = env
-    r = await client.get("/omna/dashboard")
+    k = config.dashboard_token(create=True)   # token required since #134
+    r = await client.get(f"/omna/dashboard?k={k}")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     body = r.text
@@ -307,23 +310,165 @@ async def test_dashboard_serves_html_and_json(env):
     for bad in ("http://", "https://", "cdn.", "<script src"):
         assert bad not in body, f"dashboard reaches outside for {bad!r}"
 
-    j = await client.get("/omna/dashboard.json")
+    j = await client.get(f"/omna/dashboard.json?k={k}")
     assert j.status_code == 200
     assert "p95_ms" in j.json() and "sent_as_is" in j.json()
 
 
 @pytest.mark.anyio
 async def test_dashboard_shows_the_sent_as_is_count_the_extension_reports(env):
+    from omna_plugin import config
+
     up, session, client = env
+    k = config.dashboard_token(create=True)
     await client.post("/omna/extension-checkin", json={"version": "0.6.0", "sent_as_is": 7})
-    j = (await client.get("/omna/dashboard.json")).json()
+    j = (await client.get(f"/omna/dashboard.json?k={k}")).json()
     assert j["sent_as_is"] == 7
 
 
 @pytest.mark.anyio
 async def test_a_bogus_sent_as_is_is_ignored_not_trusted(env):
+    from omna_plugin import config
+
     up, session, client = env
+    k = config.dashboard_token(create=True)
     for bad in ("many", -3, None, {"n": 1}):
         await client.post("/omna/extension-checkin", json={"version": "0.6.0", "sent_as_is": bad})
-    j = (await client.get("/omna/dashboard.json")).json()
+    j = (await client.get(f"/omna/dashboard.json?k={k}")).json()
     assert j["sent_as_is"] == 0
+
+
+# -------------------------------------------------- crash recording (#132)
+@pytest.mark.anyio
+async def test_an_internal_error_is_recorded_locally_and_never_leaks_detail(env, tmp_path, monkeypatch):
+    """A crash inside the proxy happens in a background process, so the tool
+    just sees a 500 and the cause is lost. It must land in the local crash log
+    instead — and the 500 body must not carry the traceback out to the caller."""
+    from omna_plugin import crashlog
+
+    up, session, client = env
+
+    async def boom(request):
+        raise RuntimeError(f"kaboom while handling {EMAIL}")
+
+    app = client._transport.app
+    app.routes.insert(0, Route("/omna/boom", boom, methods=["GET"]))
+    # Starlette sends our 500 and THEN re-raises so the real server logs the
+    # traceback. That is what we want in production; here we just stop the test
+    # client from re-raising it on our behalf.
+    crash_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://omna.local",
+    )
+
+    r = await crash_client.get("/omna/boom")
+    assert r.status_code == 500
+    assert "kaboom" not in r.text and "Traceback" not in r.text
+    assert "omna crash" in r.text
+
+    rows = crashlog.tail(5)
+    assert rows and rows[-1]["error"] == "RuntimeError"
+    assert rows[-1]["where"] == "proxy"
+    assert rows[-1]["route"] == "/omna/boom"
+    # the address that rode along in the exception message was masked on the way in
+    assert EMAIL not in (tmp_path / "crashes.jsonl").read_text()
+
+
+# ------------------------------------------------- dashboard auth (#134)
+@pytest.mark.anyio
+async def test_the_dashboard_refuses_without_the_token(env):
+    from omna_plugin import config
+
+    up, session, client = env
+    for path in ("/omna/dashboard", "/omna/dashboard.json"):
+        r = await client.get(path)
+        assert r.status_code == 401, path
+        assert "token" in r.text
+        # the 401 itself must not hand out the secret
+        assert config.dashboard_token(create=True) not in r.text
+
+
+@pytest.mark.anyio
+async def test_the_dashboard_opens_with_the_token_in_the_url_or_a_bearer_header(env):
+    from omna_plugin import config
+
+    up, session, client = env
+    tok = config.dashboard_token(create=True)
+    r = await client.get(f"/omna/dashboard?k={tok}")
+    assert r.status_code == 200 and "text/html" in r.headers["content-type"]
+    r = await client.get("/omna/dashboard.json", headers={"authorization": f"Bearer {tok}"})
+    assert r.status_code == 200 and isinstance(r.json(), dict)
+
+
+@pytest.mark.anyio
+async def test_a_wrong_token_is_refused(env):
+    up, session, client = env
+    r = await client.get("/omna/dashboard?k=not-the-token")
+    assert r.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_the_token_file_is_owner_only(env, tmp_path):
+    from omna_plugin import config
+
+    config.dashboard_token(create=True)
+    assert oct((tmp_path / "dashboard.token").stat().st_mode)[-3:] == "600"
+
+
+# ------------------------------------------------------- browser CORS (#137a)
+@pytest.mark.anyio
+async def test_a_local_web_app_gets_its_preflight_answered(env):
+    up, session, client = env
+    r = await client.request("OPTIONS", "/v1/messages", headers={
+        "origin": "http://localhost:3000",
+        "access-control-request-method": "POST",
+        "access-control-request-headers": "content-type, x-api-key",
+    })
+    assert r.status_code == 204
+    assert r.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert "x-api-key" in r.headers["access-control-allow-headers"]
+    assert r.headers["vary"] == "Origin"
+
+
+@pytest.mark.anyio
+async def test_a_public_website_is_refused_so_we_are_not_an_open_relay(env):
+    """THE test for #137a. A page on the internet can make your browser send a
+    request to 127.0.0.1; approving its origin is what would let that page use
+    your machine as a proxy. It must be refused at the preflight."""
+    up, session, client = env
+    r = await client.request("OPTIONS", "/v1/messages", headers={
+        "origin": "https://evil.example.com",
+        "access-control-request-method": "POST",
+    })
+    assert r.status_code == 403
+    assert "access-control-allow-origin" not in r.headers
+
+
+@pytest.mark.anyio
+async def test_a_real_reply_carries_the_cors_header_for_a_local_origin(env):
+    up, session, client = env
+    r = await client.post("/v1/messages", json={"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]},
+                          headers={"origin": "http://127.0.0.1:5173", "content-type": "application/json"})
+    assert r.status_code == 200
+    assert r.headers["access-control-allow-origin"] == "http://127.0.0.1:5173"
+
+
+@pytest.mark.anyio
+async def test_no_origin_header_means_no_cors_headers_at_all(env):
+    """Claude Code and every other CLI send no Origin. Nothing changes for them."""
+    up, session, client = env
+    r = await client.post("/v1/messages", json={"model": "claude-sonnet-5", "messages": [{"role": "user", "content": "hi"}]})
+    assert r.status_code == 200
+    assert "access-control-allow-origin" not in r.headers
+
+
+def test_only_local_origins_pass_the_check():
+    from omna_plugin.proxy import cors_origin_allowed
+
+    for good in ("http://localhost:3000", "http://127.0.0.1:5173", "https://localhost", "http://[::1]:8080"):
+        assert cors_origin_allowed(good), good
+    for bad in ("https://evil.example.com", "http://localhost.evil.com", "http://127.0.0.1.evil.com", "", "null"):
+        assert not cors_origin_allowed(bad), bad
+    # an explicitly configured extra origin is honoured, exact-match only
+    assert cors_origin_allowed("https://app.acme.com", ["https://app.acme.com"])
+    assert not cors_origin_allowed("https://app.acme.com.evil.net", ["https://app.acme.com"])

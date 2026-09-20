@@ -19,7 +19,7 @@ import threading
 
 import uvicorn
 
-from . import config
+from . import config, crashlog
 from .engine import MaskingSession, engine_version
 from .pipeline import Pipeline
 from .policy import Policy
@@ -99,4 +99,13 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
 
 
 def run(**kw) -> None:
-    asyncio.run(serve(**kw))
+    # The daemon dies into a log file nobody reads. Record the cause locally,
+    # masked and unsent, so `omna crash` can explain it later (#132).
+    crashlog.install_excepthook("daemon")
+    try:
+        asyncio.run(serve(**kw))
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as e:
+        crashlog.record(e, where="daemon")
+        raise

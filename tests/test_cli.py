@@ -487,3 +487,101 @@ def test_report_merge_on_a_missing_file_fails_cleanly(tmp_path, capsys):
     rc = main(["report", "--merge", str(tmp_path / "nope.json")])
     _, err = capsys.readouterr()
     assert rc == 1 and "no such file" in err
+
+
+# ---------------------------------------------- registry at rest (#131), in status
+def _kc_fake(monkeypatch):
+    from omna_plugin import vault
+    store: dict[str, str] = {}
+    monkeypatch.delenv("OMNA_REGISTRY_ENCRYPTION", raising=False)
+    monkeypatch.setattr(vault, "_kc_supported", lambda: True)
+    monkeypatch.setattr(vault, "_kc_read", lambda a: store.get(a))
+    monkeypatch.setattr(vault, "_kc_write", lambda a, v: store.__setitem__(a, v))
+    monkeypatch.setattr(vault, "_kc_delete", lambda a: store.pop(a, None) is not None)
+    return store
+
+
+def test_status_registry_line_says_encrypted(monkeypatch, capsys):
+    from omna_plugin.cli import _registry_line
+    from omna_plugin.engine import MaskingSession
+
+    _kc_fake(monkeypatch)
+    MaskingSession().mask_text("mail a@example.com")
+    line = _registry_line()
+    assert "encrypted" in line and "Keychain" in line and "1 value" in line
+
+
+def test_status_registry_line_says_not_encrypted_without_a_keychain(capsys):
+    from omna_plugin.cli import _registry_line
+    from omna_plugin.engine import MaskingSession
+
+    # The whole suite runs with encryption off: this is the Linux/CI wording.
+    MaskingSession().mask_text("mail a@example.com")
+    line = _registry_line()
+    assert "NOT ENCRYPTED" in line and "FileVault" in line
+
+
+def test_status_registry_line_is_loud_when_the_key_is_gone(monkeypatch):
+    from omna_plugin.cli import _registry_line
+    from omna_plugin.engine import MaskingSession
+
+    store = _kc_fake(monkeypatch)
+    MaskingSession().mask_text("mail a@example.com")
+    store.clear()
+    line = _registry_line()
+    assert "key is GONE" in line and "omna forget" in line
+
+
+def test_status_registry_line_when_nothing_is_stored():
+    from omna_plugin.cli import _registry_line
+
+    assert "empty" in _registry_line()
+
+
+def test_forget_wipes_the_key_too(monkeypatch, capsys):
+    from omna_plugin.engine import MaskingSession
+
+    store = _kc_fake(monkeypatch)
+    MaskingSession().mask_text("mail a@example.com")
+    assert store
+    main(["forget"])
+    assert store == {}
+    assert "Keychain" in capsys.readouterr()[0]
+
+
+# -------------------------------------------------------- crash log (#132)
+def test_crash_command_is_empty_and_says_nothing_is_sent(capsys):
+    main(["crash"])
+    out = capsys.readouterr()[0]
+    assert "no crashes" in out and "Nothing is ever sent anywhere" in out
+
+
+def test_a_crashing_command_is_recorded_and_then_still_raises(monkeypatch, capsys):
+    """The crash log must never swallow the error — the person still sees the
+    normal Python failure, we just also keep a masked local copy."""
+    import pytest as _pytest
+
+    from omna_plugin import crashlog
+
+    monkeypatch.setattr("omna_plugin.cli.cmd_version", lambda a: (_ for _ in ()).throw(RuntimeError("boom in version")))
+    with _pytest.raises(RuntimeError):
+        main(["version"])
+    err = capsys.readouterr()[1]
+    assert "omna crash" in err
+    rows = crashlog.tail(5)
+    assert rows[-1]["error"] == "RuntimeError" and rows[-1]["where"] == "cli:version"
+
+
+def test_crash_show_and_clear(capsys):
+    from omna_plugin import crashlog
+
+    try:
+        raise ValueError("a problem")
+    except ValueError as e:
+        crashlog.record(e, where="cli")
+    main(["crash"])
+    assert "ValueError" in capsys.readouterr()[0]
+    main(["crash", "--show", "1"])
+    assert "a problem" in capsys.readouterr()[0]
+    main(["crash", "--clear"])
+    assert crashlog.tail(5) == []

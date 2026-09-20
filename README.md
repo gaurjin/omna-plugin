@@ -20,6 +20,8 @@ you get back: "…set SUPPORT_EMAIL to jane.doe@example.com…"   ← restored, 
   prompt caching keeps working.
 - **Nothing is sent to Omna.** The only network destination is the provider you were already using.
   A local receipt log (counts only, hash-chained) shows what was caught.
+- **16 ms** to mask a 68 KB request — measured, not estimated, on an M5 MacBook Air, and it is on top of a
+  call that already takes seconds. You will not feel it. ([How it was measured](#speed).)
 
 Same compiled engine as the Omna Mac app, browser extension and the `omna` Python library.
 
@@ -30,14 +32,32 @@ curl -fsSL https://omna.dev/cli/install.sh | bash
 ```
 
 That installs the `omna` command (via [uv](https://docs.astral.sh/uv/)), wires Claude Code, and starts the
-proxy. Or by hand:
+proxy.
+
+### Installing without piping to a shell
+
+Piping a script from the internet straight into a shell means running it before you have read it.
+If that bothers you — and for a privacy tool it reasonably might — **you never have to do it.**
+Every step the installer takes, you can take yourself:
 
 ```sh
-uv tool install git+https://github.com/gaurjin/omna-plugin@v0.5.1   # PyPI: coming
-omna init                        # Claude Code: sets ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
-omna start -d                    # background proxy on 127.0.0.1:7788
+# 1. Read the script first, if you want to see what the one-liner does.
+curl -fsSL https://omna.dev/cli/install.sh -o install.sh && less install.sh
+
+# 2. Or skip it entirely — this is all it really does:
+uv tool install --python 3.12 git+https://github.com/gaurjin/omna-plugin@v0.6.0
+omna init            # Claude Code: ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
+omna start -d        # background proxy on 127.0.0.1:7788
 omna status
 ```
+
+The installer has no privileged step of its own: it installs `uv` if you do not have it, runs the
+`uv tool install` above, and calls `omna init`. `omna init` is the only part that asks for `sudo`,
+it prints the exact commands before it runs them, and `omna uninstall` reverses all of it.
+
+A `brew install` is [tracked in docs/homebrew.md](docs/homebrew.md), with an honest account of what
+it is blocked on — the engine ships as a binary wheel, which Homebrew's source-build model does not
+fit cleanly.
 
 `omna init` also wires **aider**, **Codex CLI**, **VS Code** (Copilot Chat and similar chat
 extensions), and **Continue** automatically if each is already installed/configured — nothing is
@@ -111,21 +131,31 @@ omna log --verify
 | `omna enroll [--org NAME] [--dept NAME] [--forget]` | Tag this machine so its exports can be grouped. With no arguments, shows the current tags. Nothing is sent anywhere — see below. |
 | `omna mask [TEXT or -]` | Mask a string or stdin. |
 | `omna allow VALUE` | Never mask this exact value again (false positive). |
-| `omna forget` | Wipe the token registry (tokens renumber). |
+| `omna forget` | Wipe the token registry and its encryption key (tokens renumber). |
+| `omna crash [--show N] [--send] [--clear]` | What broke on this machine. Masked by Omna's own engine before it is written to disk, and **never sent anywhere** — `--send` opens a GitHub issue pre-filled with the report you just read, and you submit it or close the tab. |
+| `omna verify-model` | Re-hash the on-device Contextual model and compare it to the hash this engine was built against. Does the full check every time, never a cached answer. |
+| `omna dashboard` | Open the live dashboard. It is protected by a local token (`~/.omna/dashboard.token`, owner-only), so another program on your machine cannot read your numbers over HTTP. |
 | `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, aider, Codex CLI, VS Code and Continue (each only if already installed), and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up every settings file it touches first and removes only its own keys on uninstall. |
 | `omna tools` / `omna enable TOOL` / `omna disable TOOL` | Show, or turn on/off, which tools Omna covers. `enable`/`disable claude-code`, `aider`, `codex`, or `continue` also wire/unwire it (same as `init`/`uninstall`); other tool names (Cursor) just record the policy today. |
 | `omna apps` / `omna bypass app NAME` / `omna mask app NAME` | Show, or set, what happens to an app's traffic through the system proxy: `mask` (default) tokenises it like everything else, `bypass` tunnels it through untouched (still receipted, so you can see what wasn't masked). |
 | `omna capture app NAME` | Stage 3: deep-capture an app that ignores the system proxy, via its own signed network extension. |
 | `omna hosts` / `omna hosts add HOST` / `omna hosts remove HOST` | Show, or add/remove, the hostnames the system proxy treats as AI traffic. |
 
-## What it costs you
+## Speed
 
 Measured on a MacBook Air M5 with Claude Code 2.1.274, a 4-request task (read a file, write a file, answer):
 
 | | direct | through omna |
 |---|---|---|
 | wall time | 8.8 s | 9.8 s |
-| fast masking, 68 KB request body | | 16 ms |
+| fast masking, 68 KB request body | | **16 ms** |
+
+Fast masking (rules + checksums, the default) is the 16 ms. Smart masking (`--smart`, which adds the
+on-device Contextual model for prose names) is slower and off by default — it is a deliberate choice you
+make, not a surprise you discover.
+
+`omna status` reports the real average for **your** machine and your traffic
+(`avg_mask_ms_this_run`), so you never have to take this table's word for it.
 
 The proxy relays the stream as it arrives (pings included), forwards `anthropic-beta`, `anthropic-version`,
 `cache_control` and the `system` array untouched, and forwards provider errors unmodified, per Claude Code's
@@ -135,11 +165,45 @@ The proxy relays the stream as it arrives (pings included), forwards `anthropic-
 
 | File (`~/.omna/`) | Contents | Permissions |
 |---|---|---|
-| `registry.json` | token → real value for reversible PII (needed to restore replies). Secrets are never in it; they live in the running proxy's memory only. | 0600 |
+| `registry.json` | token → real value for reversible PII (needed to restore replies). Secrets are never in it; they live in the running proxy's memory only. | 0600 + **encrypted** |
 | `receipts.jsonl` | one hash-chained line per request: route, status, ms, counts per entity. No values. | 0600 |
 | `ruleset.json` | your allowlist and custom patterns (`{"allowlist": [...], "custom_rules": [{"label": "CUSTOMER_ID", "pattern": "ACME-\\d{6}"}]}`). Created with loopback addresses (`127.0.0.1`, `0.0.0.0`, `::1`, `localhost`) allowlisted. | |
 | `proxy.log`, `omna.pid` | background-process housekeeping | |
 | `policy.json` | which tools/apps/hosts are covered, and — only if you ran `omna enroll` — an organisation name, a department name, and a random device id. | 0600 |
+| `crashes.jsonl` | the last 50 crashes: error type, message, stack frames (filenames only), versions. Masked by the engine before it is written, so a value that leaked into an error message is a token here too. Never sent. | 0600 |
+| `dashboard.token` | the local secret the dashboard asks for. | 0600 |
+
+### What Omna sends, and to whom
+
+Nothing, to us. The plugin makes exactly one kind of outbound connection: the request you were
+already making, to the AI provider you were already using, with your own key.
+
+There is no analytics call, no crash reporter phoning home, no licence check, no update ping.
+When something crashes, it is written to `~/.omna/crashes.jsonl` on your machine and stays there —
+`omna crash` shows you the exact bytes, and `omna crash --send` opens a pre-filled GitHub issue
+that **you** submit, or close. That is a deliberate difference from tools that ship an opt-in
+crash reporter: an opt-in promise is something you have to trust, and a file on your disk is
+something you can read.
+
+### Where the real values live, and what protects them
+
+`registry.json` is the only file Omna writes that contains real values, so it is
+the only one that needs more than file permissions.
+
+It is sealed with **AES-256-GCM**. The key is 32 random bytes kept in your
+**macOS Keychain** — never on disk next to the file it opens, and never sent
+anywhere. GCM also authenticates, so a file that someone edited fails to open
+instead of quietly handing back changed mappings.
+
+- `omna status` always tells you which state you are in, in plain words.
+- If your machine has no Keychain (Linux, CI, a headless box), the registry
+  stays as it was before: plaintext at `0600`. Omna says so loudly rather than
+  refusing to run — and on that kind of machine, turn on full-disk encryption.
+- `OMNA_REGISTRY_ENCRYPTION=off` opts out entirely and touches the Keychain not
+  at all.
+- If the key is ever lost, Omna keeps masking but stops writing, so it can never
+  overwrite mappings it cannot read. `omna forget` starts cleanly from scratch.
+- `omna forget` and `omna uninstall` remove the key along with the file.
 
 ## Company reports, without a server
 
@@ -195,8 +259,11 @@ If the proxy is not running, the tool's requests fail to connect: nothing leaves
   already cached the proxy address instead fails closed (a connection error, nothing loads) until then. This
   Mac's `file://` PAC is not honoured by Safari/Chrome, so the PAC itself is served by the proxy — an honest
   limit either way, not a fail-closed guarantee like the coding-CLI door.
-- Firefox needs one manual click to trust the local certificate: `about:config` →
-  `security.enterprise_roots.enabled` = `true`.
+- Firefox, Node, Python, Java, Ruby and Deno keep their own certificate lists and ignore the macOS
+  keychain, so each needs one line to trust the local certificate — all of them are in
+  [docs/certificate-trust.md](docs/certificate-trust.md). (Firefox: `about:config` →
+  `security.enterprise_roots.enabled` = `true`. Node: `NODE_EXTRA_CA_CERTS`, which `omna init`
+  already sets for VS Code.) Safari, Chrome, Edge, Brave, curl and Go need nothing.
 - Fast masking (rules + checksums) runs by default. Prose names in free text need `--smart`, which loads a
   local model and slows each request; it is off by default.
 - Windows: no engine wheel yet (WSL works).

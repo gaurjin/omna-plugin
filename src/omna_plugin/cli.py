@@ -8,6 +8,8 @@
     omna mask [TEXT|-] [--smart]           mask a piece of text and print it
     omna allow VALUE                       never mask this exact value again (false positive)
     omna forget                            wipe the token registry (tokens will renumber)
+    omna crash [--show N|--send|--clear]   what broke on this machine; masked on disk, never sent
+    omna verify-model                      check the on-device model against its pinned hash
     omna report [--days 7] [--json|--html F] weekly summary from the receipts
     omna init [--project] [--no-system]    wire Claude Code (settings.json env + SessionStart hook);
                                             on a Mac, also trust the certificate + set the system proxy
@@ -38,7 +40,7 @@ from pathlib import Path
 
 import httpx
 
-from . import aider, claude_code, codex, config, continue_dev, receipts
+from . import aider, claude_code, codex, config, continue_dev, crashlog, receipts
 from .policy import Policy
 
 
@@ -206,6 +208,31 @@ def _refused_line(recs_today: list[dict]) -> str:
     return "refused:      " + " · ".join(parts)
 
 
+def _registry_line() -> str:
+    """The one line that answers "where do my real values live, encrypted?".
+
+    This is the first question a security-minded buyer asks, so it never hides
+    behind a word like "exists" — it names the protection, or says plainly that
+    there isn't any.
+    """
+    from .engine import registry_status
+
+    r = registry_status()
+    path, n, state = r["path"], r["entries"], r["at_rest"]
+    if state == "empty":
+        return f"registry:     {path} (empty — no values stored yet)"
+    held = f"{n} value{'' if n == 1 else 's'}"
+    if state == "encrypted":
+        return f"registry:     {path} ({held}, encrypted — the key is in your macOS Keychain)"
+    if state == "locked":
+        return (f"registry:     {path} (encrypted, but the key is GONE from your Keychain — masking still\n"
+                f"              works, tokens are renumbering, and nothing new is being saved."
+                f"  → `omna forget` to start fresh)")
+    soon = "  (the proxy will encrypt it the next time it starts)" if r["keychain"] else \
+           "  (no macOS Keychain here, so file permissions are the only protection — turn FileVault on)"
+    return f"registry:     {path} ({held}, NOT ENCRYPTED){soon}"
+
+
 def cmd_status(a) -> int:
     from .engine import engine_version
     from .proxy import __version__
@@ -213,7 +240,8 @@ def cmd_status(a) -> int:
     h = _health(a.port)
     print(f"omna plugin {__version__}  engine {engine_version()}")
     if h:
-        print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {'on' if h['smart'] else 'off'}, secrets {'restored locally, never on disk' if h.get('restore_secrets', True) else 'redacted for good'}, {h['requests_this_run']} requests this run)")
+        speed = f", {h['avg_mask_ms_this_run']} ms average to mask" if h.get("avg_mask_ms_this_run") else ""
+        print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {'on' if h['smart'] else 'off'}, secrets {'restored locally, never on disk' if h.get('restore_secrets', True) else 'redacted for good'}, {h['requests_this_run']} requests this run{speed})")
     else:
         print(f"proxy:        NOT running  → `omna start -d`")
     cc = claude_code.status(claude_code.settings_file("user"))
@@ -242,7 +270,7 @@ def cmd_status(a) -> int:
     ok, n, msg = receipts.verify()
     off_note = "  (OFF — nothing new is being logged)" if not pol.reports_enabled else ""
     print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}{off_note}")
-    print(f"registry:     {config.registry_path()} ({'exists' if config.registry_path().exists() else 'empty'})")
+    print(_registry_line())
     recs_today = _today_receipts()
     print(_doors_line(h))
     print(_apps_today_line(pol, recs_today))
@@ -314,7 +342,7 @@ def cmd_forget(a) -> int:
     from .engine import MaskingSession
 
     MaskingSession().forget()
-    print("omna: token registry wiped. Restart the proxy to apply.")
+    print("omna: token registry wiped, and its key removed from your Keychain. Restart the proxy to apply.")
     return 0
 
 
@@ -547,12 +575,14 @@ def cmd_dashboard(a) -> int:
     to be running — say so plainly rather than opening a dead tab."""
     import webbrowser
 
-    url = f"{config.base_url(a.port)}/omna/dashboard"
     if not _health(a.port):
         print(f"omna: the proxy isn't running, so there's nothing to show yet.", file=sys.stderr)
         print("  start it with `omna start -d`, then run this again.", file=sys.stderr)
         return 1
-    print(f"omna: opening {url}")
+    # The dashboard is token-protected (#134). The token lives in a 0600 file,
+    # so this command is the easy path and reading the file is the manual one.
+    url = f"{config.base_url(a.port)}/omna/dashboard?k={config.dashboard_token()}"
+    print(f"omna: opening the dashboard on {config.base_url(a.port)}")
     if not webbrowser.open(url):
         print(f"  (couldn't open a browser — paste this in yourself: {url})")
     return 0
@@ -602,6 +632,89 @@ def cmd_report(a) -> int:
         print(f"omna: report written to {a.html}")
         return 0
     print(report.render_text(d))
+    return 0
+
+
+def cmd_crash(a) -> int:
+    """Show what broke on THIS machine. Nothing here has ever been sent."""
+    rows = crashlog.tail(200)
+    if a.clear:
+        crashlog.clear()
+        print("omna: crash log cleared.")
+        return 0
+    if not rows:
+        print("omna: no crashes recorded. (Nothing is ever sent anywhere — this file is local.)")
+        return 0
+    if a.send or a.show:
+        n = a.show or len(rows)
+        if not 1 <= n <= len(rows):
+            print(f"omna: there are {len(rows)} crashes; pick 1..{len(rows)}", file=sys.stderr)
+            return 1
+        row = rows[n - 1]
+        if a.send:
+            url = crashlog.issue_url(row)
+            print("omna: this opens a GitHub issue pre-filled with the report below.")
+            print("      It is already masked, and it is exactly what you see here — nothing")
+            print("      is collected again at send time. Close the tab to send nothing.\n")
+            _print_crash(row)
+            if sys.platform == "darwin":
+                subprocess.run(["open", url], check=False)
+                print("\nomna: opened your browser. Review it before you submit.")
+            else:
+                print(f"\n{url}")
+            return 0
+        _print_crash(row)
+        return 0
+    print(f"{'#':>3}  {'when':<20} {'where':<12} what")
+    for i, r in enumerate(rows, 1):
+        ts = str(r.get("ts", ""))[:19].replace("T", " ")
+        print(f"{i:>3}  {ts:<20} {str(r.get('where',''))[:12]:<12} {r.get('error','')}")
+    print(f"\nStored in {crashlog.path()} — masked by Omna's own engine before it was written,")
+    print("and never sent anywhere. `omna crash --show N` for one in full, `--send N` to")
+    print("open a pre-filled GitHub issue, `--clear` to delete them all.")
+    return 0
+
+
+def _print_crash(r: dict) -> None:
+    print(f"when:     {r.get('ts')}")
+    print(f"where:    {r.get('where')}")
+    print(f"error:    {r.get('error')}")
+    print(f"message:  {r.get('message')}")
+    print(f"versions: plugin {r.get('plugin')} · engine {r.get('engine')} · Python {r.get('python')} · {r.get('os')}")
+    print("trace:")
+    for f in r.get("traceback", []):
+        print(f"    {f.get('file')}:{f.get('line')} in {f.get('fn')}")
+
+
+def cmd_verify_model(a) -> int:
+    """Re-hash the on-device Contextual model and compare it to what this
+    engine was built against (#135).
+
+    The model is the thing that decides what counts as private data, so a
+    swapped one could simply stop detecting. This is the command a security
+    review runs; it does the full hash every time, never a cached answer.
+    """
+    import omna_pii_mask
+
+    if not hasattr(omna_pii_mask, "verify_model"):
+        print("omna: this engine build has no model verification "
+              f"(engine {omna_pii_mask.version()}). Upgrade the engine wheel to use it.", file=sys.stderr)
+        return 1
+    rows = omna_pii_mask.verify_model()
+    missing = [r for r in rows if r["detail"] == "not downloaded"]
+    bad = [r for r in rows if not r["ok"] and r not in missing]
+    for r in rows:
+        mark = "ok  " if r["ok"] else "FAIL"
+        print(f"{mark}  {r['file']:<24} {r['detail']}")
+    if len(missing) == len(rows):
+        print("\nomna: the model isn't downloaded yet — nothing to verify. It arrives on the first\n"
+              "      `--smart` run, and every file is checked against its pinned hash as it streams in.")
+        return 0
+    if bad:
+        print(f"\nomna: {len(bad)} file(s) FAILED. That means the model on this machine is not the one\n"
+              "      Omna was built against. Delete the model cache and let it download again.")
+        return 1
+    print("\nomna: every model file matches the hash this engine was built against.")
     return 0
 
 
@@ -667,13 +780,30 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("hosts", help="show, or add/remove, the hostnames counted as AI"); add_port(s)
     s.add_argument("action", nargs="?", choices=["add", "remove"]); s.add_argument("host", nargs="?")
     s.set_defaults(fn=cmd_hosts)
+    s = sub.add_parser("crash", help="what broke on this machine (local only — nothing is ever sent)")
+    s.add_argument("--show", type=int, metavar="N", help="print crash N in full")
+    s.add_argument("--send", action="store_true", help="open a GitHub issue pre-filled with the report you just read")
+    s.add_argument("--clear", action="store_true", help="delete the local crash log")
+    s.set_defaults(fn=cmd_crash)
+    s = sub.add_parser("verify-model", help="re-hash the on-device model and check it against its pinned hash")
+    s.set_defaults(fn=cmd_verify_model)
     s = sub.add_parser("version"); s.set_defaults(fn=cmd_version)
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     a = build_parser().parse_args(argv)
-    return a.fn(a)
+    try:
+        return a.fn(a)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as e:
+        # Record it locally (masked, never sent — see crashlog.py) and then let
+        # it surface exactly as it would have, so nothing is swallowed.
+        crashlog.record(e, where=f"cli:{a.cmd}")
+        print(f"omna: this crashed. It was recorded locally — run `omna crash` to see it "
+              f"(nothing was sent anywhere).", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":

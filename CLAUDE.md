@@ -45,7 +45,18 @@ JSON is restored by `body.restore_body`; SSE is restored chunk-by-chunk by `stre
 ## Rules
 - Tests first; `.venv/bin/pytest -q` must be green before any commit. The proxy tests use an in-process
   fake upstream (`tests/test_proxy.py`); no network in tests.
-- Never log or persist a real value except in `registry.json` (0600). Receipts are counts only.
+- **Nothing in this repo may send anything to Omna.** The only outbound connection is the user's own
+  request to their own provider. Crashes go to `~/.omna/crashes.jsonl` (`crashlog.py`), masked by the
+  engine before they are written and sent only when the person runs `omna crash --send`. A test reads
+  `crashlog.py`'s own source and fails if `httpx`/`requests`/`socket` ever appear in it — that test is
+  the guard on the product's central claim, so do not weaken it.
+- The dashboard needs the token in `~/.omna/dashboard.token` (#134); CORS is answered only for
+  localhost origins plus `policy.cors_origins` (#137a). Both exist because loopback is not a security
+  boundary — do not "simplify" either back to open.
+- Never log or persist a real value except in `registry.json` (0600, AES-256-GCM via `vault.py`, key in
+  the macOS Keychain; plaintext fallback with a loud `omna status` line where there is no Keychain).
+  Receipts are counts only. Tests must never touch the real Keychain — `tests/conftest.py` forces
+  `OMNA_REGISTRY_ENCRYPTION=off` for the whole suite; opt in with the in-memory fake in `test_vault.py`.
 - Keep the gateway contract: forward `anthropic-beta`/`anthropic-version` verbatim, never reshape the
   `system` array, never buffer SSE, forward upstream error bodies unmodified, never touch `thinking`,
   `signature`, `cache_control`, or base64 `data`.

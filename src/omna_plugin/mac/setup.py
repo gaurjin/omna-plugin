@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from .. import config
+from .. import config, vault
 from ..system_door import ensure_ca, remove_deep_redirector_app
 from . import app_bundle, certs, launchd, netproxy, vscode
 
@@ -127,7 +127,12 @@ def revert() -> dict:
             shutil.rmtree(home)
         except OSError as e:
             home_error = str(e)
-    return {"services": services, "sudo_rc": rc, "home_removed": home_error is None, "home_error": home_error}
+    # The registry's encryption key lives in the Keychain, not under home(), so
+    # rmtree does not reach it. Leaving it behind is litter that opens a file
+    # that no longer exists (#131).
+    key_removed = vault.delete_key()
+    return {"services": services, "sudo_rc": rc, "home_removed": home_error is None,
+            "home_error": home_error, "key_removed": key_removed}
 
 
 def status() -> dict:

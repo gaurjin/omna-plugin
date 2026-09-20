@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "omna-plugin"
-version = "0.5.1"
+version = "0.6.0"
 description = "Omna — local privacy proxy for AI coding tools. Masks secrets and PII before a prompt leaves your machine, restores them in the reply."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,6 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "omna-pii-mask>=0.2.6,<0.3",
+    "cryptography>=42",   # AES-256-GCM for registry.json at rest (vault.py)
     "httpx>=0.27",
     "starlette>=0.38",
     "uvicorn>=0.30",

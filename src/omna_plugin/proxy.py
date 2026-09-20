@@ -30,7 +30,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from . import config, receipts
+from . import config, crashlog, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
@@ -54,6 +54,28 @@ _DROP_REQ = {"host", "content-length", "connection", "keep-alive", "transfer-enc
              "te", "trailer", "upgrade", "proxy-connection", "accept-encoding"}
 _DROP_RESP = {"content-length", "content-encoding", "connection", "keep-alive",
               "transfer-encoding", "te", "trailer", "upgrade"}
+
+
+# A web app running on the developer's own machine, pointed at the plugin as
+# its base URL, is blocked by the browser unless the preflight is answered
+# (#137a). We answer it — but ONLY for origins that are themselves local.
+#
+# Reflecting any origin would be the wrong trade in the same session that
+# added a token to the dashboard (#134): a page on the public internet can
+# make your browser send a request to 127.0.0.1, and approving its origin is
+# what turns your machine into an open relay for it. A public page's origin is
+# `https://something`, which never matches this, so the browser blocks it at
+# the preflight. A page already served from your own localhost could do this
+# anyway, with or without us.
+_LOCAL_ORIGIN_RE = __import__("re").compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", __import__("re").I)
+
+
+def cors_origin_allowed(origin: str, extra: list[str] | None = None) -> bool:
+    if not origin:
+        return False
+    if _LOCAL_ORIGIN_RE.match(origin.strip()):
+        return True
+    return origin.strip() in (extra or [])
 
 
 def pick_upstream(request: Request, anthropic: str, openai: str) -> str:
@@ -111,6 +133,7 @@ def create_app(
                 "receipts": n,
                 "chain_intact": ok,
                 "registry_entries": session.registry_size,
+                "registry_at_rest": session.at_rest,  # encrypted | plaintext | locked (#131)
                 "doors": doors_state or {"api": True, "system": False, "deep": False},
                 "extension_last_seen": stats["extension_last_seen"],
                 "extension_version": stats["extension_version"],
@@ -141,15 +164,43 @@ def create_app(
         stats["extension_version"] = version if isinstance(version, str) else None
         return JSONResponse({"ok": True})
 
-    async def dashboard(_: Request) -> Response:
+    def _dashboard_ok(request: Request) -> bool:
+        """The dashboard needs the token from ~/.omna/dashboard.token (#134).
+
+        Accepted as `?k=` (so `omna dashboard` can just open a URL, the way
+        Jupyter does) or as `Authorization: Bearer`. Compared in constant time
+        so a local process cannot narrow it down guess by guess.
+        """
+        import secrets as _secrets
+
+        want = config.dashboard_token(create=True)
+        got = request.query_params.get("k") or ""
+        if not got:
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                got = auth[7:].strip()
+        return bool(want) and _secrets.compare_digest(got, want)
+
+    def _unauthorised() -> Response:
+        return JSONResponse(
+            {"error": "omna: the dashboard needs its local token. Run `omna dashboard` "
+                      "to open it, or read ~/.omna/dashboard.token and pass ?k=<token>."},
+            status_code=401,
+        )
+
+    async def dashboard(request: Request) -> Response:
         from . import dashboard as dash
 
+        if not _dashboard_ok(request):
+            return _unauthorised()
         d = dash.snapshot(days=7, sent_as_is=stats.get("sent_as_is", 0))
         return Response(dash.render(d), media_type="text/html; charset=utf-8")
 
-    async def dashboard_json(_: Request) -> Response:
+    async def dashboard_json(request: Request) -> Response:
         from . import dashboard as dash
 
+        if not _dashboard_ok(request):
+            return _unauthorised()
         return JSONResponse(dash.snapshot(days=7, sent_as_is=stats.get("sent_as_is", 0)))
 
     async def pac(_: Request) -> Response:
@@ -158,10 +209,39 @@ def create_app(
             media_type="application/x-ns-proxy-autoconfig",
         )
 
+    def _cors_headers(request: Request) -> dict:
+        """Headers that let a LOCAL web app read the reply (#137a). Empty for
+        anything else, which is what keeps a public page from using us."""
+        origin = request.headers.get("origin", "")
+        allowed = (policy or Policy.load()).cors_origins if policy is not None else Policy.load().cors_origins
+        if not cors_origin_allowed(origin, allowed):
+            return {}
+        return {
+            "access-control-allow-origin": origin,
+            "access-control-allow-credentials": "true",
+            "access-control-expose-headers": "*",
+            "vary": "Origin",
+        }
+
     async def relay(request: Request) -> Response:
         path = request.url.path
         if request.method == "HEAD" and path == "/api/hello":
             return Response(status_code=200)
+
+        cors = _cors_headers(request)
+        if request.method == "OPTIONS" and request.headers.get("origin"):
+            # The browser's preflight. Answer it here: forwarding it upstream
+            # gets an answer for api.anthropic.com's origin rules, not ours.
+            if not cors:
+                return Response(status_code=403)
+            return Response(status_code=204, headers={
+                **cors,
+                "access-control-allow-methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+                # Echo what was asked for rather than guessing: tools send
+                # x-api-key, anthropic-version, anthropic-beta, authorization...
+                "access-control-allow-headers": request.headers.get("access-control-request-headers", "*"),
+                "access-control-max-age": "600",
+            })
         upstream = pick_upstream(request, anthropic_upstream, openai_upstream)
         upstream_host = urlsplit(upstream).netloc
         url = upstream.rstrip("/") + path
@@ -213,9 +293,12 @@ def create_app(
             resp = await client.send(req, stream=True)
         except httpx.HTTPError as e:
             _receipt(request, path, upstream_host, 502, mstats, len(body), t0, stream=False)
-            return JSONResponse({"type": "error", "error": {"type": "omna_upstream_error", "message": str(e)}}, status_code=502)
+            return JSONResponse({"type": "error", "error": {"type": "omna_upstream_error", "message": str(e)}}, status_code=502, headers=cors)
 
         resp_headers = {k: v for k, v in resp.headers.items() if k.lower() not in _DROP_RESP}
+        # Upstream answered for ITS origin rules, not ours: a local web app
+        # talking to the plugin needs ours (#137a). Ours win on conflict.
+        resp_headers.update(cors)
         is_sse = "text/event-stream" in resp.headers.get("content-type", "")
 
         if is_sse:
@@ -265,7 +348,19 @@ def create_app(
             session_id=request.headers.get("x-claude-code-session-id"),
         )
 
+    async def on_error(request: Request, exc: Exception) -> Response:
+        """A crash inside the proxy is the one nobody ever sees — it happens in
+        a background process, so the person just gets a 500 from a tool. Record
+        it locally (masked, never sent) so `omna crash` can show it (#132)."""
+        crashlog.record(exc, where="proxy", extra={"route": request.url.path})
+        return JSONResponse(
+            {"type": "error", "error": {"type": "omna_internal_error",
+                                        "message": "omna hit an internal error; run `omna crash` to see it"}},
+            status_code=500,
+        )
+
     app = Starlette(
+        exception_handlers={Exception: on_error},
         routes=[
             Route("/omna/health", health, methods=["GET"]),
             Route("/omna/proxy.pac", pac, methods=["GET"]),
