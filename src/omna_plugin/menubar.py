@@ -117,6 +117,30 @@ def _toggle_reports() -> None:
     pol.save()
 
 
+def _restore_browser() -> bool:
+    from .policy import Policy
+
+    return Policy.load().restore_browser
+
+
+def _toggle_restore_browser() -> None:
+    """Whether a BROWSER reply shows you real values or the `[EMAIL_1]` labels.
+
+    Masking is not affected and is never optional — this only decides what you
+    read back. Scoped to the browser on purpose: the coding tools must always
+    get real values, or Claude Code writes `[SECRET_AWS_KEY_1]` into your file
+    instead of editing the real line.
+
+    Takes effect on the next request; the system door re-reads the policy each
+    time, no restart needed.
+    """
+    from .policy import Policy
+
+    pol = Policy.load()
+    pol.restore_browser = not pol.restore_browser
+    pol.save()
+
+
 def _quit(icon) -> None:
     """The menu-bar has no launchd job to fight anymore, so Quit just quits —
     reopen it from Applications/Spotlight, or it comes back on its own at the
@@ -179,6 +203,11 @@ def run(port: int = config.DEFAULT_PORT) -> int:
             "Keep Local Reports",
             lambda: _toggle_reports(),
             checked=lambda item: _reports_enabled(),
+        ))
+        items.append(pystray.MenuItem(
+            "Restore Real Values in Browser",
+            lambda: _toggle_restore_browser(),
+            checked=lambda item: _restore_browser(),
         ))
         items.append(pystray.MenuItem("Uninstall Omna…", lambda icon: _confirm_and_uninstall(icon, state)))
         items.append(pystray.MenuItem("Quit", lambda icon: _quit(icon)))

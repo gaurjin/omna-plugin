@@ -183,3 +183,62 @@ def test_remove_deep_redirector_app_on_a_missing_bundle_does_not_raise(monkeypat
     monkeypatch.setattr(system_door, "DEEP_REDIRECTOR_APP", tmp_path / "does-not-exist.app")
 
     system_door.remove_deep_redirector_app()  # no error
+
+
+# ---------------------------------------------- extension / plugin token clash
+async def test_extension_tagged_request_is_masked_but_not_restored(door):
+    """The bug this guards: both halves mint tokens named [EMAIL_1] and number
+    them independently, so a token the EXTENSION minted for one person would be
+    restored by the plugin into a DIFFERENT person's real value.
+
+    Masking must still happen (never leave a gap); only restore steps aside.
+    """
+    up, port, ctx, _ = door
+    # The plugin's own registry already knows this value as [EMAIL_1] — exactly
+    # what any machine that has run Claude Code for a while looks like.
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": f"for {EMAIL}"})
+
+    # Now the extension sends a request it has already masked, carrying a token
+    # that means someone else entirely.
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        r = await c.post(
+            f"https://127.0.0.1:{up.port}/api/chat",
+            json={"prompt": f"ask {TOK} about it"},
+            headers={"x-omna-extension": "1"},
+        )
+    assert r.status_code == 200
+    # The reply echoes the token back. It must come back as the TOKEN, not as
+    # jane.doe@example.com — that substitution is the bug.
+    assert EMAIL not in r.text, "plugin restored a token the extension minted — wrong person's value"
+    assert TOK in r.text
+
+
+async def test_extension_header_is_not_forwarded_to_the_provider(door):
+    up, port, ctx, _ = door
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": "hello"},
+                     headers={"x-omna-extension": "1"})
+    seen = {k.lower() for k in (up.last_headers or {})}
+    assert "x-omna-extension" not in seen, "our internal tag leaked to the AI provider"
+
+
+async def test_untagged_request_still_restores(door):
+    """The plugin-only path must keep working exactly as before — this is the
+    common case for anyone who never installs the extension."""
+    up, port, ctx, _ = door
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        r = await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": f"for {EMAIL}"})
+    assert TOK.encode() in up.last_body          # masked on the way out
+    assert r.json()["reply"] == "hi " + EMAIL    # restored on the way back
+
+
+async def test_restore_browser_off_masks_but_shows_tokens(door):
+    """The menu-bar toggle. Masking is unaffected; only the reply changes."""
+    up, port, ctx, addon = door
+    addon.policy.restore_browser = False
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        r = await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": f"for {EMAIL}"})
+    assert TOK.encode() in up.last_body, "masking must never be optional"
+    assert EMAIL not in r.text
+    assert TOK in r.text

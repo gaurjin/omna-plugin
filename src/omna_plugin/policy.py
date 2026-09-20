@@ -116,6 +116,13 @@ class Policy:
     deep_apps: list[str] = field(default_factory=list)      # Stage 3: captured by the deep door
     doors: dict[str, bool] = field(default_factory=lambda: {"api": True, "system": True, "deep": False})
     reports_enabled: bool = True   # local receipts (counts only, never values) — off means none are written
+    # Put real values back into BROWSER replies (the system door only). Off means
+    # you read `[EMAIL_1]` in the page instead of the name. Deliberately scoped to
+    # the browser: the API and deep doors must always restore, because there a
+    # token reaching the tool breaks it outright — Claude Code would write
+    # `[SECRET_AWS_KEY_1]` into your file instead of editing the real line.
+    # Masking is NOT affected by this and never optional.
+    restore_browser: bool = True
     # Set only when a company enrols this machine (`omna enroll`, or --org/--dept
     # on the install line). Empty on a personal install, and nothing about them
     # ever leaves the machine on its own — they exist so that a report EXPORTED
@@ -143,6 +150,7 @@ class Policy:
             pol.deep_apps = list(data.get("deep_apps", []))
             pol.doors = {**pol.doors, **data.get("doors", {})}
             pol.reports_enabled = bool(data.get("reports_enabled", True))
+            pol.restore_browser = bool(data.get("restore_browser", True))
             pol.org = str(data.get("org", "") or "")
             pol.dept = str(data.get("dept", "") or "")
             pol.device_id = str(data.get("device_id", "") or "")
@@ -162,6 +170,7 @@ class Policy:
             "deep_apps": self.deep_apps,
             "doors": self.doors,
             "reports_enabled": self.reports_enabled,
+            "restore_browser": self.restore_browser,
             "org": self.org,
             "dept": self.dept,
             "device_id": self.device_id,

@@ -103,7 +103,7 @@ omna log --verify
 | `omna start [-d] [--smart] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). `--smart` adds the on-device Contextual model for prose names (809 MB download once, slower). |
 | `omna stop` / `omna ensure` | Stop the background proxy / start it if it is not running (the Claude Code hook calls this). |
 | `omna status` | Running? Claude Code wired? Receipts today. |
-| `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login or Keep Local Reports, or uninstall. |
+| `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login, Keep Local Reports or **Restore Real Values in Browser**, or uninstall. |
 | `omna log [-n 20] [--verify] [--json]` | Local receipts. `--verify` checks the hash chain. |
 | `omna report [--days 7] [--json] [--html FILE]` | Weekly summary from the receipts: requests enabled, distinct secrets kept off the wire, PII tokenised, destinations, chain status, masking cost. |
 | `omna report --export FILE` | Write a **counts-only** copy of that report, safe to hand to a company admin — numbers plus your org/department tags. No prompt text, no real values, no usernames, no file paths, no app names. |
@@ -159,6 +159,24 @@ quietly start riding along. It deliberately leaves out your home path (which
 carries your username) and which apps you run. The device id is random and
 local; it exists so two files can be told apart and a duplicate can be spotted,
 and `omna enroll --forget` deletes it.
+
+## Reading browser replies: real values or labels
+
+**Restore Real Values in Browser** (menu bar, on by default) decides what you
+read back in a browser reply: the real name, or the `[EMAIL_1]` label that was
+actually sent. **Masking is not affected by it and is never optional** — this
+only changes what comes back.
+
+It is scoped to the browser on purpose. The coding tools always get real values
+put back, because there a label reaching the tool breaks it: Claude Code would
+write `[SECRET_AWS_KEY_1]` into your file instead of editing the real line.
+
+If you also run the Chrome extension, the plugin steps aside and lets the
+extension handle the browser reply. It has to: both halves label things
+`[EMAIL_1]`, `[PERSON_1]` … and number them independently, so whoever restores
+second could swap in a different person's value. The extension tags the
+requests it handles so the plugin knows, per request, to leave that reply
+alone — masking still happens either way.
 
 ## What it refuses
 

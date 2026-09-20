@@ -29,6 +29,10 @@ from .policy import Policy
 
 CA_ORG = "Omna"
 CA_CN = "Omna Local Certificate Authority"
+# Set by the Chrome extension on the requests it is masking, and stripped here
+# before forwarding. Lower-case: mitmproxy's header access is case-insensitive,
+# but `pop` wants the name the way we store it.
+EXT_HEADER = "x-omna-extension"
 REFUSED_BODY = (b'{"type":"error","error":{"type":"omna_refused",'
                 b'"message":"omna could not mask this request; refused rather than sent unmasked"}}')
 
@@ -133,6 +137,22 @@ class OmnaAddon:
                               note="tls-refused", session_id=None)
 
     # ---------------------------------------------------------------- HTTP
+    def _skip_restore(self, flow: http.HTTPFlow) -> bool:
+        """Leave real values OUT of this response.
+
+        Two reasons, both about the browser only — the API and deep doors
+        always restore, because there a token reaching the tool literally
+        breaks it (Claude Code would write `[SECRET_AWS_KEY_1]` into your file
+        instead of editing the real line).
+
+        1. The extension tagged this request, so it owns the tab. Restoring
+           here would swap in the wrong person's value (see `request`).
+        2. The person turned browser restore off in the menu bar.
+        """
+        if flow.metadata.get("omna_ext"):
+            return True
+        return not self.policy.restore_browser
+
     def requestheaders(self, flow: http.HTTPFlow) -> None:
         flow.request.headers["accept-encoding"] = "identity"
         flow.metadata["omna_t0"] = time.time()
@@ -141,6 +161,15 @@ class OmnaAddon:
         app = await self._app_of(flow.client_conn)
         if app:
             self.seen_apps[app] = self.seen_apps.get(app, 0) + 1
+        # The Chrome extension tags the requests it is handling. When it does,
+        # we still MASK (never leave a gap — masking twice is harmless, a hole
+        # is not) but we must NOT restore: both halves mint tokens named
+        # [EMAIL_1], [PERSON_1] … numbering independently, so restoring one the
+        # EXTENSION minted swaps in an unrelated person's real value. The tag
+        # rides on the request itself precisely so there is no staleness window.
+        # Strip it before forwarding — the AI provider has no business seeing it.
+        if flow.request.headers.pop(EXT_HEADER, None) is not None:
+            flow.metadata["omna_ext"] = True
         adapter = for_host(flow.request.pretty_host)
         req = RequestView(host=flow.request.pretty_host, method=flow.request.method, path=flow.request.path,
                           content_type=flow.request.headers.get("content-type", ""),
@@ -160,6 +189,8 @@ class OmnaAddon:
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         if flow.response is None or flow.metadata.get("omna_refused"):
+            return
+        if self._skip_restore(flow):
             return
         adapter = flow.metadata.get("omna_adapter") or for_host(flow.request.pretty_host)
         mode = adapter.response_mode(flow.response.headers.get("content-type", ""))
@@ -199,6 +230,9 @@ class OmnaAddon:
         if flow.response is None or flow.metadata.get("omna_streamed") or flow.metadata.get("omna_refused"):
             return
         adapter = flow.metadata.get("omna_adapter") or for_host(flow.request.pretty_host)
+        if self._skip_restore(flow):
+            self._receipt(flow, flow.response.status_code, stream=False)
+            return
         if adapter.response_mode(flow.response.headers.get("content-type", "")) == "json" and flow.response.status_code < 400:
             try:
                 obj = json.loads(flow.response.get_content() or b"null")
