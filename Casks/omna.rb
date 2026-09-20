@@ -24,12 +24,22 @@ cask "omna" do
       omna status
 
     "omna init" asks for your password once, and prints every command it will
-    run as administrator before running it. "omna uninstall" reverses all of it.
+    run as administrator before running it.
+
+    To remove Omna completely, run this FIRST:
+
+      omna uninstall
+
+    It un-wires your tools, removes the certificate and system proxy, and
+    deletes the encryption keys from your Keychain. Homebrew cannot reach the
+    Keychain, so "brew uninstall" alone would leave those two keys behind.
   EOS
 
-  # Everything Omna writes lives in one directory, so uninstalling is complete.
-  # The registry's encryption keys live in the Keychain, not here, so run
-  # "omna uninstall" BEFORE "brew uninstall" to have those removed too.
+  # Everything Omna writes on disk lives in one directory. Verified 2026-09-20:
+  # `brew uninstall --zap` does remove it — but it canNOT remove the two
+  # Keychain items (the registry key and the receipts key), because a zap
+  # stanza only trashes files. Hence the caveat above telling people to run
+  # `omna uninstall` first, which does.
   zap trash: [
     "~/.omna",
   ]
