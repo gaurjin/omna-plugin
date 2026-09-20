@@ -218,6 +218,12 @@ def cmd_status(a) -> int:
     cc = claude_code.status(claude_code.settings_file("user"))
     wired = cc["base_url"] == config.base_url(a.port)
     print(f"claude code:  {'wired' if wired else 'not wired'} ({cc['file']}){'  hook ok' if cc['hook'] else ''}{'' if wired else '  → `omna init`'}")
+    if h:
+        last = h.get("extension_last_seen")
+        if last and (time.time() - last) < 120:
+            print(f"extension:    connected (v{h.get('extension_version') or '?'})")
+        else:
+            print("extension:    not connected  → install from the Chrome Web Store")
     if shutil.which("aider"):
         ast = aider.status()
         aw = ast["openai_base"] == f"{config.base_url(a.port)}/v1" or ast["anthropic_base"] == config.base_url(a.port)

@@ -89,6 +89,8 @@ def create_app(
         "distinct_pii": set(),
         "mask_ms_total": 0,
         "mask_ms_count": 0,
+        "extension_last_seen": None,
+        "extension_version": None,
     }
 
     async def health(_: Request) -> Response:
@@ -109,8 +111,19 @@ def create_app(
                 "chain_intact": ok,
                 "registry_entries": session.registry_size,
                 "doors": doors_state or {"api": True, "system": False, "deep": False},
+                "extension_last_seen": stats["extension_last_seen"],
+                "extension_version": stats["extension_version"],
             }
         )
+
+    async def extension_checkin(request: Request) -> Response:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        stats["extension_last_seen"] = time.time()
+        stats["extension_version"] = body.get("version")
+        return JSONResponse({"ok": True})
 
     async def pac(_: Request) -> Response:
         return Response(
@@ -229,6 +242,7 @@ def create_app(
         routes=[
             Route("/omna/health", health, methods=["GET"]),
             Route("/omna/proxy.pac", pac, methods=["GET"]),
+            Route("/omna/extension-checkin", extension_checkin, methods=["POST"]),
             Route("/{path:path}", relay, methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]),
         ]
     )

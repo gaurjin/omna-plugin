@@ -196,6 +196,23 @@ async def test_health_reports_live_masking_counters(env):
 
 
 @pytest.mark.anyio
+async def test_extension_checkin_updates_health(env):
+    up, session, client = env
+    # No checkin yet — health reports it as absent.
+    r = await client.get("/omna/health")
+    assert r.json()["extension_last_seen"] is None
+
+    r = await client.post("/omna/extension-checkin", json={"version": "0.6.0"})
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+    r = await client.get("/omna/health")
+    body = r.json()
+    assert body["extension_last_seen"] is not None
+    assert body["extension_version"] == "0.6.0"
+
+
+@pytest.mark.anyio
 async def test_proxy_pac_serves_system_door(env):
     up, session, client = env
     r = await client.get("/omna/proxy.pac")
