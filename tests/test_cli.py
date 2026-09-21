@@ -612,3 +612,75 @@ def test_crash_show_and_clear(capsys):
     assert "a problem" in capsys.readouterr()[0]
     main(["crash", "--clear"])
     assert crashlog.tail(5) == []
+
+
+# ---------------------------------------------------------------- omna style
+
+def test_style_with_no_argument_shows_the_current_style(capsys):
+    assert main(["style"]) == 0
+    out, _ = capsys.readouterr()
+    assert "tokens" in out and "realistic" in out
+    assert "api door" in out and "system door" in out
+
+
+def test_style_realistic_saves_and_names_the_doors(capsys, no_restart):
+    assert main(["style", "realistic"]) == 0
+    out, _ = capsys.readouterr()
+    assert Policy.load().style == "realistic"
+    assert "browser" in out.lower()
+    assert "Claude Code" in out          # the refusal is spelled out, not implied
+    assert "numbered tokens" in out
+    assert no_restart, "a style change must restart the proxy"
+
+
+def test_style_realistic_shows_an_example_of_what_changes(capsys, no_restart):
+    main(["style", "realistic"])
+    out, _ = capsys.readouterr()
+    assert "@example." in out
+
+
+def test_style_tokens_goes_back_to_the_default(capsys, no_restart):
+    main(["style", "realistic"])
+    capsys.readouterr()
+    assert main(["style", "tokens"]) == 0
+    assert Policy.load().style == "tokens"
+    assert "every door" in capsys.readouterr().out
+
+
+def test_style_warns_when_browser_restore_is_off(capsys, no_restart):
+    """The one combination where a fake value is shown to the PERSON and looks
+    like real data to them, too."""
+    pol = Policy()
+    pol.restore_browser = False
+    pol.save()
+    main(["style", "realistic"])
+    out, _ = capsys.readouterr()
+    assert "restore" in out.lower() and "off" in out.lower()
+
+
+def test_an_unknown_style_is_rejected(capsys):
+    with pytest.raises(SystemExit) as e:
+        main(["style", "fancy"])
+    assert e.value.code == 2
+
+
+def test_status_names_the_style_per_door(capsys, no_restart):
+    main(["style", "realistic"])
+    capsys.readouterr()
+    main(["status"])
+    out, _ = capsys.readouterr()
+    assert "style:" in out
+    assert "browser" in out and "coding tools" in out
+
+
+def test_status_says_every_door_when_the_style_is_the_default(capsys):
+    main(["status"])
+    out, _ = capsys.readouterr()
+    assert "style:" in out and "every door" in out
+
+
+def test_mask_realistic_shows_a_fake_value_but_keeps_secrets_numbered(capsys):
+    assert main(["mask", "--realistic", "mail jane.doe@acme.com key AKIAIOSFODNN7EXAMPLE"]) == 0
+    out, _ = capsys.readouterr()
+    assert "jane.doe@acme.com" not in out and "@example." in out
+    assert "AKIAIOSFODNN7EXAMPLE" not in out and "[SECRET_AWS_KEY_" in out

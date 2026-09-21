@@ -6,6 +6,9 @@
     omna status                            is it running, what is wired, what was caught today
     omna log [-n 20] [--verify]            the local receipts (counts only, never values)
     omna mask [TEXT|-] [--smart]           mask a piece of text and print it
+    omna style [tokens|realistic]          how a masked value is WRITTEN: a numbered token
+                                            (the default, everywhere) or a realistic fake value
+                                            (your browser only — see `omna style`)
     omna allow VALUE                       never mask this exact value again (false positive)
     omna forget                            wipe the token registry (tokens will renumber)
     omna crash [--show N|--send|--always|--never]  what broke here; masked on disk, sent only if you said yes
@@ -42,6 +45,7 @@ import httpx
 
 from . import aider, claude_code, codex, config, continue_dev, crashlog, receipts
 from .policy import Policy
+from .style import STYLES
 
 
 def _health(port: int) -> dict | None:
@@ -233,6 +237,19 @@ def _registry_line() -> str:
     return f"registry:     {path} ({held}, NOT ENCRYPTED){soon}"
 
 
+def _style_line(pol: Policy) -> str:
+    """What a masked value looks like at each door — they can differ, and the
+    difference is a safety rule, so `omna status` says so out loud."""
+    from .style import style_for_door
+
+    api = style_for_door("api", pol.style).style
+    system = style_for_door("system", pol.style).style
+    if api == system:
+        return f"style:        {api} (every door)"
+    return (f"style:        {system} in the browser, {api} for coding tools "
+            f"(they write files, where a fake value would look real)")
+
+
 def cmd_status(a) -> int:
     from .engine import engine_version
     from .proxy import __version__
@@ -270,6 +287,7 @@ def cmd_status(a) -> int:
     ok, n, msg = receipts.verify()
     off_note = "  (OFF — nothing new is being logged)" if not pol.reports_enabled else ""
     print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}{off_note}")
+    print(_style_line(pol))
     print(_registry_line())
     recs_today = _today_receipts()
     print(_doors_line(h))
@@ -320,13 +338,74 @@ def cmd_mask(a) -> int:
         text = sys.stdin.read() if args[0] == "-" else args[0]
     else:
         text = " ".join(args)
+    from .style import REALISTIC, TOKENS
+
     s = MaskingSession(smart=a.smart)
-    r = s.mask_text(text)
+    r = s.mask_text(text, style=REALISTIC if a.realistic else TOKENS)
     sys.stdout.write(r.masked)
     if not r.masked.endswith("\n"):
         sys.stdout.write("\n")
     if a.counts:
         print(f"masked: {_fmt_counts(r.counts)}", file=sys.stderr)
+    return 0
+
+
+def cmd_style(a) -> int:
+    """Show or change how a masked value is WRITTEN.
+
+    Worth a command of its own because the two styles are a safety trade, not a
+    preference. A numbered token that is ever left behind is visibly wrong and
+    somebody notices. A realistic fake value that is left behind looks like
+    ordinary data, nobody notices, and it gets committed to a repository.
+    """
+    import textwrap
+
+    from .style import REALISTIC, TOKENS, style_for_door
+
+    def wrapped(text: str, indent: str = "      ") -> str:
+        return textwrap.fill(text, 76, initial_indent=indent, subsequent_indent=indent)
+
+    pol = Policy.load()
+    doors = (("api", "coding tools (Claude Code, aider, Codex, Continue, VS Code)"),
+             ("system", "your browser and the chat websites"),
+             ("deep", "a named desktop app (deep capture)"))
+
+    if not a.value:
+        print(f"masking style: {pol.style}")
+        for door, what in doors:
+            d = style_for_door(door, pol.style)
+            mark = "   <- refused here" if d.refused else ""
+            print(f"  {door + ' door':<13} {what}\n  {'':<13} writes: {d.style}{mark}")
+        refusal = style_for_door("api", pol.style)
+        if refusal.refused:
+            print("\nWhy:")
+            print(wrapped(refusal.reason + ".", "  "))
+        print("\n  omna style tokens      a numbered token, everywhere (the default)")
+        print("  omna style realistic   a realistic fake value instead — browser only")
+        return 0
+
+    pol.style = a.value
+    _save_policy(pol, a)
+    if a.value == TOKENS:
+        print("omna: masking style is now numbered tokens, at every door.")
+        print("      Values already masked keep whichever stand-in they were given,")
+        print("      so replies about them still come back right.")
+        return 0
+
+    print("omna: masking style is now realistic fake values.")
+    print("      Where: the system door only — your browser and the chat websites.")
+    print("      An e-mail is sent as something like robert.jones@example.org")
+    print("      instead of a numbered token, which reads better to the AI.")
+    print("      NOT here:")
+    print(wrapped(style_for_door("api", REALISTIC).reason + ".", "        "))
+    print("      Why: a leftover token is obviously wrong and someone notices;")
+    print("      a leftover fake value looks like real data and gets committed.")
+    print("      Secrets are never faked, under any style — a fake API key that")
+    print("      looked real would be the worst thing Omna could hand you.")
+    if not pol.restore_browser:
+        print("\nomna: restore in the browser is OFF, so YOU will read the fake values")
+        print("      too, and they will look real to you. Turn restore back on in the")
+        print("      menu bar if that is not what you want.")
     return 0
 
 
@@ -868,8 +947,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_log)
     s = sub.add_parser("mask", help="mask a piece of text, or `mask app NAME` to set an app's action to mask")
     s.add_argument("text", nargs="*"); s.add_argument("--smart", action="store_true"); s.add_argument("--counts", action="store_true")
+    s.add_argument("--realistic", action="store_true", help="show the realistic style instead of numbered tokens")
     add_port(s)
     s.set_defaults(fn=cmd_mask)
+    s = sub.add_parser("style", help="how a masked value is written: a numbered token (default) or a realistic fake value")
+    s.add_argument("value", nargs="?", choices=list(STYLES),
+                   help="tokens (default, every door) or realistic (browser only)")
+    add_port(s); s.set_defaults(fn=cmd_style)
     s = sub.add_parser("allow", help="never mask this value again"); s.add_argument("value"); s.set_defaults(fn=cmd_allow)
     s = sub.add_parser("forget", help="wipe the token registry"); s.set_defaults(fn=cmd_forget)
     s = sub.add_parser("init", help="wire Claude Code (and, on a Mac, the system proxy + certificate)"); add_port(s)
