@@ -37,6 +37,7 @@ import json
 import os
 import re
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -122,6 +123,13 @@ class MaskingSession:
         self._max_fake_len = 0
         self._real_values: set[str] = set()        # what a fake must never collide with
         self._fake_salt = b""
+        # Per-mapping metadata for the Mappings Review screen (#144): which
+        # layer caught it, whether a checksum validated it, which style was
+        # last used to write it, and when it was first seen. Keyed the same
+        # way as `_value_to_fake` ("KIND\x00value") so all three registries
+        # agree on identity. A row written before this existed has no entry
+        # here — `registry_rows()` must report that honestly, never guess.
+        self._meta: dict[str, dict] = {}
         self._restore_re: re.Pattern | None = None
         # At-rest state (#131), surfaced by `omna status` and /omna/health.
         self._key: bytes | None = None
@@ -194,6 +202,7 @@ class MaskingSession:
             kind, _, val = key.partition("\x00")
             if val and fake:
                 self._remember_fake(fake, val, kind)
+        self._meta = dict(data.get("meta", {}))
         try:
             self._fake_salt = bytes.fromhex(str(data.get("fake_salt", "")))
         except ValueError:
@@ -227,7 +236,8 @@ class MaskingSession:
         if self.locked:
             return
         payload = {"tokens": self._token_to_value, "counters": self._counters,
-                   "fakes": self._value_to_fake, "fake_salt": self._fake_salt.hex()}
+                   "fakes": self._value_to_fake, "fake_salt": self._fake_salt.hex(),
+                   "meta": self._meta}
         body = vault.seal(payload, self._key) if self._key else json.dumps(payload)
         tmp = self._registry_file.with_suffix(".json.tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -326,6 +336,7 @@ class MaskingSession:
             self._fake_to_value.clear()
             self._fake_prefixes.clear()
             self._real_values.clear()
+            self._meta.clear()
             self._max_fake_len = 0
             self._fake_salt = b""
             self._restore_re = None
@@ -347,6 +358,71 @@ class MaskingSession:
         if self.locked:
             return "locked"
         return "encrypted" if self.encrypted else "plaintext"
+
+    def registry_rows(self) -> list[dict]:
+        """One row per PII mapping currently held (#144 Mappings Review).
+
+        Secrets never appear here — they never entered `_token_to_value` in
+        the first place (memory-only, see the module docstring). A row
+        written before per-mapping metadata existed has `layer`/`validated`/
+        `style` all `None` — report that honestly rather than guessing.
+        """
+        with self._lock:
+            rows = []
+            for token, value in self._token_to_value.items():
+                m = TOKEN_RE.fullmatch(token)
+                if not m:
+                    continue
+                kind = m.group(1)
+                key = f"{kind}\x00{value}"
+                meta = self._meta.get(key, {})
+                rows.append({
+                    "label": token[1:-1],
+                    "kind": kind,
+                    "value": value,
+                    "fake": self._value_to_fake.get(key),
+                    "layer": meta.get("layer"),
+                    "validated": bool(meta.get("validated")),
+                    "style": meta.get("style"),
+                    "created": meta.get("created"),
+                })
+            return rows
+
+    def delete_mapping(self, label: str) -> bool:
+        """Forget one PII mapping (#144). Removes the token, its real value,
+        its metadata, AND its realistic-style fake if it has one — dropping
+        only the token would leave the fake still resolving the "deleted"
+        value on every future restore, which is worse than not deleting at
+        all. The counter is never reused, so the label a person just deleted
+        can never silently come back: the same real value gets a brand new
+        token/fake on its next occurrence.
+        """
+        token = f"[{label}]"
+        with self._lock:
+            value = self._token_to_value.pop(token, None)
+            if value is None:
+                return False
+            m = TOKEN_RE.fullmatch(token)
+            kind = m.group(1) if m else ""
+            key = f"{kind}\x00{value}"
+            self._value_to_token.pop(key, None)
+            self._real_values.discard(value)
+            self._meta.pop(key, None)
+            fake = self._value_to_fake.pop(key, None)
+            if fake is not None:
+                self._fake_to_value.pop(fake, None)
+                self._fake_prefixes = set()
+                self._max_fake_len = 0
+                for f in self._fake_to_value:
+                    self._max_fake_len = max(self._max_fake_len, len(f))
+                    for i in range(1, len(f)):
+                        self._fake_prefixes.add(f[:i])
+                self._restore_re = None
+            # A cached MaskResult for identical future text would otherwise
+            # hand back the just-deleted token/fake (see `allow()`, same fix).
+            self._cache.clear()
+            self._save_registry()
+            return True
 
     @property
     def secrets_held(self) -> int:
@@ -405,6 +481,7 @@ class MaskingSession:
         labels: list[str] = []
         pos = 0
         changed_before = (len(self._token_to_value), len(self._fake_to_value), self._fake_salt)
+        meta_touched = False
         for sp in sorted(spans, key=lambda s: (s["start"], -s["end"])):
             start, end = sp["start"], sp["end"]
             if start < pos or end <= start:
@@ -433,6 +510,12 @@ class MaskingSession:
                 tok = label
                 if style == REALISTIC:
                     tok = self._stable_fake(kind, sp.get("entity") or kind, core, text) or label
+                meta_key = f"{kind}\x00{core}"
+                meta = self._meta.setdefault(meta_key, {"created": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
+                meta["layer"] = sp.get("layer") or meta.get("layer") or "?"
+                meta["validated"] = bool(sp.get("validated"))
+                meta["style"] = style
+                meta_touched = True
             out.append(text[pos:start])
             out.append(value[:lead])
             out.append(name)
@@ -442,7 +525,7 @@ class MaskingSession:
             pos = end
         out.append(text[pos:])
         now = (len(self._token_to_value), len(self._fake_to_value), self._fake_salt)
-        return "".join(out), labels, now != changed_before
+        return "".join(out), labels, now != changed_before or meta_touched
 
     def mask_text(self, text: str, style: str = TOKENS) -> MaskResult:
         if len(text) < 3:

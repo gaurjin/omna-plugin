@@ -408,3 +408,67 @@ def test_a_partial_fake_after_a_complete_one_is_still_held(home):
     s._remember_fake("maria.taylor@example.com", "jane.doe@acme.com", "EMAIL")
     buf = "wrote to maria.taylor@example.com and maria.tay"
     assert s.hold_from(buf) == len("wrote to maria.taylor@example.com and ")
+
+
+# ------------------------------------------------- mappings review (#144)
+def test_registry_rows_carries_layer_validated_style_and_created(home):
+    s = MaskingSession()
+    s.mask_text("email john.smith@acme.com", style=TOKENS)
+    rows = s.registry_rows()
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["label"] == "EMAIL_1"
+    assert r["kind"] == "EMAIL"
+    assert r["value"] == "john.smith@acme.com"
+    assert r["layer"] in ("L1", "L2", "L3")  # whichever layer this build's engine used
+    assert isinstance(r["validated"], bool)
+    assert r["style"] == TOKENS
+    assert r["created"]  # non-empty ISO timestamp
+
+
+def test_registry_rows_records_the_style_actually_used_realistic(home):
+    s = MaskingSession()
+    s.mask_text("email john.smith@acme.com", style=REALISTIC)
+    rows = s.registry_rows()
+    assert rows[0]["style"] == REALISTIC
+    assert rows[0]["fake"]  # a fake was minted
+
+
+def test_delete_mapping_removes_the_token_and_the_value_no_longer_restores(home):
+    s = MaskingSession()
+    r = s.mask_text("email john.smith@acme.com", style=TOKENS)
+    assert s.delete_mapping("EMAIL_1") is True
+    assert s.registry_rows() == []
+    assert s.restore_text(r.masked) == r.masked  # the token is now unrecognised, not restored
+
+
+def test_delete_mapping_of_a_realistic_row_also_drops_the_fake(home):
+    s = MaskingSession()
+    r = s.mask_text("email john.smith@acme.com", style=REALISTIC)
+    fake = s.registry_rows()[0]["fake"]
+    assert fake and fake in r.masked
+    assert s.delete_mapping("EMAIL_1") is True
+    # the fake must not resolve back to the real value any more
+    assert s.restore_text(fake) == fake
+
+
+def test_delete_mapping_of_an_unknown_label_returns_false(home):
+    s = MaskingSession()
+    assert s.delete_mapping("EMAIL_99") is False
+
+
+def test_the_same_real_value_gets_a_brand_new_token_after_delete(home):
+    s = MaskingSession()
+    s.mask_text("email john.smith@acme.com", style=TOKENS)
+    s.delete_mapping("EMAIL_1")
+    r2 = s.mask_text("email john.smith@acme.com", style=TOKENS)
+    # counter is NOT reused — the old label must never come back to life
+    assert "[EMAIL_" "1]" not in r2.masked
+    assert "[EMAIL_" "2]" in r2.masked
+
+
+def test_delete_mapping_persists_across_a_restart(home):
+    s = MaskingSession()
+    s.mask_text("email john.smith@acme.com", style=TOKENS)
+    s.delete_mapping("EMAIL_1")
+    assert MaskingSession().registry_rows() == []
