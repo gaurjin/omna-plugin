@@ -341,6 +341,25 @@ def test_status_shows_extension_not_connected_when_never_seen(capsys, monkeypatc
     assert "extension:    not connected  → install from the Chrome Web Store" in out
 
 
+def test_mappings_command_refuses_when_proxy_not_running(capsys, monkeypatch):
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)
+    assert main(["mappings"]) == 1
+    _, err = capsys.readouterr()
+    assert "isn't running" in err
+
+
+def test_mappings_command_opens_the_browser_with_the_dashboard_token(monkeypatch):
+    from omna_plugin import config
+
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"ok": True})
+    opened = []
+    monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
+    assert main(["mappings"]) == 0
+    assert len(opened) == 1
+    assert "/omna/mappings?k=" in opened[0]
+    assert config.dashboard_token(create=True) in opened[0]
+
+
 def test_doors_line_shows_all_off_when_proxy_not_running():
     # Regression: used to fall back to {"api": True, ...} when /omna/health couldn't
     # be reached at all, printing "api on" directly under "proxy: NOT running".

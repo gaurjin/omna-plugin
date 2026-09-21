@@ -130,7 +130,8 @@ footer{{margin-top:26px;color:var(--muted);font-size:12px;line-height:1.7}}
 code{{background:var(--line);padding:1px 5px;border-radius:4px;font-size:11.5px}}
 </style></head><body><div class="wrap">
 
-<header><h1>Omna</h1><span class="live"><span class="dot"></span>live</span></header>
+<header><h1>Omna</h1><span class="live"><span class="dot"></span>live</span>
+<a href="/omna/mappings" style="font-size:12px;color:var(--muted)">review mappings &rarr;</a></header>
 <p class="sub">Last {d['period_days']} days · engine {d['engine']} · doors: {doors}</p>
 
 <div class="grid">

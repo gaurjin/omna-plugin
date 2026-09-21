@@ -667,6 +667,22 @@ def cmd_dashboard(a) -> int:
     return 0
 
 
+def cmd_mappings(a) -> int:
+    """Open the Mappings Review screen in the browser — every value Omna has
+    masked, real values hidden until clicked. Same token as the dashboard."""
+    import webbrowser
+
+    if not _health(a.port):
+        print(f"omna: the proxy isn't running, so there's nothing to show yet.", file=sys.stderr)
+        print("  start it with `omna start -d`, then run this again.", file=sys.stderr)
+        return 1
+    url = f"{config.base_url(a.port)}/omna/mappings?k={config.dashboard_token()}"
+    print(f"omna: opening the mappings review screen on {config.base_url(a.port)}")
+    if not webbrowser.open(url):
+        print(f"  (couldn't open a browser — paste this in yourself: {url})")
+    return 0
+
+
 def cmd_report(a) -> int:
     from . import report
 
@@ -969,6 +985,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_report)
     s = sub.add_parser("dashboard", help="open the live dashboard in your browser")
     add_port(s); s.set_defaults(fn=cmd_dashboard)
+    s = sub.add_parser("mappings", help="open the mappings review screen in your browser")
+    add_port(s); s.set_defaults(fn=cmd_mappings)
     s = sub.add_parser("enroll", help="tag this machine with an organisation/department for company reports")
     s.add_argument("--org", default="", help="organisation name")
     s.add_argument("--dept", default="", help="department name")

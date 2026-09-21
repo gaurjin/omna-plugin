@@ -318,6 +318,16 @@ async def test_dashboard_serves_html_and_json(env):
 
 
 @pytest.mark.anyio
+async def test_dashboard_links_to_the_mappings_review_screen(env):
+    from omna_plugin import config
+
+    up, session, client = env
+    k = config.dashboard_token(create=True)
+    r = await client.get(f"/omna/dashboard?k={k}")
+    assert "/omna/mappings" in r.text
+
+
+@pytest.mark.anyio
 async def test_dashboard_shows_the_sent_as_is_count_the_extension_reports(env):
     from omna_plugin import config
 
