@@ -531,7 +531,17 @@ class MaskingSession:
         if m and len(buf) - m.start() <= _MAX_TOKEN_HOLD:
             best = m.start()
         if self._fake_prefixes:
-            for i in range(max(0, len(buf) - self._max_fake_len + 1), best):
+            # Never cut through a value that has already arrived in full. A
+            # complete fake can END with the first character of another one
+            # ("...@example.com" followed by a fake starting with "m"), and
+            # holding that character back would split the complete value across
+            # two releases — so neither half would ever be recognised and the
+            # fake would reach the person unrestored. Only the tail AFTER the
+            # last complete match is a candidate for holding back.
+            safe = 0
+            for done in self._pattern().finditer(buf):
+                safe = done.end()
+            for i in range(max(safe, len(buf) - self._max_fake_len + 1), best):
                 if buf[i:] in self._fake_prefixes:
                     return i
         return best

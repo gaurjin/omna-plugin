@@ -26,6 +26,7 @@ from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
+from .style import TOKENS, style_for_door
 
 CA_ORG = "Omna"
 CA_CN = "Omna Local Certificate Authority"
@@ -84,6 +85,7 @@ class OmnaAddon:
         self.resolver = resolver
         self.refusals: dict[str, int] = {}     # "App → host" -> count this run (also receipted)
         self.seen_apps: dict[str, int] = {}
+        self._said_refused: set[str] = set()   # doors we have already explained, once per run
 
     # ---------------------------------------------------------------- helpers
     async def _app_of(self, client) -> str | None:
@@ -106,6 +108,23 @@ class OmnaAddon:
     def _door_for(self, flow: http.HTTPFlow) -> str:
         return self._door_for_client(flow.client_conn)
 
+    def _style_for(self, flow: http.HTTPFlow) -> str:
+        """Which masking style THIS flow may use.
+
+        Decided per flow, not per addon, because one addon serves both the
+        system door and the deep door and they are on opposite sides of the
+        rule: the deep door captures a named desktop app, and that list can
+        hold an editor as easily as a chat app. `style.py` owns the rule; a
+        refusal is printed once per door per run rather than applied quietly.
+        """
+        door = self._door_for(flow)
+        decision = style_for_door(door, self.policy.style)
+        if decision.refused and door not in self._said_refused:
+            self._said_refused.add(door)
+            print(decision.line(), flush=True)
+        flow.metadata["omna_style"] = decision.style
+        return decision.style
+
     def _receipt(self, flow: http.HTTPFlow, status: int, stream: bool) -> None:
         if flow.metadata.get("omna_receipted"):
             return  # already wrote one for this flow (normal completion or abort) — never double-receipt
@@ -115,7 +134,8 @@ class OmnaAddon:
             door=self._door_for(flow), route=flow.request.path.split("?")[0][:80], host=flow.request.pretty_host,
             status=status, stats=flow.metadata.get("omna_stats") or MaskStats(),
             nbytes=flow.metadata.get("omna_nbytes", 0), ms=int((time.time() - t0) * 1000),
-            stream=stream, app=flow.metadata.get("omna_app"), note=flow.metadata.get("omna_note"), session_id=None)
+            stream=stream, app=flow.metadata.get("omna_app"), note=flow.metadata.get("omna_note"),
+            session_id=None, style=flow.metadata.get("omna_style", TOKENS))
 
     # ---------------------------------------------------------------- TLS
     async def tls_clienthello(self, data: tls.ClientHelloData) -> None:
@@ -174,7 +194,7 @@ class OmnaAddon:
         req = RequestView(host=flow.request.pretty_host, method=flow.request.method, path=flow.request.path,
                           content_type=flow.request.headers.get("content-type", ""),
                           body=flow.request.get_content() or b"", headers=dict(flow.request.headers))
-        out = adapter.mask(self.pipeline, req)
+        out = adapter.mask(self.pipeline, req, self._style_for(flow))
         flow.metadata.update(omna_app=app, omna_adapter=adapter, omna_stats=out.stats, omna_nbytes=len(req.body),
                              omna_note="passthrough-nonprompt" if out.passthrough else None)
         if out.refused:
@@ -257,7 +277,7 @@ class OmnaAddon:
         if not msg.is_text:
             return
         if msg.from_client:
-            masked, stats = self.pipeline.mask_text(msg.text)
+            masked, stats = self.pipeline.mask_text(msg.text, self._style_for(flow))
             msg.content = masked.encode("utf-8")
             st: MaskStats = flow.metadata.setdefault("omna_stats", MaskStats())
             for k, v in stats.counts.items():

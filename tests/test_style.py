@@ -56,6 +56,9 @@ def test_only_style_py_decides_what_realistic_means():
                  "adapters/generic.py", "adapters/base.py"):
         text = (src / name).read_text()
         assert '"realistic"' not in text and "'realistic'" not in text, name
+    # ...and every door asks this module instead.
+    for name in ("proxy.py", "system_door.py"):
+        assert "style_for_door" in (src / name).read_text(), name
 
 
 def test_styles_tuple_is_the_two_we_document():

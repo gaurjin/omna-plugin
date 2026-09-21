@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 from ..pipeline import MaskStats, Pipeline
+from ..style import TOKENS
 
 # Same rule the Chrome extension uses to decide "this POST carries a prompt".
 ENDPOINT_RE = re.compile(
@@ -38,5 +39,5 @@ class SiteAdapter(Protocol):
     hosts: tuple[str, ...]
 
     def is_prompt(self, req: RequestView) -> bool: ...
-    def mask(self, pipeline: Pipeline, req: RequestView) -> MaskOutcome: ...
+    def mask(self, pipeline: Pipeline, req: RequestView, style: str = TOKENS) -> MaskOutcome: ...
     def response_mode(self, content_type: str) -> ResponseMode: ...

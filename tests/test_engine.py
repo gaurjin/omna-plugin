@@ -389,3 +389,22 @@ def test_the_fake_salt_is_per_machine_not_a_constant(home, tmp_path, monkeypatch
     s2 = MaskingSession()
     b = s2.mask_text("mail jane.doe@acme.com", style=REALISTIC).masked
     assert a != b
+
+
+def test_a_complete_fake_is_never_split_by_the_hold_back(home):
+    """The bug: a fake can END with the first character of another fake
+    ("...@example.com" before one starting with "m"). Holding that character
+    back cuts the finished value in two, so neither half is ever recognised and
+    the fake reaches the person as if masking had failed."""
+    s = MaskingSession()
+    s._remember_fake("maria.taylor@example.com", "jane.doe@acme.com", "EMAIL")
+    buf = "wrote to maria.taylor@example.com"
+    assert s.hold_from(buf) == len(buf)
+    assert s.restore_text(buf) == "wrote to jane.doe@acme.com"
+
+
+def test_a_partial_fake_after_a_complete_one_is_still_held(home):
+    s = MaskingSession()
+    s._remember_fake("maria.taylor@example.com", "jane.doe@acme.com", "EMAIL")
+    buf = "wrote to maria.taylor@example.com and maria.tay"
+    assert s.hold_from(buf) == len("wrote to maria.taylor@example.com and ")

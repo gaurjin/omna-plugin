@@ -1,4 +1,5 @@
 import asyncio
+import json
 import ssl
 import time
 
@@ -9,6 +10,12 @@ from omna_plugin import receipts
 from omna_plugin.engine import MaskingSession
 from omna_plugin.pipeline import Pipeline
 from omna_plugin.policy import Policy
+from mitmproxy import http
+from mitmproxy.test import tflow
+from mitmproxy.websocket import WebSocketData, WebSocketMessage
+from wsproto.frame_protocol import Opcode
+
+from omna_plugin.style import REALISTIC, TOKENS
 from omna_plugin.system_door import OmnaAddon, build_master
 from tests.tls_helpers import FakeUpstream, make_ca_and_leaf
 
@@ -242,3 +249,88 @@ async def test_restore_browser_off_masks_but_shows_tokens(door):
     assert TOK.encode() in up.last_body, "masking must never be optional"
     assert EMAIL not in r.text
     assert TOK in r.text
+
+
+# ---------------------------------------------------------------- masking styles
+
+def a_prompt_flow(body: bytes = b'{"prompt": "mail jane.doe@acme.com"}'):
+    f = tflow.tflow()
+    f.request.host = "claude.ai"
+    f.request.path = "/api/messages"
+    f.request.method = "POST"
+    f.request.headers["content-type"] = "application/json"
+    f.request.set_content(body)
+    return f
+
+
+def an_addon(tmp_path, monkeypatch, door: str, style: str):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    pol = Policy()
+    pol.style = style
+    return OmnaAddon(Pipeline(MaskingSession()), pol, door=door, resolver=lambda peer: (1, "TestApp"))
+
+
+async def test_the_system_door_sends_a_fake_value_when_the_policy_says_realistic(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    sent = flow.request.get_content().decode()
+    assert "jane.doe@acme.com" not in sent
+    assert "[" not in sent and "@example." in sent
+
+
+async def test_the_deep_door_refuses_realistic_like_the_api_door(tmp_path, monkeypatch):
+    """The deep door captures a NAMED desktop app, and that list can hold an
+    editor as easily as a chat app — so it sits with the file-writing doors."""
+    addon = an_addon(tmp_path, monkeypatch, "deep", REALISTIC)
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    sent = flow.request.get_content().decode()
+    assert "[EMAIL_" in sent and "@example." not in sent
+
+
+async def test_the_system_door_defaults_to_numbered_tokens(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    assert "[EMAIL_" in flow.request.get_content().decode()
+
+
+async def test_a_secret_stays_a_numbered_token_at_the_system_door(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+    flow = a_prompt_flow(b'{"prompt": "key AKIAIOSFODNN7EXAMPLE mail jane.doe@acme.com"}')
+    await addon.request(flow)
+    sent = flow.request.get_content().decode()
+    assert "AKIAIOSFODNN7EXAMPLE" not in sent
+    assert "[SECRET_AWS_KEY_" in sent          # loud, even here
+    assert "@example." in sent                  # ...while the e-mail is realistic
+
+
+async def test_the_receipt_names_the_style_each_door_used(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    flow.response = http.Response.make(200, b'{"reply": "ok"}', {"content-type": "application/json"})
+    addon.response(flow)
+    assert receipts.tail(1)[0]["style"] == REALISTIC
+
+
+async def test_a_realistic_reply_is_restored_at_the_system_door(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    fake = json.loads(flow.request.get_content())["prompt"].split("mail ")[1]
+    flow.response = http.Response.make(200, json.dumps({"reply": "wrote to " + fake}).encode(),
+                                       {"content-type": "application/json"})
+    addon.response(flow)
+    assert "jane.doe@acme.com" in flow.response.get_content().decode()
+
+
+async def test_a_websocket_message_honours_the_door_style(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+    flow = a_prompt_flow()
+    flow.websocket = WebSocketData()
+    flow.websocket.messages.append(WebSocketMessage(Opcode.TEXT, True, b"mail jane.doe@acme.com"))
+    addon.websocket_message(flow)
+    sent = flow.websocket.messages[-1].content.decode()
+    assert "jane.doe@acme.com" not in sent and "[" not in sent and "@example." in sent
