@@ -2,6 +2,7 @@ import json
 from omna_plugin import receipts
 from omna_plugin.engine import MaskingSession
 from omna_plugin.pipeline import Pipeline, MaskStats
+from omna_plugin.style import REALISTIC, TOKENS
 
 EMAIL = "jane.doe@example.com"
 TOK = "[EMAIL_" "1]"          # two pieces on purpose, see the note at the top of this plan
@@ -111,3 +112,46 @@ def test_a_refusal_is_still_receipted_when_reports_are_off(tmp_path, monkeypatch
                note="tls-refused", session_id=None)
     recs = receipts.tail(10)
     assert len(recs) == 1 and recs[0]["note"] == "tls-refused"
+
+
+# ---------------------------------------------------------------- masking styles
+
+def test_mask_json_honours_the_style_it_is_given(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    masked, stats = p.mask_json({"t": f"mail {EMAIL}"}, style=REALISTIC)
+    assert "[" not in masked["t"] and EMAIL not in masked["t"]
+    assert stats.tokens == ["EMAIL_1"], "the receipt's identifiers must not change with the style"
+    assert p.restore_json({"reply": masked["t"]}) == {"reply": f"mail {EMAIL}"}
+
+
+def test_mask_json_defaults_to_tokens(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    masked, _ = p.mask_json({"t": f"mail {EMAIL}"})
+    assert TOK in masked["t"]
+
+
+def test_mask_bytes_passes_the_style_down(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    out = p.mask_bytes(b'{"prompt": "mail jane.doe@acme.com"}', "application/json", style=REALISTIC)
+    assert b"[" not in out.body and b"jane.doe@acme.com" not in out.body
+    plain = p.mask_bytes(b'{"prompt": "mail jane.doe@acme.com"}', "application/json")
+    assert b"[EMAIL_" in plain.body
+
+
+def test_mask_text_and_form_bodies_honour_the_style(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    masked, stats = p.mask_text(f"mail {EMAIL}", style=REALISTIC)
+    assert "[" not in masked and stats.tokens == ["EMAIL_1"]
+    form = p.mask_bytes(b"q=mail+jane.doe%40acme.com", "application/x-www-form-urlencoded",
+                        style=REALISTIC)
+    assert b"%5B" not in form.body and b"[" not in form.body
+
+
+def test_a_receipt_records_which_style_was_used(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    _, stats = p.mask_json({"t": f"mail {EMAIL}"}, style=REALISTIC)
+    p.receipt(door="system", route="/x", host="claude.ai", status=200, stats=stats,
+              nbytes=10, ms=1, stream=False, app=None, note=None, session_id=None,
+              style=REALISTIC)
+    recs = receipts.tail(1)
+    assert recs[-1]["style"] == REALISTIC

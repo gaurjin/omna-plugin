@@ -11,9 +11,10 @@ from urllib.parse import parse_qsl, urlencode
 
 from . import receipts
 from .body import mask_body, restore_body
-from .engine import MaskingSession, TOKEN_RE
+from .engine import MaskingSession
 from .policy import Policy
 from .stream import StreamRestorer, TextRestorer
+from .style import TOKENS
 
 
 @dataclass
@@ -37,10 +38,6 @@ class MaskedBody:
     refused: str | None = None   # "unparseable" | "mask-failed" | None
 
 
-def _tokens_in(text: str) -> list[str]:
-    return sorted({m.group(0)[1:-1] for m in TOKEN_RE.finditer(text)})
-
-
 def _merge(total: MaskStats, st: MaskStats) -> None:
     for k, v in st.counts.items():
         total.counts[k] = total.counts.get(k, 0) + v
@@ -58,9 +55,9 @@ class Pipeline:
         self.session = session
 
     # ------------------------------------------------------------ masking
-    def mask_json(self, obj) -> tuple[object, MaskStats]:
+    def mask_json(self, obj, style: str = TOKENS) -> tuple[object, MaskStats]:
         t0 = time.time()
-        masked, counts = mask_body(self.session, obj)
+        masked, counts, labels = mask_body(self.session, obj, style)
         c = dict(counts)
         by_layer = {k[len("_layer_"):]: c.pop(k) for k in [x for x in list(c) if x.startswith("_layer_")]}
         stats = MaskStats(
@@ -70,18 +67,18 @@ class Pipeline:
             by_layer=by_layer,
             counts=c,
             mask_ms=int((time.time() - t0) * 1000),
-            tokens=_tokens_in(json.dumps(masked, ensure_ascii=False)),
+            tokens=labels,
         )
         return masked, stats
 
-    def mask_text(self, text: str) -> tuple[str, MaskStats]:
+    def mask_text(self, text: str, style: str = TOKENS) -> tuple[str, MaskStats]:
         t0 = time.time()
-        r = self.session.mask_text(text)
+        r = self.session.mask_text(text, style=style)
         return r.masked, MaskStats(counts=dict(r.counts), secrets=r.secrets, pii=r.pii,
                                     validated=r.validated, by_layer=dict(r.by_layer),
-                                    mask_ms=int((time.time() - t0) * 1000), tokens=_tokens_in(r.masked))
+                                    mask_ms=int((time.time() - t0) * 1000), tokens=list(r.labels))
 
-    def mask_bytes(self, body: bytes, content_type: str) -> MaskedBody:
+    def mask_bytes(self, body: bytes, content_type: str, style: str = TOKENS) -> MaskedBody:
         """Mask a request body by content type. Never forwarded unmasked.
 
         Two distinct refusal reasons: "unparseable" means the body itself
@@ -98,7 +95,7 @@ class Pipeline:
             except ValueError:
                 return MaskedBody(None, MaskStats(), refused="unparseable")
             try:
-                masked, stats = self.mask_json(obj)
+                masked, stats = self.mask_json(obj, style)
                 return MaskedBody(json.dumps(masked, ensure_ascii=False).encode("utf-8"), stats)
             except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
                 return MaskedBody(None, MaskStats(), refused="mask-failed")
@@ -110,7 +107,7 @@ class Pipeline:
             try:
                 total, out = MaskStats(), []
                 for k, v in pairs:
-                    mv, st = self.mask_text(v)
+                    mv, st = self.mask_text(v, style)
                     out.append((k, mv))
                     _merge(total, st)
                 return MaskedBody(urlencode(out).encode("utf-8"), total)
@@ -122,7 +119,7 @@ class Pipeline:
             except (ValueError, UnicodeDecodeError, TypeError):
                 return MaskedBody(None, MaskStats(), refused="unparseable")
             try:
-                masked, stats = self.mask_text(text)
+                masked, stats = self.mask_text(text, style)
                 return MaskedBody(masked.encode("utf-8"), stats)
             except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
                 return MaskedBody(None, MaskStats(), refused="mask-failed")
@@ -132,8 +129,8 @@ class Pipeline:
     def restore_json(self, obj):
         return restore_body(self.session, obj)
 
-    def restore_text(self, text: str) -> str:
-        return self.session.restore_text(text)
+    def restore_text(self, text: str, json_escape: bool = False) -> str:
+        return self.session.restore_text(text, json_escape=json_escape)
 
     def sse_restorer(self) -> StreamRestorer:
         """For Anthropic / OpenAI shaped SSE (the API door's formats)."""
@@ -146,7 +143,7 @@ class Pipeline:
     # ------------------------------------------------------------ receipts
     def receipt(self, *, door: str, route: str, host: str, status: int, stats: MaskStats,
                 nbytes: int, ms: int, stream: bool, app: str | None, note: str | None,
-                session_id: str | None) -> None:
+                session_id: str | None, style: str = TOKENS) -> None:
         # Keep Local Reports off suppresses ordinary usage receipts, but never a
         # refusal: that's "this app isn't working, here's why" diagnostic
         # information (surfaced by `omna status`'s refused line), not usage
@@ -158,7 +155,7 @@ class Pipeline:
             "stream": stream, "masked": stats.counts, "secrets": stats.secrets, "pii": stats.pii,
             "validated": stats.validated, "by_layer": stats.by_layer,
             "mask_ms": stats.mask_ms, "tokens": stats.tokens, "bytes_in": nbytes, "ms": ms,
-            "app": app,
+            "app": app, "style": style,
         }
         if note:
             rec["note"] = note

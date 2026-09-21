@@ -49,7 +49,7 @@ def anthropic_body():
 def test_anthropic_request_masked_everywhere_it_should_be(session):
     body = anthropic_body()
     original = copy.deepcopy(body)
-    masked, counts = mask_body(session, body)
+    masked, counts, labels = mask_body(session, body)
     assert body == original, "input must not be mutated"
     s = str(masked)
     assert KEY not in s
@@ -81,7 +81,7 @@ def test_openai_request_masked(session):
             {"role": "tool", "tool_call_id": "c1", "content": f"row: {EMAIL}"},
         ],
     }
-    masked, counts = mask_body(session, body)
+    masked, counts, labels = mask_body(session, body)
     assert EMAIL not in str(masked)
     assert masked["messages"][0]["content"] == "You are helpful."
     # Reserved keys (leading underscore) are popped off by the receipt writer;

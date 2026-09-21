@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 
 from .engine import MaskingSession
+from .style import TOKENS
 
 # Keys whose values are never human prose, or must reach the upstream untouched.
 SKIP_KEYS = frozenset(
@@ -58,17 +59,23 @@ def _walk(obj, fn, counts: dict[str, int], key: str | None = None):
     return obj
 
 
-def mask_body(session: MaskingSession, obj):
-    """Return (masked_copy, counts). ``obj`` is not modified.
+def mask_body(session: MaskingSession, obj, style: str = TOKENS):
+    """Return (masked_copy, counts, labels). ``obj`` is not modified.
 
     ``counts`` maps entity name -> occurrences and carries reserved keys that
     the receipt writer pops off: ``_secrets`` / ``_pii`` (totals by layer),
     ``_validated`` (catches a checksum actually proved) and ``_layer_L1`` etc.
+
+    ``labels`` are the numbered token names minted for this body ("EMAIL_1"),
+    whatever the style. Receipts count those, so the audit trail is the same
+    under both styles even when the masked body carries no brackets at all.
     """
     counts: dict[str, int] = {}
+    labels: list[str] = []
 
     def fn(s: str, c: dict[str, int]) -> str:
-        r = session.mask_text(s)
+        r = session.mask_text(s, style=style)
+        labels.extend(r.labels)
         for k, n in r.counts.items():
             c[k] = c.get(k, 0) + n
         if r.secrets:
@@ -82,7 +89,7 @@ def mask_body(session: MaskingSession, obj):
             c[k] = c.get(k, 0) + n
         return r.masked
 
-    return _walk(obj, fn, counts), counts
+    return _walk(obj, fn, counts), counts, sorted(set(labels))
 
 
 def restore_body(session: MaskingSession, obj):
