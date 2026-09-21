@@ -623,7 +623,7 @@ def test_a_secret_never_gets_a_fake_value_even_in_realistic_style(home):
     s = MaskingSession()
     r = s.mask_text("key AKIAIOSFODNN7EXAMPLE here", style=REALISTIC)
     assert "AKIAIOSFODNN7EXAMPLE" not in r.masked
-    assert "[SECRET_AWS_KEY_1]" in r.masked      # the loud form, on purpose
+    assert "[SECRET_AWS_KEY_" "1]" in r.masked   # two pieces, per CLAUDE.md; the loud form on purpose
     assert s.restore_text(r.masked) == "key AKIAIOSFODNN7EXAMPLE here"
     # and nothing about it reached the disk
     assert "AKIA" not in (home / "registry.json").read_text()
