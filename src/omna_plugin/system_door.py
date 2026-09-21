@@ -22,6 +22,7 @@ from mitmproxy.certs import CertStore
 from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
 
+from . import config
 from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
@@ -86,6 +87,34 @@ class OmnaAddon:
         self.refusals: dict[str, int] = {}     # "App → host" -> count this run (also receipted)
         self.seen_apps: dict[str, int] = {}
         self._said_refused: set[str] = set()   # doors we have already explained, once per run
+        self._policy_mtime: float | None = None
+        self._live: Policy = policy            # the two toggles, re-read from disk (see _fresh)
+
+    # ------------------------------------------------------------ live policy
+    def _fresh(self) -> Policy:
+        """The policy as it is on disk right now.
+
+        The menu bar writes ``policy.json`` from a DIFFERENT process, so the
+        copy this addon was built with goes stale the moment somebody flips a
+        toggle there. Verified 2026-09-21: without this, "Restore Real Values
+        in Browser" did nothing at all until the daemon restarted, while its
+        own help text said it took effect on the next request. That is exactly
+        the "a setting that silently does not apply" bug #143 is about.
+
+        Only re-read when the file's timestamp actually moved, so the common
+        case is one ``stat`` per request rather than a parse. When there is no
+        file on disk at all, the object this addon was built with IS the
+        policy — that is how a caller (and every test) hands one in directly.
+        """
+        try:
+            path = config.policy_path()
+            st = path.stat()
+        except OSError:
+            return self.policy
+        if st.st_mtime != self._policy_mtime:
+            self._policy_mtime = st.st_mtime
+            self._live = Policy.load()
+        return self._live
 
     # ---------------------------------------------------------------- helpers
     async def _app_of(self, client) -> str | None:
@@ -118,7 +147,7 @@ class OmnaAddon:
         refusal is printed once per door per run rather than applied quietly.
         """
         door = self._door_for(flow)
-        decision = style_for_door(door, self.policy.style)
+        decision = style_for_door(door, self._fresh().style)
         if decision.refused and door not in self._said_refused:
             self._said_refused.add(door)
             print(decision.line(), flush=True)
@@ -171,7 +200,7 @@ class OmnaAddon:
         """
         if flow.metadata.get("omna_ext"):
             return True
-        return not self.policy.restore_browser
+        return not self._fresh().restore_browser
 
     def requestheaders(self, flow: http.HTTPFlow) -> None:
         flow.request.headers["accept-encoding"] = "identity"

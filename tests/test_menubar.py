@@ -199,3 +199,19 @@ def test_quit_non_darwin_just_stops_the_icon(monkeypatch):
 
     menubar._quit(Icon())
     assert calls == ["stop"]
+
+
+def test_toggle_realistic_style_flips_the_policy_style(tmp_path, monkeypatch):
+    """#143(a): switching the style used to need a terminal."""
+    from omna_plugin.policy import Policy
+    from omna_plugin.style import REALISTIC, TOKENS
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    assert Policy.load().style == TOKENS
+    assert menubar._realistic_style() is False
+    menubar._toggle_realistic_style()
+    assert Policy.load().style == REALISTIC
+    assert menubar._realistic_style() is True
+    menubar._toggle_realistic_style()
+    assert Policy.load().style == TOKENS
+    assert menubar._realistic_style() is False

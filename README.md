@@ -139,7 +139,7 @@ omna log --verify
 | `omna start [-d] [--smart] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). `--smart` adds the on-device Contextual model for prose names (809 MB download once, slower). |
 | `omna stop` / `omna ensure` | Stop the background proxy / start it if it is not running (the Claude Code hook calls this). |
 | `omna status` | Running? Claude Code wired? Receipts today. |
-| `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login, Keep Local Reports or **Restore Real Values in Browser**, or uninstall. |
+| `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login, Keep Local Reports, **Restore Real Values in Browser** or **Use Realistic Fake Values in Browser**, or uninstall. Both take effect on the next request — no restart. |
 | `omna log [-n 20] [--verify] [--json]` | Local receipts. `--verify` checks the hash chain. |
 | `omna report [--days 7] [--json] [--html FILE]` | Weekly summary from the receipts: requests enabled, distinct secrets kept off the wire, PII tokenised, destinations, chain status, masking cost. |
 | `omna report --export FILE` | Write a **counts-only** copy of that report, safe to hand to a company admin — numbers plus your org/department tags. No prompt text, no real values, no usernames, no file paths, no app names. |
@@ -279,10 +279,28 @@ the stakes are one-sided:
 | API door | Claude Code, aider, Codex, Continue, VS Code | **refused** — they all write files |
 | System door | your browser and the chat websites | allowed |
 | Deep door | a named desktop app, captured individually | **refused** — that list can hold an editor |
+| Omna's Chrome extension | the browser, masked before the request leaves it | allowed, unless the system door is also on — see below |
 
 A refusal is never quiet: `omna style realistic` prints which doors kept
 numbered tokens and why, `omna status` shows the style per door, and every
 receipt records which style that request actually used.
+
+### The Chrome extension, and the one case it keeps numbered tokens
+
+If you also run Omna's Chrome extension, it masks inside the browser before the
+request ever leaves it, so it has to be told which style to use. It asks the
+plugin — on the same 60-second check-in it was already making — and does what
+it is told. It never decides for itself: with the plugin not running, or
+answering anything other than "realistic", it uses numbered tokens.
+
+There is one case where the plugin answers "tokens" even though you asked for
+realistic: **while the system door is also on.** Both halves would then mask the
+same browser request, one after the other, and the second pass cannot tell a
+stand-in from real data. A numbered token has brackets, so it is walked straight
+past and comes back to you unchanged. A realistic fake value looks exactly like
+a real e-mail — that is the whole point of it — so it would be masked a second
+time and nothing could put your real value back. `omna style` prints this, in
+those words, on the `browser ext` line.
 
 **Secrets are never given a fake value, under any style.** An API key, a token,
 a password or a private key always becomes a numbered `[SECRET_…]` label. A fake
@@ -336,6 +354,10 @@ encryption key.
 
 ## Reading browser replies: real values or labels
 
+**Use Realistic Fake Values in Browser** (menu bar, off by default) is the same
+switch as `omna style realistic`, for people who would rather not open a
+terminal. It changes only how a masked value is WRITTEN, in the browser.
+
 **Restore Real Values in Browser** (menu bar, on by default) decides what you
 read back in a browser reply: the real name, or the `[EMAIL_1]` label that was
 actually sent. **Masking is not affected by it and is never optional** — this
@@ -346,11 +368,13 @@ put back, because there a label reaching the tool breaks it: Claude Code would
 write `[SECRET_AWS_KEY_1]` into your file instead of editing the real line.
 
 If you also run the Chrome extension, the plugin steps aside and lets the
-extension handle the browser reply. It has to: both halves label things
-`[EMAIL_1]`, `[PERSON_1]` … and number them independently, so whoever restores
-second could swap in a different person's value. The extension tags the
-requests it handles so the plugin knows, per request, to leave that reply
-alone — masking still happens either way.
+extension handle the browser reply. It has to: neither half knows the other's
+list, so whoever restores second could swap in a different person's value. That
+is true of the `[EMAIL_1]` labels, which both sides number independently, and
+worse of realistic fake values, where two generators draw ordinary names out of
+one small pool and the wrong substitution reads as perfectly correct data. The
+extension tags the requests it handles so the plugin knows, per request, to
+leave that reply alone — masking still happens either way.
 
 ## What it refuses
 

@@ -360,7 +360,7 @@ def cmd_style(a) -> int:
     """
     import textwrap
 
-    from .style import REALISTIC, TOKENS, style_for_door
+    from .style import REALISTIC, TOKENS, style_for_door, style_for_extension
 
     def wrapped(text: str, indent: str = "      ") -> str:
         return textwrap.fill(text, 76, initial_indent=indent, subsequent_indent=indent)
@@ -376,10 +376,20 @@ def cmd_style(a) -> int:
             d = style_for_door(door, pol.style)
             mark = "   <- refused here" if d.refused else ""
             print(f"  {door + ' door':<13} {what}\n  {'':<13} writes: {d.style}{mark}")
+        # The Chrome extension masks inside the browser, before the plugin
+        # sees the request at all, so it gets its own line — a person who has
+        # both installed needs to know what the browser will actually write.
+        ext = style_for_extension(pol.style, pol.doors.get("system", True))
+        mark = "   <- refused here" if ext.refused else ""
+        print(f"  {'browser ext':<13} the Omna extension, masking inside the browser"
+              f"\n  {'':<13} writes: {ext.style}{mark}")
         refusal = style_for_door("api", pol.style)
         if refusal.refused:
             print("\nWhy:")
             print(wrapped(refusal.reason + ".", "  "))
+        if ext.refused and ext.requested == REALISTIC:
+            print("\nAnd in the browser extension:")
+            print(wrapped(ext.reason + ".", "  "))
         print("\n  omna style tokens      a numbered token, everywhere (the default)")
         print("  omna style realistic   a realistic fake value instead — browser only")
         return 0
@@ -398,6 +408,10 @@ def cmd_style(a) -> int:
     print("      instead of a numbered token, which reads better to the AI.")
     print("      NOT here:")
     print(wrapped(style_for_door("api", REALISTIC).reason + ".", "        "))
+    ext = style_for_extension(REALISTIC, pol.doors.get("system", True))
+    if ext.refused:
+        print("      NOT in the Omna browser extension either, right now:")
+        print(wrapped(ext.reason + ".", "        "))
     print("      Why: a leftover token is obviously wrong and someone notices;")
     print("      a leftover fake value looks like real data and gets committed.")
     print("      Secrets are never faked, under any style — a fake API key that")

@@ -18,7 +18,16 @@ reasons are Product Spec §6.9 — read it before touching Stage 2/3 code).
 - **Deep door** = `mitmproxy` "local" mode per app name (its signed "Mitmproxy Redirector" network
   extension; no Swift of ours). Only for apps that ignore the system proxy.
 - **Policy** = `~/.omna/policy.json`: hosts, tools on/off, apps mask/bypass (by process name via `lsof`),
-  deep-capture apps, doors. A bypass is always receipted. Pinned apps are refused and named in `omna status`.
+  deep-capture apps, doors, masking style. A bypass is always receipted. Pinned apps are refused and named
+  in `omna status`. **The menu bar writes this file from ANOTHER process**, so anything it can toggle must be
+  re-read from disk, not captured at start-up — `OmnaAddon._fresh()` (mtime-gated) and `proxy._live_style()`
+  do that for `restore_browser` and `style`. Before 2026-09-21 they did not, and the menu-bar restore toggle
+  silently did nothing until a restart. Everything else (hosts, per-app rules) is fixed when the door starts.
+- **Masking style** = `style.py`, the ONLY place that decides. `style_for_door(door, requested)` for the three
+  doors; `style_for_extension(requested, system_door_on)` for Omna's Chrome extension, which masks inside the
+  browser and reads its answer from `/omna/health`'s `style` field (#143). A realistic fake value cannot
+  survive being masked a second time — it looks like real data to the next masker — so the extension keeps
+  numbered tokens while the system door is on. A refusal is always returned with a printable sentence.
 - `mitmproxy` is a library dependency, used as-is (fork-free). Verified hook/option names are listed at the
   top of the Stage 2+3 plan; trust that list over memory.
 

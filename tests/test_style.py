@@ -1,6 +1,7 @@
 import pathlib
 
-from omna_plugin.style import REALISTIC, STYLES, TOKENS, StyleDecision, style_for_door
+from omna_plugin.style import (REALISTIC, STYLES, TOKENS, StyleDecision, style_for_door,
+                               style_for_extension)
 
 
 def test_tokens_are_allowed_at_every_door():
@@ -64,3 +65,43 @@ def test_only_style_py_decides_what_realistic_means():
 def test_styles_tuple_is_the_two_we_document():
     assert STYLES == (TOKENS, REALISTIC)
     assert isinstance(style_for_door("api", TOKENS), StyleDecision)
+
+
+# ----------------------------------------------- the Chrome extension (#143)
+# The extension masks inside the browser, so it never reaches style_for_door
+# on its own — the plugin answers for it on /omna/health.
+
+def test_the_extension_may_use_realistic_when_the_system_door_is_off():
+    d = style_for_extension(REALISTIC, system_door_on=False)
+    assert d.style == REALISTIC and not d.refused
+
+
+def test_the_extension_keeps_tokens_while_the_system_door_is_on():
+    """Masked twice, a realistic fake value is gone for good: the second pass
+    cannot tell it from real data. A numbered token survives, so that is what
+    the extension keeps."""
+    d = style_for_extension(REALISTIC, system_door_on=True)
+    assert d.style == TOKENS
+    assert d.refused is True
+    assert "masks the same request a second time" in d.reason
+    assert d.line()
+
+
+def test_the_extension_follows_the_policy_when_it_asks_for_tokens():
+    for on in (True, False):
+        d = style_for_extension(TOKENS, system_door_on=on)
+        assert d.style == TOKENS and not d.refused
+
+
+def test_the_extension_refuses_an_unknown_style_the_same_way_a_door_does():
+    for on in (True, False):
+        d = style_for_extension("fancy", system_door_on=on)
+        assert d.style == TOKENS and d.refused is True and "fancy" in d.reason
+
+
+def test_the_extension_is_never_refused_quietly_either():
+    for requested in (TOKENS, REALISTIC, "fancy"):
+        for on in (True, False):
+            d = style_for_extension(requested, system_door_on=on)
+            assert d.refused == bool(d.reason)
+            assert d.style in STYLES

@@ -579,3 +579,67 @@ async def test_the_receipt_names_the_style_the_api_door_actually_used(env_with_p
     await client.post("/v1/messages", json={"model": "claude-sonnet-5",
                                             "messages": [{"role": "user", "content": f"mail {EMAIL}"}]})
     assert receipts.tail(1)[0]["style"] == TOKENS
+
+
+# ------------------------------------------- the style the browser is told (#143)
+# The Chrome extension masks inside the browser, before the plugin sees the
+# request, so it cannot ask a door anything — it reads one field on
+# /omna/health and does what that says.
+
+def _browser_app(tmp_path, monkeypatch, style: str, system_door_on: bool):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    pol = Policy()
+    pol.style = style
+    doors = {"api": True, "system": system_door_on, "deep": False}
+    pol.doors = doors
+    app = create_app(MaskingSession(), policy=pol, doors_state=doors,
+                     client=httpx.AsyncClient(transport=httpx.ASGITransport(app=Upstream().app)))
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://omna.local")
+
+
+@pytest.mark.anyio
+async def test_health_reports_numbered_tokens_by_default(tmp_path, monkeypatch):
+    client = _browser_app(tmp_path, monkeypatch, TOKENS, system_door_on=False)
+    assert (await client.get("/omna/health")).json()["style"] == TOKENS
+
+
+@pytest.mark.anyio
+async def test_health_reports_realistic_when_the_policy_asks_and_the_system_door_is_off(tmp_path, monkeypatch):
+    client = _browser_app(tmp_path, monkeypatch, REALISTIC, system_door_on=False)
+    assert (await client.get("/omna/health")).json()["style"] == REALISTIC
+
+
+@pytest.mark.anyio
+async def test_health_reports_tokens_while_the_system_door_is_on(tmp_path, monkeypatch):
+    """Both halves would mask the same browser request. A numbered token
+    survives that second pass; a realistic fake value does not."""
+    client = _browser_app(tmp_path, monkeypatch, REALISTIC, system_door_on=True)
+    assert (await client.get("/omna/health")).json()["style"] == TOKENS
+
+
+@pytest.mark.anyio
+async def test_health_never_reports_the_raw_policy_value(tmp_path, monkeypatch):
+    """`style` is a decision, not an echo. It is what the browser may WRITE."""
+    client = _browser_app(tmp_path, monkeypatch, "fancy", system_door_on=False)
+    assert (await client.get("/omna/health")).json()["style"] == TOKENS
+
+
+@pytest.mark.anyio
+async def test_health_picks_up_a_menu_bar_style_change_without_a_restart(tmp_path, monkeypatch):
+    """The menu bar writes policy.json from its own process (#143a). The answer
+    the extension reads has to move with it, or the new toggle is the very bug
+    #143 is about: a setting that silently does not apply."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    pol = Policy()
+    pol.doors = {"api": True, "system": False, "deep": False}
+    pol.save()
+    app = create_app(MaskingSession(), policy=pol, doors_state=pol.doors,
+                     client=httpx.AsyncClient(transport=httpx.ASGITransport(app=Upstream().app)))
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://omna.local")
+    assert (await client.get("/omna/health")).json()["style"] == TOKENS
+
+    menu = Policy.load()          # a different object, exactly like the menu bar's
+    menu.style = REALISTIC
+    menu.save()
+
+    assert (await client.get("/omna/health")).json()["style"] == REALISTIC

@@ -34,7 +34,7 @@ from . import config, crashlog, mappings, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
-from .style import style_for_door
+from .style import style_for_door, style_for_extension
 
 try:
     # Read from the installed package's own metadata (pyproject.toml's `version`)
@@ -121,7 +121,8 @@ def create_app(
     # value is refused here — and the refusal is printed into the proxy log
     # rather than applied quietly, because a silent downgrade is exactly the
     # failure this whole feature is trying to avoid.
-    api_style = style_for_door("api", (policy or Policy.load()).style)
+    pol = policy or Policy.load()
+    api_style = style_for_door("api", pol.style)
     if api_style.refused:
         print(api_style.line(), flush=True)
 
@@ -137,8 +138,23 @@ def create_app(
         "sent_as_is": 0,
     }
 
+    def _live_style() -> str:
+        """The style to tell the browser about, from the policy on disk.
+
+        Re-read rather than captured, because the menu bar writes policy.json
+        from a different process — the same staleness that made the menu-bar
+        restore toggle do nothing (fixed 2026-09-21). No file on disk means the
+        caller handed the policy in directly, which is how the tests do it.
+        """
+        try:
+            config.policy_path().stat()
+        except OSError:
+            return pol.style
+        return Policy.load().style
+
     async def health(_: Request) -> Response:
         ok, n, _msg = receipts.verify()
+        doors = doors_state or {"api": True, "system": False, "deep": False}
         return JSONResponse(
             {
                 "ok": True,
@@ -155,7 +171,13 @@ def create_app(
                 "chain_intact": ok,
                 "registry_entries": session.registry_size,
                 "registry_at_rest": session.at_rest,  # encrypted | plaintext | locked (#131)
-                "doors": doors_state or {"api": True, "system": False, "deep": False},
+                "doors": doors,
+                # The style the BROWSER may write (#143). The Chrome extension
+                # masks inside the browser, before the plugin sees anything, so
+                # it has to be told — and `style.py` is the only thing allowed
+                # to decide. The extension reads this one field and reasons
+                # about nothing else.
+                "style": style_for_extension(_live_style(), bool(doors.get("system"))).style,
                 "extension_last_seen": stats["extension_last_seen"],
                 "extension_version": stats["extension_version"],
             }

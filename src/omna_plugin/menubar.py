@@ -131,13 +131,44 @@ def _toggle_restore_browser() -> None:
     get real values, or Claude Code writes `[SECRET_AWS_KEY_1]` into your file
     instead of editing the real line.
 
-    Takes effect on the next request; the system door re-reads the policy each
-    time, no restart needed.
+    Takes effect on the next request: the system door re-reads policy.json
+    whenever its timestamp moves (`OmnaAddon._fresh`). Before 2026-09-21 it did
+    NOT — the running daemon kept the copy it started with, so this toggle did
+    nothing at all until a restart while saying otherwise right here.
     """
     from .policy import Policy
 
     pol = Policy.load()
     pol.restore_browser = not pol.restore_browser
+    pol.save()
+
+
+def _realistic_style() -> bool:
+    from .policy import Policy
+    from .style import REALISTIC
+
+    return Policy.load().style == REALISTIC
+
+
+def _toggle_realistic_style() -> None:
+    """How a masked value is WRITTEN: a numbered token, or a realistic fake one.
+
+    Ticked means an e-mail is sent as something like robert.jones@example.org
+    instead of `[EMAIL_1]`, which reads better to the AI. It applies in the
+    BROWSER only — style.py refuses it at the coding-tool and per-app doors,
+    because a realistic fake value left behind in a file looks like real data
+    while a numbered token looks obviously wrong. Secrets are never faked under
+    either setting.
+
+    Takes effect on the next request: the system door re-reads policy.json when
+    its timestamp moves (`OmnaAddon._fresh`), and so does the answer the Chrome
+    extension reads from /omna/health.
+    """
+    from .policy import Policy
+    from .style import REALISTIC, TOKENS
+
+    pol = Policy.load()
+    pol.style = TOKENS if pol.style == REALISTIC else REALISTIC
     pol.save()
 
 
@@ -208,6 +239,11 @@ def run(port: int = config.DEFAULT_PORT) -> int:
             "Restore Real Values in Browser",
             lambda: _toggle_restore_browser(),
             checked=lambda item: _restore_browser(),
+        ))
+        items.append(pystray.MenuItem(
+            "Use Realistic Fake Values in Browser",
+            lambda: _toggle_realistic_style(),
+            checked=lambda item: _realistic_style(),
         ))
         items.append(pystray.MenuItem("Uninstall Omna…", lambda icon: _confirm_and_uninstall(icon, state)))
         items.append(pystray.MenuItem("Quit", lambda icon: _quit(icon)))

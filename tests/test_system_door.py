@@ -6,7 +6,7 @@ import time
 import httpx
 import pytest
 
-from omna_plugin import receipts
+from omna_plugin import config, receipts
 from omna_plugin.engine import MaskingSession
 from omna_plugin.pipeline import Pipeline
 from omna_plugin.policy import Policy
@@ -364,3 +364,119 @@ async def test_the_live_system_door_restores_a_fake_split_across_stream_chunks(d
     assert r.status_code == 200
     assert EMAIL.encode() not in up.last_body and b"@example." in up.last_body
     assert EMAIL in r.text          # the canned token in the reply still restores
+
+
+# ------------------------------- extension / plugin FAKE-VALUE clash (#143)
+
+async def test_a_fake_the_extension_minted_is_never_restored_by_the_plugin(tmp_path, monkeypatch):
+    """The realistic-style twin of the token clash above, and a worse bug.
+
+    Both halves mint realistic stand-ins from the same small pool of ordinary
+    names, each with its own list, so the SAME fake can mean one person to the
+    plugin and a different one to the extension. A numbered token at least
+    looks like a token; a fake that gets swapped for the wrong person's real
+    e-mail looks like ordinary correct data and nobody notices.
+
+    The protection is the one that already exists for tokens: the extension
+    tags the requests it handles, and a tagged flow is never restored.
+    """
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+
+    # 1. The plugin masks its own user's e-mail and mints a fake for it.
+    own = a_prompt_flow()                               # jane.doe@acme.com
+    await addon.request(own)
+    fake = json.loads(own.request.get_content())["prompt"].split("mail ")[1]
+    assert "@example." in fake                          # a realistic stand-in, not a token
+
+    # 2. The extension minted THAT SAME fake for somebody else entirely, in the
+    #    browser, and tags the request it has already masked. The model's reply
+    #    quotes it back.
+    tagged = a_prompt_flow(b'{"prompt": "who is it"}')
+    tagged.request.headers["x-omna-extension"] = "1"
+    await addon.request(tagged)
+    tagged.response = http.Response.make(
+        200, json.dumps({"reply": f"I mailed {fake} this morning"}).encode(),
+        {"content-type": "application/json"})
+    addon.response(tagged)
+
+    out = tagged.response.get_content().decode()
+    assert "jane.doe@acme.com" not in out, \
+        "the plugin restored a fake the EXTENSION minted — a different person's real value"
+    assert fake in out, "the extension's own stand-in must come back untouched so IT can restore it"
+
+
+async def test_an_untagged_realistic_reply_still_restores(tmp_path, monkeypatch):
+    """The plugin-only browser path is unchanged: with no extension in the
+    picture, the plugin's own fake still becomes the real value again."""
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    fake = json.loads(flow.request.get_content())["prompt"].split("mail ")[1]
+    flow.response = http.Response.make(
+        200, json.dumps({"reply": f"I mailed {fake} this morning"}).encode(),
+        {"content-type": "application/json"})
+    addon.response(flow)
+    assert "jane.doe@acme.com" in flow.response.get_content().decode()
+
+
+# --------------------- a menu-bar toggle reaches the RUNNING door (#143)
+# The menu bar writes policy.json from its own process. Before 2026-09-21 the
+# running daemon kept the copy it started with, so every one of these toggles
+# did nothing until a restart — while the menu item's own help text promised
+# it took effect on the next request. These tests do it the way the menu bar
+# really does: write the file, touch nothing in memory.
+
+def _menu_bar_writes(**fields) -> None:
+    """Exactly what a menu-bar toggle does: load, change, save. No shared object."""
+    pol = Policy.load()
+    for k, v in fields.items():
+        setattr(pol, k, v)
+    pol.save()
+
+
+async def test_turning_off_restore_in_the_menu_bar_reaches_the_running_door(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    Policy().save()                                   # the daemon's own policy.json
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    flow.response = http.Response.make(200, b'{"reply": "mailed [EMAIL_' b'1]"}',
+                                       {"content-type": "application/json"})
+    addon.response(flow)
+    assert "jane.doe@acme.com" in flow.response.get_content().decode()   # restoring, as shipped
+
+    _menu_bar_writes(restore_browser=False)
+
+    flow2 = a_prompt_flow()
+    await addon.request(flow2)
+    flow2.response = http.Response.make(200, b'{"reply": "mailed [EMAIL_' b'1]"}',
+                                        {"content-type": "application/json"})
+    addon.response(flow2)
+    out = flow2.response.get_content().decode()
+    assert "jane.doe@acme.com" not in out, "the menu-bar toggle did not reach the running door"
+    assert "[EMAIL_" "1]" in out
+    assert b"[EMAIL_" b"1]" in flow2.request.get_content(), "masking must never be optional"
+
+
+async def test_switching_to_realistic_in_the_menu_bar_reaches_the_running_door(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    Policy().save()
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    assert "[EMAIL_" in flow.request.get_content().decode()
+
+    _menu_bar_writes(style=REALISTIC)
+
+    flow2 = a_prompt_flow()
+    await addon.request(flow2)
+    sent = flow2.request.get_content().decode()
+    assert "@example." in sent and "[" not in sent, "the style toggle did not reach the running door"
+
+
+async def test_a_policy_handed_in_directly_still_wins_when_there_is_no_file(tmp_path, monkeypatch):
+    """How a caller (and every test here) supplies a policy: as an object, with
+    nothing on disk. Re-reading must not quietly replace it with the defaults."""
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+    assert not config.policy_path().exists()
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    assert "@example." in flow.request.get_content().decode()

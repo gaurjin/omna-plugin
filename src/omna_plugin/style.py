@@ -74,3 +74,33 @@ def style_for_door(door: str, requested: str) -> StyleDecision:
         f"realistic fake values are refused at the {door} door because {_WHY}; "
         f"it keeps numbered tokens",
     )
+
+
+def style_for_extension(requested: str, system_door_on: bool) -> StyleDecision:
+    """What the Chrome extension may write. The browser IS the system door, so
+    this starts from that door's decision — and then adds the one extra
+    condition that only applies to the extension.
+
+    The extension masks inside the browser, before the request leaves it. When
+    the system door is ALSO running, that same request is masked a second time
+    on its way out, and the second pass cannot tell a stand-in from real data:
+
+    - a numbered token has brackets, so the detector walks straight past it and
+      the extension gets it back unchanged and puts the real value back;
+    - a realistic fake value looks exactly like a real e-mail or a real name —
+      which is the whole point of it — so the second pass masks it again, and
+      then nothing can put the real value back for the person.
+
+    So while the system door is on, the extension keeps numbered tokens. The
+    refusal is returned, never applied quietly, for the same reason every other
+    refusal here is.
+    """
+    decision = style_for_door("system", requested)
+    if decision.style == REALISTIC and system_door_on:
+        return StyleDecision(
+            TOKENS, requested, True,
+            "the browser extension keeps numbered tokens while the system door is on, "
+            "because that door masks the same request a second time and a realistic "
+            "fake value cannot survive being masked twice — a numbered token can",
+        )
+    return decision
