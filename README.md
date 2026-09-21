@@ -152,6 +152,7 @@ omna log --verify
 | `omna crash [--show N] [--send] [--clear]` | What broke on this machine. Masked by Omna's own engine before it is written to disk, and **never sent anywhere** — `--send` opens a GitHub issue pre-filled with the report you just read, and you submit it or close the tab. |
 | `omna verify-model` | Re-hash the on-device Contextual model and compare it to the hash this engine was built against. Does the full check every time, never a cached answer. |
 | `omna dashboard` | Open the live dashboard. It is protected by a local token (`~/.omna/dashboard.token`, owner-only), so another program on your machine cannot read your numbers over HTTP. |
+| `omna mappings` | Open the Mappings Review screen — every value Omna has masked, real values hidden until you click Reveal. Same token as the dashboard. |
 | `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, aider, Codex CLI, VS Code and Continue (each only if already installed), and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up every settings file it touches first and removes only its own keys on uninstall. |
 | `omna tools` / `omna enable TOOL` / `omna disable TOOL` | Show, or turn on/off, which tools Omna covers. `enable`/`disable claude-code`, `aider`, `codex`, or `continue` also wire/unwire it (same as `init`/`uninstall`); other tool names (Cursor) just record the policy today. |
 | `omna apps` / `omna bypass app NAME` / `omna mask app NAME` | Show, or set, what happens to an app's traffic through the system proxy: `mask` (default) tokenises it like everything else, `bypass` tunnels it through untouched (still receipted, so you can see what wasn't masked). |
@@ -303,6 +304,35 @@ API key that looked real is the worst thing this program could hand you.
   addresses the documentation ranges, and Social Security numbers an area
   number that is never issued. A generated card number is deliberately left
   failing its checksum: one that passed might be somebody's real card.
+
+## Reviewing what was masked
+
+`omna mappings` opens a screen showing every personal value Omna has masked on
+this machine — behind the same `~/.omna/dashboard.token` as the dashboard,
+never a second password to manage. It shows more than "what was masked":
+which layer caught it (L1 rules, L2 secrets, L3 the contextual model), whether
+a checksum actually validated it, which style it was last written in (tokens
+or realistic — a value masked before the two-style feature existed says
+"unknown", never a guessed default), how many times it has been sent, when
+last, and to which provider and app.
+
+Real values are never on the page until you ask. Each row is hidden by
+default; click **reveal** to fetch just that one, or **reveal all** for every
+row on the current page. Nothing is embedded in the page source ahead of
+time, so a screenshot or a browser extension reading the DOM sees nothing
+until you click. Search, filter by entity type, sort any column, and
+paginate are all built in.
+
+**Secrets never appear here.** They are memory-only from the moment they are
+caught and are never written to the registry — the page says so, rather than
+silently omitting them.
+
+**Delete** removes one mapping — its token, its real value, and its
+realistic-style fake together, so a "deleted" value can't keep resolving
+through the fake path. The same real value gets a brand-new token or fake the
+next time it's seen; the deleted one never comes back. **Clear all** is the
+same as `omna forget` — it also resets your secret counters and your
+encryption key.
 
 ## Reading browser replies: real values or labels
 
