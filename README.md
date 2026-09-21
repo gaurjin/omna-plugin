@@ -45,7 +45,7 @@ Every step the installer takes, you can take yourself:
 curl -fsSL https://omna.dev/cli/install.sh -o install.sh && less install.sh
 
 # 2. Or skip it entirely — this is all it really does:
-uv tool install --python 3.12 git+https://github.com/gaurjin/omna-plugin@v0.6.0
+uv tool install --python 3.12 omna-plugin        # or: pipx install omna-plugin
 omna init            # Claude Code: ANTHROPIC_BASE_URL in ~/.claude/settings.json + a SessionStart hook
 omna start -d        # background proxy on 127.0.0.1:7788
 omna status
@@ -55,9 +55,21 @@ The installer has no privileged step of its own: it installs `uv` if you do not 
 `uv tool install` above, and calls `omna init`. `omna init` is the only part that asks for `sudo`,
 it prints the exact commands before it runs them, and `omna uninstall` reverses all of it.
 
-A `brew install` is [tracked in docs/homebrew.md](docs/homebrew.md), with an honest account of what
-it is blocked on — the engine ships as a binary wheel, which Homebrew's source-build model does not
-fit cleanly.
+### Or with Homebrew
+
+```sh
+brew tap gaurjin/omna https://github.com/gaurjin/omna-plugin
+brew install --cask omna
+```
+
+This installs a single self-contained binary — Python, every dependency and the masking engine
+baked in — signed with our Developer ID and notarized by Apple. Two commands rather than one
+because the recipe lives in this repo instead of a separate tap; see
+[docs/homebrew.md](docs/homebrew.md) for why, and [docs/signing.md](docs/signing.md) for how to
+verify the signature yourself.
+
+Run `omna uninstall` **before** `brew uninstall` — Homebrew cannot remove the encryption keys
+Omna stores in your Keychain, and `omna uninstall` does.
 
 `omna init` also wires **aider**, **Codex CLI**, **VS Code** (Copilot Chat and similar chat
 extensions), and **Continue** automatically if each is already installed/configured — nothing is

@@ -23,8 +23,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Until the PyPI release, install straight from GitHub (a tagged release, not a moving branch).
-SOURCE="${OMNA_SOURCE:-git+https://github.com/gaurjin/omna-plugin@v0.6.0}"
+# Published on PyPI since 0.6.0, so install by name and let the resolver pin.
+# OMNA_SOURCE still overrides it with a git URL or a local path, which is how we
+# test an unreleased commit.
+SOURCE="${OMNA_SOURCE:-omna-plugin}"
 
 if ! command -v uv >/dev/null 2>&1; then
   echo "omna: installing uv (Python tool manager)..."
