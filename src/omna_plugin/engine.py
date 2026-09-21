@@ -1,4 +1,4 @@
-"""The masking session: the compiled Omna engine plus stable token registries.
+"""The masking session: the compiled Omna engine plus stable value registries.
 
 The ``omna-pii-mask`` wheel numbers tokens per call (``[EMAIL_1]`` is "the
 first email in *this* text"). A proxy needs the same real value to become the
@@ -18,6 +18,16 @@ engine's spans, using two registries:
 
 Rebuilding from spans also fixes an engine quirk where a secret span swallows
 its trailing newline (logged in omna-workspace MASTER #123).
+
+**Two styles.** By default a masked value is written as a numbered token. In
+the *realistic* style (``style=REALISTIC``, allowed only at the doors
+``style.py`` permits) it is written as a realistic fake value instead —
+``robert.jones@example.org`` rather than a bracketed token. That needs a third
+registry, ``fakes``, persisted beside the tokens because a fake must be the
+same after a restart or the provider's prompt cache is thrown away. Restoring
+then cannot lean on brackets any more: it matches the registry's own keys.
+Secrets never enter this path at all — a fake API key that looked real would be
+the worst output this program could produce.
 """
 
 from __future__ import annotations
@@ -32,7 +42,8 @@ from dataclasses import dataclass, field
 
 import omna_pii_mask
 
-from . import config, vault
+from . import config, fakes, vault
+from .style import REALISTIC, TOKENS
 
 # Reversible tokens: [PERSON_1], [EMAIL_12], [GOV_ID_3], [SECRET_AWS_KEY_2] ...
 TOKEN_RE = re.compile(r"\[([A-Z][A-Z0-9_]*?)_(\d+)\]")
@@ -41,6 +52,15 @@ REDACTED_RE = re.compile(r"\[REDACTED:([A-Z0-9_]+)\]")
 SECRET_PREFIX = "SECRET_"
 
 _CACHE_SIZE = 4096
+
+# Text that could still turn into a token once the next stream chunk arrives,
+# and the longest such run worth holding back ("[" + kind + "_" + digits).
+_TOKEN_PREFIX_RE = re.compile(r"\[[A-Z0-9_]*$")
+_MAX_TOKEN_HOLD = 48
+
+# How many times a colliding fake value is regenerated before we give up and
+# use the numbered token instead. Giving up is safe: the token is the loud form.
+_FAKE_ATTEMPTS = 8
 
 # A secret span that starts with an assignment ("STRIPE_KEY=sk_…", "password: x",
 # "?token=…"): keep the NAME and separator outside the token so the model still
@@ -69,6 +89,10 @@ class MaskResult:
     # across layers would blend fixed per-rule weights with real model
     # probabilities and mean nothing, so we surface this instead.
     validated: int = 0
+    # The numbered token names minted for this text ("EMAIL_1"), whatever style
+    # was used. Receipts count these, so the audit trail stays identical when
+    # the masked text carries realistic fake values and no brackets at all.
+    labels: list[str] = field(default_factory=list)
 
 
 class MaskingSession:
@@ -89,6 +113,16 @@ class MaskingSession:
         self._secret_value_to_token: dict[str, str] = {}
         self._secret_token_to_value: dict[str, str] = {}
         self._secret_counters: dict[str, int] = {}
+        # Realistic style: fake value <-> real value, persisted with the tokens
+        # (same file, same encryption) because a fake must survive a restart or
+        # the provider's prompt cache is thrown away on every restart.
+        self._value_to_fake: dict[str, str] = {}   # "KIND\x00value" -> fake
+        self._fake_to_value: dict[str, str] = {}
+        self._fake_prefixes: set[str] = set()      # every proper prefix, for stream hold-back
+        self._max_fake_len = 0
+        self._real_values: set[str] = set()        # what a fake must never collide with
+        self._fake_salt = b""
+        self._restore_re: re.Pattern | None = None
         # At-rest state (#131), surfaced by `omna status` and /omna/health.
         self._key: bytes | None = None
         self.encrypted = False  # the file on disk is sealed
@@ -153,6 +187,17 @@ class MaskingSession:
             m = TOKEN_RE.fullmatch(tok)
             if m:
                 self._value_to_token[f"{m.group(1)}\x00{val}"] = tok
+                self._real_values.add(val)
+        # Fakes are stored by their own registry key ("KIND\x00value") so both
+        # directions come back from one dict.
+        for key, fake in dict(data.get("fakes", {})).items():
+            kind, _, val = key.partition("\x00")
+            if val and fake:
+                self._remember_fake(fake, val, kind)
+        try:
+            self._fake_salt = bytes.fromhex(str(data.get("fake_salt", "")))
+        except ValueError:
+            self._fake_salt = b""
         self.encrypted = self._key is not None
         if self.encrypted and not was_sealed:
             # Upgrade path: a registry written before #131 is sealed on the
@@ -181,7 +226,8 @@ class MaskingSession:
     def _save_registry(self) -> None:
         if self.locked:
             return
-        payload = {"tokens": self._token_to_value, "counters": self._counters}
+        payload = {"tokens": self._token_to_value, "counters": self._counters,
+                   "fakes": self._value_to_fake, "fake_salt": self._fake_salt.hex()}
         body = vault.seal(payload, self._key) if self._key else json.dumps(payload)
         tmp = self._registry_file.with_suffix(".json.tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -200,6 +246,56 @@ class MaskingSession:
         self._value_to_token[key] = tok
         self._token_to_value[tok] = value
         return tok
+
+    # ------------------------------------------------------------ fake values
+    def _salt(self) -> bytes:
+        """Per-machine, random, persisted with the registry.
+
+        Without it a fake would be a pure function of the real value, so anyone
+        holding the fake could confirm a guess at the real one by running the
+        same function over their guess. Minted on first use.
+        """
+        if not self._fake_salt:
+            self._fake_salt = os.urandom(16)
+        return self._fake_salt
+
+    def _remember_fake(self, fake: str, value: str, kind: str) -> None:
+        self._fake_to_value[fake] = value
+        self._value_to_fake[f"{kind}\x00{value}"] = fake
+        self._max_fake_len = max(self._max_fake_len, len(fake))
+        for i in range(1, len(fake)):
+            self._fake_prefixes.add(fake[:i])
+        self._restore_re = None      # the combined restore pattern must be rebuilt
+
+    def _stable_fake(self, kind: str, entity: str, value: str, text: str) -> str | None:
+        """A realistic stand-in for ``value``, reused for ever once minted.
+
+        Returns None when there is no generator for this entity (always the case
+        for a secret) or when every attempt collided. The caller then uses the
+        numbered token, which is the loud and therefore safe form.
+
+        The four collision checks each prevent a different corruption: a fake
+        equal to the real value is not a mask at all; a fake already present in
+        the text would be put back as the wrong thing on restore; a fake that is
+        somebody's real value elsewhere is the same bug one step removed; and a
+        fake already standing for another value would restore to that one.
+        """
+        key = f"{kind}\x00{value}"
+        have = self._value_to_fake.get(key)
+        if have:
+            return have
+        for attempt in range(_FAKE_ATTEMPTS):
+            cand = fakes.fake_for(entity, value, salt=self._salt(), attempt=attempt)
+            if cand is None:
+                return None
+            if cand == value or cand in text or cand in self._real_values:
+                continue
+            other = self._fake_to_value.get(cand)
+            if other is not None and other != value:
+                continue
+            self._remember_fake(cand, value, kind)
+            return cand
+        return None
 
     def _secret_token(self, kind: str, value: str) -> str:
         key = f"{kind}\x00{value}"
@@ -226,6 +322,13 @@ class MaskingSession:
             self._secret_value_to_token.clear()
             self._secret_token_to_value.clear()
             self._secret_counters.clear()
+            self._value_to_fake.clear()
+            self._fake_to_value.clear()
+            self._fake_prefixes.clear()
+            self._real_values.clear()
+            self._max_fake_len = 0
+            self._fake_salt = b""
+            self._restore_re = None
             self._cache.clear()
             if self._registry_file.exists():
                 self._registry_file.unlink()
@@ -288,15 +391,20 @@ class MaskingSession:
             return m.group(1), False
         return "", False
 
-    def _rebuild(self, text: str, spans: list[dict]) -> tuple[str, bool]:
-        """Rebuild the masked text from spans with our stable tokens.
+    def _rebuild(self, text: str, spans: list[dict], style: str) -> tuple[str, list[str], bool]:
+        """Rebuild the masked text from spans, in the style asked for.
 
-        Returns (masked, registry_changed). Whitespace at either edge of a span
-        stays outside the token, so line structure survives.
+        Returns (masked, labels, registry_changed). Whitespace at either edge of
+        a span stays outside the replacement, so line structure survives.
+
+        The numbered token is minted for every span whatever the style: it is
+        the identifier receipts count, and it is the fallback when no realistic
+        value can be made.
         """
         out: list[str] = []
+        labels: list[str] = []
         pos = 0
-        changed_before = len(self._token_to_value)
+        changed_before = (len(self._token_to_value), len(self._fake_to_value), self._fake_salt)
         for sp in sorted(spans, key=lambda s: (s["start"], -s["end"])):
             start, end = sp["start"], sp["end"]
             if start < pos or end <= start:
@@ -313,9 +421,18 @@ class MaskingSession:
                 m = _ASSIGN_RE.match(core)
                 if m:
                     name, core = m.group(1), m.group(2)
+                # Secrets never take the realistic path: a fake API key that
+                # looks real is the worst output this program could produce.
                 tok = self._secret_token(kind, core) if self.restore_secrets else sp["token"]
+                if TOKEN_RE.fullmatch(tok):
+                    labels.append(tok[1:-1])
             else:
-                tok = self._stable_token(kind, core)
+                label = self._stable_token(kind, core)
+                self._real_values.add(core)
+                labels.append(label[1:-1])
+                tok = label
+                if style == REALISTIC:
+                    tok = self._stable_fake(kind, sp.get("entity") or kind, core, text) or label
             out.append(text[pos:start])
             out.append(value[:lead])
             out.append(name)
@@ -324,12 +441,16 @@ class MaskingSession:
                 out.append(value[len(value) - trail:])
             pos = end
         out.append(text[pos:])
-        return "".join(out), len(self._token_to_value) != changed_before
+        now = (len(self._token_to_value), len(self._fake_to_value), self._fake_salt)
+        return "".join(out), labels, now != changed_before
 
-    def mask_text(self, text: str) -> MaskResult:
+    def mask_text(self, text: str, style: str = TOKENS) -> MaskResult:
         if len(text) < 3:
             return MaskResult(text)
-        key = hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+        # The style is part of the cache key: the same text masks to two
+        # different things, and handing one style the other's answer would send
+        # a realistic fake value to a door that refused it.
+        key = style + "\x00" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
         with self._lock:
             hit = self._cache.get(key)
             if hit is not None:
@@ -351,10 +472,11 @@ class MaskingSession:
             else:
                 n_pii += 1
         with self._lock:
-            masked, changed = self._rebuild(text, raw["spans"]) if raw["spans"] else (text, False)
+            masked, labels, changed = (self._rebuild(text, raw["spans"], style)
+                                       if raw["spans"] else (text, [], False))
             if changed:
                 self._save_registry()
-            result = MaskResult(masked, counts, n_secret, n_pii, by_layer, n_validated)
+            result = MaskResult(masked, counts, n_secret, n_pii, by_layer, n_validated, labels)
             self._cache[key] = result
             if len(self._cache) > _CACHE_SIZE:
                 self._cache.popitem(last=False)
@@ -364,12 +486,55 @@ class MaskingSession:
         v = self._token_to_value.get(token)
         if v is None:
             v = self._secret_token_to_value.get(token)
+        if v is None:
+            v = self._fake_to_value.get(token)
         return v
 
-    def restore_text(self, text: str) -> str:
-        if "[" not in text:
+    def _pattern(self) -> re.Pattern:
+        """Tokens, plus every fake value we have minted.
+
+        A fake has no brackets, so there is nothing to recognise it by except
+        the registry itself. The literals go longest first so a fake that starts
+        with another fake cannot be matched half-way.
+        """
+        with self._lock:
+            if self._restore_re is None:
+                parts = [TOKEN_RE.pattern]
+                parts += [re.escape(f) for f in sorted(self._fake_to_value, key=len, reverse=True)]
+                self._restore_re = re.compile("|".join(parts))
+            return self._restore_re
+
+    def restore_text(self, text: str, json_escape: bool = False) -> str:
+        """Put the real values back. ``json_escape`` for text that is being
+        spliced into a JSON string (streamed tool-call arguments)."""
+        if not text or ("[" not in text and not self._fake_to_value):
             return text
-        return TOKEN_RE.sub(lambda m: self.lookup(m.group(0)) if self.lookup(m.group(0)) is not None else m.group(0), text)
+
+        def sub(m: re.Match) -> str:
+            v = self.lookup(m.group(0))
+            if v is None:
+                return m.group(0)
+            return json.dumps(v)[1:-1] if json_escape else v
+
+        return self._pattern().sub(sub, text)
+
+    def hold_from(self, buf: str) -> int:
+        """Where text that might still become a token or a fake value starts.
+
+        ``len(buf)`` means "nothing to hold back". A stream can split a value
+        anywhere, and a fake value has no brackets to recognise a partial one
+        by, so we keep every proper prefix of every fake we have minted and hold
+        back the longest suffix of the buffer that is one of them.
+        """
+        best = len(buf)
+        m = _TOKEN_PREFIX_RE.search(buf)
+        if m and len(buf) - m.start() <= _MAX_TOKEN_HOLD:
+            best = m.start()
+        if self._fake_prefixes:
+            for i in range(max(0, len(buf) - self._max_fake_len + 1), best):
+                if buf[i:] in self._fake_prefixes:
+                    return i
+        return best
 
 
 def engine_version() -> str:

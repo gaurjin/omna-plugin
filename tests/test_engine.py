@@ -4,6 +4,7 @@ import pytest
 
 from omna_plugin import vault
 from omna_plugin.engine import MaskingSession, TOKEN_RE
+from omna_plugin.style import REALISTIC, TOKENS
 
 # Built at runtime so secret scanners (GitHub push protection) do not flag a fake key.
 FAKE_STRIPE = "sk_live_" + "51H8xk2KJ3mN4oP5qR6sT7uV8wX9yZ0aB1cD2eF3gH4iJ5kL6mN7oP8qR9sT0u"
@@ -232,3 +233,159 @@ def test_assignment_keeps_the_name_outside_the_secret_token(home):
     assert "sk_live" not in r.masked and "AKIA" not in r.masked
     assert s.restore_text(r.masked) == text
     assert r.secrets == 2 and r.pii == 0
+
+
+# ---------------------------------------------------------------- realistic style
+
+def test_realistic_style_substitutes_a_fake_value_and_restores_it(home):
+    s = MaskingSession()
+    r = s.mask_text("email jane.doe@acme.com today", style=REALISTIC)
+    assert "jane.doe@acme.com" not in r.masked
+    assert "[" not in r.masked and "]" not in r.masked
+    assert "@example." in r.masked
+    assert s.restore_text(r.masked) == "email jane.doe@acme.com today"
+
+
+def test_the_same_value_gets_the_same_fake_every_time(home):
+    """Prompt caching depends on this: a stand-in that changed between turns
+    would throw the provider's cache away and confuse the model."""
+    s = MaskingSession()
+    a = s.mask_text("write to jane.doe@acme.com", style=REALISTIC).masked
+    b = s.mask_text("again: jane.doe@acme.com please", style=REALISTIC).masked
+    fake = a.split("write to ")[1]
+    assert fake in b
+
+
+def test_a_fake_survives_a_restart_because_it_is_in_the_registry(home):
+    s1 = MaskingSession()
+    masked = s1.mask_text("mail jane.doe@acme.com", style=REALISTIC).masked
+    fake = masked.split("mail ")[1]
+    s2 = MaskingSession()
+    assert s2.restore_text("wrote to " + fake) == "wrote to jane.doe@acme.com"
+    assert s2.mask_text("mail jane.doe@acme.com", style=REALISTIC).masked == masked
+
+
+def test_a_secret_never_gets_a_fake_value_even_in_realistic_style(home):
+    """A fake API key that looks real is the worst possible output: secrets
+    stay numbered tokens under every style."""
+    s = MaskingSession()
+    r = s.mask_text("key AKIAIOSFODNN7EXAMPLE here", style=REALISTIC)
+    assert "AKIAIOSFODNN7EXAMPLE" not in r.masked
+    assert "[SECRET_AWS_KEY_" "1]" in r.masked
+    assert s.restore_text(r.masked) == "key AKIAIOSFODNN7EXAMPLE here"
+    reg = home / "registry.json"
+    assert not reg.exists() or "AKIA" not in reg.read_text()
+
+
+def test_a_mixed_text_fakes_the_pii_and_keeps_the_secret_numbered(home):
+    s = MaskingSession()
+    r = s.mask_text("mail jane.doe@acme.com key AKIAIOSFODNN7EXAMPLE", style=REALISTIC)
+    assert "@example." in r.masked and "[SECRET_AWS_KEY_" in r.masked
+    assert s.restore_text(r.masked) == "mail jane.doe@acme.com key AKIAIOSFODNN7EXAMPLE"
+
+
+def test_a_colliding_fake_is_regenerated(home, monkeypatch):
+    """A fake that already appears in the text would make restore corrupt the
+    wrong thing, so the generator is asked again with the next attempt."""
+    seen = []
+
+    def fake_for(entity, value, *, salt, attempt):
+        seen.append(attempt)
+        return "taken-value-42" if attempt == 0 else "free-value-99"
+
+    monkeypatch.setattr("omna_plugin.fakes.fake_for", fake_for)
+    s = MaskingSession()
+    r = s.mask_text("mail jane.doe@acme.com ref taken-value-42", style=REALISTIC)
+    assert "free-value-99" in r.masked and "taken-value-42" in r.masked
+    assert seen[:2] == [0, 1]
+    assert s.restore_text(r.masked) == "mail jane.doe@acme.com ref taken-value-42"
+
+
+def test_a_fake_that_would_be_someone_elses_real_value_is_regenerated(home, monkeypatch):
+    s = MaskingSession()
+    s.mask_text("first jane.doe@acme.com", style=TOKENS)   # jane is now a known real value
+
+    attempts = []
+
+    def fake_for(entity, value, *, salt, attempt):
+        attempts.append(attempt)
+        return "jane.doe@acme.com" if attempt == 0 else "someone.else@example.org"
+
+    monkeypatch.setattr("omna_plugin.fakes.fake_for", fake_for)
+    r = s.mask_text("second john.roe@acme.com", style=REALISTIC)
+    assert "jane.doe@acme.com" not in r.masked
+    assert "someone.else@example.org" in r.masked
+    assert attempts[:2] == [0, 1]
+
+
+def test_a_fake_that_cannot_be_made_unique_falls_back_to_the_loud_token(home, monkeypatch):
+    monkeypatch.setattr("omna_plugin.fakes.fake_for",
+                        lambda entity, value, *, salt, attempt: value)
+    s = MaskingSession()
+    r = s.mask_text("mail jane.doe@acme.com", style=REALISTIC)
+    assert "jane.doe@acme.com" not in r.masked
+    assert TOKEN_RE.search(r.masked), r.masked
+
+
+def test_labels_are_the_same_under_both_styles(home):
+    """Receipts count these, so the audit trail must not change just because
+    the output stopped carrying brackets."""
+    s = MaskingSession()
+    a = s.mask_text("mail jane.doe@acme.com", style=TOKENS)
+    b = s.mask_text("mail jane.doe@acme.com", style=REALISTIC)
+    assert a.labels == b.labels == ["EMAIL_1"]
+
+
+def test_the_cache_does_not_hand_one_style_the_other_styles_answer(home):
+    s = MaskingSession()
+    tokens = s.mask_text("mail jane.doe@acme.com", style=TOKENS).masked
+    realistic = s.mask_text("mail jane.doe@acme.com", style=REALISTIC).masked
+    assert "[EMAIL_" in tokens and "[EMAIL_" not in realistic
+
+
+def test_restore_json_escapes_the_real_value_behind_a_fake(home):
+    s = MaskingSession()
+    s.mask_text("mail jane.doe@acme.com", style=REALISTIC)
+    # A real value with characters JSON must escape. Mapped by hand because no
+    # detector produces one; the escaping itself is what is under test.
+    s._remember_fake("stand-in@example.org", 'Ann "AJ" Jones', "PERSON")
+    out = s.restore_text('{"to": "stand-in@example.org"}', json_escape=True)
+    assert '\\"AJ\\"' in out
+
+
+def test_hold_from_finds_a_partial_fake_value(home):
+    s = MaskingSession()
+    masked = s.mask_text("mail jane.doe@acme.com", style=REALISTIC).masked
+    fake = masked.split("mail ")[1]
+    assert s.hold_from("hello " + fake[:4]) == len("hello ")
+    assert s.hold_from("hello there") == len("hello there")
+    assert s.hold_from("done " + fake) == len("done " + fake)
+
+
+def test_hold_from_still_finds_a_partial_token(home):
+    s = MaskingSession()
+    assert s.hold_from("hi [EMAI") == 3
+    assert s.hold_from("hi there") == 8
+
+
+def test_forget_wipes_the_fakes_too(home):
+    s = MaskingSession()
+    masked = s.mask_text("mail jane.doe@acme.com", style=REALISTIC).masked
+    fake = masked.split("mail ")[1]
+    s.forget()
+    assert s.restore_text(fake) == fake
+    assert s.hold_from("x " + fake[:3]) == len("x " + fake[:3])
+
+
+def test_the_fake_salt_is_per_machine_not_a_constant(home, tmp_path, monkeypatch):
+    """Without a salt the fake is a pure function of the real value, so anyone
+    holding a fake could confirm a guess at the real one by running the same
+    function."""
+    s1 = MaskingSession()
+    a = s1.mask_text("mail jane.doe@acme.com", style=REALISTIC).masked
+    other = tmp_path / "other-machine"
+    other.mkdir()
+    monkeypatch.setenv("OMNA_HOME", str(other))
+    s2 = MaskingSession()
+    b = s2.mask_text("mail jane.doe@acme.com", style=REALISTIC).masked
+    assert a != b
