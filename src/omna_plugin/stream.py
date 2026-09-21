@@ -1,11 +1,14 @@
-"""Restore masked tokens inside a server-sent-events (SSE) stream.
+"""Restore masked values inside a server-sent-events (SSE) stream.
 
-The hard part: a token like ``[PERSON_1]`` can arrive split across two chunks
-(``"Hi [PER"`` then ``"SON_1]!"``). We hold back any trailing text that could
-still be the start of a token, and release it as soon as it either completes
-or can no longer be one. Everything else (pings, message_start, unknown event
-types, comments) passes through byte-identical, because Claude Code counts
-every byte it receives and aborts a stream that goes silent.
+The hard part: a masked value can arrive split across two chunks — a token
+(``"Hi [PER"`` then ``"SON_1]!"``), or, in the realistic style, a fake value
+that has no brackets at all and can therefore split anywhere. We hold back any
+trailing text that could still be the start of one, and release it as soon as
+it either completes or can no longer be one. ``MaskingSession.hold_from`` owns
+that judgement, because only the registry knows what the fake values are.
+Everything else (pings, message_start, unknown event types, comments) passes
+through byte-identical, because Claude Code counts every byte it receives and
+aborts a stream that goes silent.
 
 Supported delta shapes:
 - Anthropic: ``content_block_delta`` with ``delta.text`` (text_delta) or
@@ -19,17 +22,17 @@ Supported delta shapes:
 from __future__ import annotations
 
 import json
-import re
 
-from .engine import MaskingSession, TOKEN_RE
-
-# The longest text that could still be a token prefix: "[" + kind + "_" + digits.
-_MAX_HOLD = 48
-_PREFIX_RE = re.compile(r"\[[A-Z0-9_]*$")
+from .engine import MaskingSession
 
 
 class TextRestorer:
-    """Token-level restore over any text stream, with partial-token hold-back."""
+    """Restore over any text stream, holding back a value that is still arriving.
+
+    The session owns both halves of that job — what a partial value looks like
+    and what a complete one means — because a realistic fake value has no
+    brackets to recognise it by, only the registry.
+    """
 
     def __init__(self, session: MaskingSession, json_escape: bool = False):
         self.session = session
@@ -37,23 +40,12 @@ class TextRestorer:
         self.pending = ""
 
     def _restore(self, text: str) -> str:
-        if self.json_escape:
-            s = self.session
-            return TOKEN_RE.sub(
-                lambda m: json.dumps(s.lookup(m.group(0)))[1:-1] if s.lookup(m.group(0)) is not None else m.group(0),
-                text,
-            )
-        return self.session.restore_text(text)
+        return self.session.restore_text(text, json_escape=self.json_escape)
 
     def feed(self, text: str) -> str:
         buf = self.pending + text
-        m = _PREFIX_RE.search(buf)
-        if m and len(buf) - m.start() <= _MAX_HOLD:
-            self.pending = buf[m.start():]
-            out = buf[: m.start()]
-        else:
-            self.pending = ""
-            out = buf
+        cut = self.session.hold_from(buf)
+        out, self.pending = buf[:cut], buf[cut:]
         return self._restore(out) if out else ""
 
     def flush(self) -> str:

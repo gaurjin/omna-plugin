@@ -4,6 +4,7 @@ import pytest
 
 from omna_plugin.engine import MaskingSession, TOKEN_RE
 from omna_plugin.stream import StreamRestorer
+from omna_plugin.style import REALISTIC
 
 EMAIL = "john.smith@acme.com"
 
@@ -112,3 +113,49 @@ def test_responses_api_delta_restored(session):
     e = {"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "to " + tok}
     out = r.feed(f"event: response.output_text.delta\ndata: {json.dumps(e)}\n\n".encode()) + r.flush()
     assert json.loads(out.split(b"data: ")[1])["delta"] == f"to {EMAIL}"
+
+
+# ---------------------------------------------------------------- realistic style
+
+def fake_for_value(session, value):
+    """Mask `value` in the realistic style and return the fake that replaced it."""
+    return session.mask_text(f"x {value} x", style=REALISTIC).masked[2:-2]
+
+
+def test_a_fake_value_split_across_chunks_is_restored(session):
+    """A fake value has no brackets, so a stream can split it anywhere. The
+    hold-back has to work from the registry, not from a '[' it will never see."""
+    fake = fake_for_value(session, EMAIL)
+    r = StreamRestorer(session)
+    out = b""
+    for piece in ("Hi " + fake[:3], fake[3:7], fake[7:] + "!"):
+        out += r.feed(a_delta(piece))
+    out += r.feed(b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n')
+    out += r.flush()
+    joined = "".join(texts(out))
+    assert joined == f"Hi {EMAIL}!"
+    assert fake not in joined
+
+
+def test_a_fake_value_broken_one_character_at_a_time_is_restored(session):
+    fake = fake_for_value(session, EMAIL)
+    r = StreamRestorer(session)
+    out = b"".join(r.feed(a_delta(ch)) for ch in fake)
+    out += r.flush()
+    assert "".join(texts(out)) == EMAIL
+
+
+def test_a_fake_value_in_tool_call_arguments_is_restored_and_json_escaped(session):
+    fake = fake_for_value(session, EMAIL)
+    session._fake_to_value[fake] = 'O"Brien Ltd'      # a value that needs escaping
+    r = StreamRestorer(session)
+    out = r.feed(a_json_delta('{"to": "' + fake[:4])) + r.feed(a_json_delta(fake[4:] + '"}'))
+    out += r.flush()
+    assert '{"to": "O\\"Brien Ltd"}' == "".join(texts(out))
+
+
+def test_text_with_no_fakes_and_no_tokens_passes_through(session):
+    fake_for_value(session, EMAIL)        # the registry is not empty
+    r = StreamRestorer(session)
+    out = r.feed(a_delta("nothing to see here")) + r.flush()
+    assert "".join(texts(out)) == "nothing to see here"
