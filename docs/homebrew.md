@@ -74,7 +74,7 @@ binary-wheel question has to be answered first.
 ship a cask that downloads it and checks the hash. This side-steps blocker 2 entirely because the
 engine wheel is baked into the artifact, and it matches what our closest competitor actually does.
 
-**We took Path B** (2026-09-20). It matched the product — it matches the product
+**We took Path B** (2026-09-20). It matches the product
 (closed kernel, notarized Mac artifact already in the pipeline) and avoids arguing with Homebrew
 about binary wheels. Path A fights the product's own architecture.
 
