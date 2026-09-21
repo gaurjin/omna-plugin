@@ -17,7 +17,9 @@ from starlette.routing import Route
 
 from omna_plugin import receipts
 from omna_plugin.engine import MaskingSession, TOKEN_RE
+from omna_plugin.policy import Policy
 from omna_plugin.proxy import create_app
+from omna_plugin.style import REALISTIC, TOKENS
 
 EMAIL = "john.smith@acme.com"
 KEY = "AKIAIOSFODNN7EXAMPLE"
@@ -508,3 +510,62 @@ async def test_an_unpinned_host_is_forwarded_exactly_as_before(env, monkeypatch)
     r = await client.post("/v1/messages", json={"model": "claude-sonnet-5",
                                                 "messages": [{"role": "user", "content": "hi"}]})
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------- masking styles
+
+@pytest.fixture
+def env_with_policy(tmp_path, monkeypatch):
+    """Like `env`, but the caller supplies the policy the door was built with."""
+    def build(pol: Policy):
+        monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+        pol.save()
+        up = Upstream()
+        session = MaskingSession()
+        up_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=up.app))
+        app = create_app(session, anthropic_upstream="http://anthropic.test",
+                         openai_upstream="http://openai.test", client=up_client, policy=pol)
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://omna.local")
+        return up, session, client
+    return build
+
+
+@pytest.mark.anyio
+async def test_the_api_door_keeps_numbered_tokens_even_when_policy_says_realistic(env_with_policy, capsys):
+    """Claude Code, aider, Codex, Continue and VS Code all WRITE FILES. A fake
+    value left in a file looks like real data; a token does not."""
+    pol = Policy()
+    pol.style = REALISTIC
+    up, session, client = env_with_policy(pol)
+    await client.post("/v1/messages", json={"model": "claude-sonnet-5",
+                                            "messages": [{"role": "user", "content": f"mail {EMAIL}"}]})
+    raw = up.calls[0]["raw"]
+    assert EMAIL not in raw
+    assert TOKEN_RE.findall(raw), "the API door must send numbered tokens"
+    assert "@example." not in raw, "a realistic fake value reached a file-writing tool"
+
+
+@pytest.mark.anyio
+async def test_the_api_door_says_out_loud_that_it_refused(env_with_policy, capsys):
+    pol = Policy()
+    pol.style = REALISTIC
+    env_with_policy(pol)
+    printed = capsys.readouterr().out
+    assert "refused" in printed and "api door" in printed
+    assert "Claude Code" in printed
+
+
+@pytest.mark.anyio
+async def test_the_api_door_prints_nothing_when_the_style_is_the_default(env_with_policy, capsys):
+    env_with_policy(Policy())
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.anyio
+async def test_the_receipt_names_the_style_the_api_door_actually_used(env_with_policy):
+    pol = Policy()
+    pol.style = REALISTIC
+    up, session, client = env_with_policy(pol)
+    await client.post("/v1/messages", json={"model": "claude-sonnet-5",
+                                            "messages": [{"role": "user", "content": f"mail {EMAIL}"}]})
+    assert receipts.tail(1)[0]["style"] == TOKENS

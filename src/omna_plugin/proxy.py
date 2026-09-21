@@ -34,6 +34,7 @@ from . import config, crashlog, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
+from .style import style_for_door
 
 try:
     # Read from the installed package's own metadata (pyproject.toml's `version`)
@@ -115,6 +116,15 @@ def create_app(
             timeout=httpx.Timeout(None, connect=30.0),
             verify=ssl_context(policy),
         )
+    # This door's style is decided once, by the one function that owns the rule
+    # (style.py). Every tool behind this door WRITES FILES, so a realistic fake
+    # value is refused here — and the refusal is printed into the proxy log
+    # rather than applied quietly, because a silent downgrade is exactly the
+    # failure this whole feature is trying to avoid.
+    api_style = style_for_door("api", (policy or Policy.load()).style)
+    if api_style.refused:
+        print(api_style.line(), flush=True)
+
     stats = {
         "requests": 0,
         "started": time.time(),
@@ -266,7 +276,7 @@ def create_app(
         is_inference = any(path.startswith(pfx) for pfx in INFERENCE_PREFIXES)
         if body and request.method in ("POST", "PUT", "PATCH"):
             if "json" in ctype and not request.headers.get("content-encoding"):
-                out = await run_in_threadpool(pipeline.mask_bytes, body, ctype)
+                out = await run_in_threadpool(pipeline.mask_bytes, body, ctype, api_style.style)
                 if out.refused is None:
                     body = out.body
                     mstats = out.stats
@@ -372,6 +382,7 @@ def create_app(
             app=None,
             note=note,
             session_id=request.headers.get("x-claude-code-session-id"),
+            style=api_style.style,
         )
 
     async def on_error(request: Request, exc: Exception) -> Response:
