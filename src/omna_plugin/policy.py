@@ -12,6 +12,7 @@ import secrets
 from dataclasses import dataclass, field
 
 from . import config
+from .style import STYLES, TOKENS
 
 DEFAULT_HOSTS = [
     # the public APIs: the API door already covers tools that use base URLs;
@@ -123,6 +124,13 @@ class Policy:
     # `[SECRET_AWS_KEY_1]` into your file instead of editing the real line.
     # Masking is NOT affected by this and never optional.
     restore_browser: bool = True
+    # How a masked value is WRITTEN: numbered tokens (the default) or a
+    # realistic fake value. This is a safety choice, not a preference — a
+    # leftover token is visibly wrong, a leftover fake value looks like real
+    # data — so `style.py` decides which doors may honour it, and refuses the
+    # realistic style anywhere that reaches a tool which writes files. Kept
+    # here because this is also the file an organisation ships to every machine.
+    style: str = TOKENS
     # Extra browser origins allowed to read replies through the API door
     # (#137a). Local origins (localhost / 127.0.0.1 / [::1], any port) are
     # always allowed and are not listed here. Anything added here is a
@@ -171,6 +179,8 @@ class Policy:
             pol.doors = {**pol.doors, **data.get("doors", {})}
             pol.reports_enabled = bool(data.get("reports_enabled", True))
             pol.restore_browser = bool(data.get("restore_browser", True))
+            st = str(data.get("style", TOKENS))
+            pol.style = st if st in STYLES else TOKENS
             pol.cors_origins = [str(o) for o in data.get("cors_origins", [])]
             cr = str(data.get("crash_reports", "unset"))
             pol.crash_reports = cr if cr in ("unset", "on", "off") else "unset"
@@ -197,6 +207,7 @@ class Policy:
             "doors": self.doors,
             "reports_enabled": self.reports_enabled,
             "restore_browser": self.restore_browser,
+            "style": self.style,
             "cors_origins": self.cors_origins,
             "crash_reports": self.crash_reports,
             "tls_strict": self.tls_strict,

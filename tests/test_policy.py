@@ -1,4 +1,16 @@
-from omna_plugin import policy
+import json
+
+import pytest
+
+from omna_plugin import config, policy
+from omna_plugin.policy import Policy
+from omna_plugin.style import REALISTIC, TOKENS
+
+
+@pytest.fixture
+def home(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    return tmp_path
 
 
 def test_defaults_include_the_big_ai_hosts(tmp_path, monkeypatch):
@@ -134,3 +146,26 @@ def test_default_hosts_covers_the_major_chat_ai_sites():
 
 def test_default_hosts_has_no_duplicates():
     assert len(policy.DEFAULT_HOSTS) == len(set(policy.DEFAULT_HOSTS))
+
+
+# ---------------------------------------------------------------- masking style
+
+def test_style_defaults_to_tokens(home):
+    assert Policy().style == TOKENS
+
+
+def test_style_round_trips(home):
+    p = Policy()
+    p.style = REALISTIC
+    p.save()
+    assert Policy.load().style == REALISTIC
+
+
+def test_an_unknown_style_on_disk_falls_back_to_tokens(home):
+    p = Policy()
+    p.save()
+    path = config.policy_path()
+    data = json.loads(path.read_text())
+    data["style"] = "fancy"
+    path.write_text(json.dumps(data))
+    assert Policy.load().style == TOKENS
