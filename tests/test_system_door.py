@@ -334,3 +334,33 @@ async def test_a_websocket_message_honours_the_door_style(tmp_path, monkeypatch)
     addon.websocket_message(flow)
     sent = flow.websocket.messages[-1].content.decode()
     assert "jane.doe@acme.com" not in sent and "[" not in sent and "@example." in sent
+
+
+async def test_the_live_system_door_sends_a_fake_value_and_restores_the_reply(door):
+    """The whole path for real, through an actual mitmproxy listener and TLS —
+    not the addon in isolation. The upstream echoes the masked body back, so the
+    fake value has to survive the round trip and come back as the real one."""
+    up, port, ctx, addon = door
+    addon.policy.style = REALISTIC
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        r = await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": f"for {EMAIL}"})
+    sent = up.last_body.decode()
+    assert EMAIL not in sent and "[" not in sent and "@example." in sent
+    fake = json.loads(sent)["prompt"].split("for ")[1]
+    assert fake not in r.text, "the fake value reached the person unrestored"
+    assert EMAIL in r.text
+    assert receipts.tail(1)[0]["style"] == REALISTIC
+
+
+async def test_the_live_system_door_restores_a_fake_split_across_stream_chunks(door):
+    """The SSE path with a fake value: the canned reply splits its token across
+    two wire chunks, and the same hold-back now has to cope with a value that
+    has no brackets to recognise half of."""
+    up, port, ctx, addon = door
+    addon.policy.style = REALISTIC
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        r = await c.post(f"https://127.0.0.1:{up.port}/backend-api/conversation/stream",
+                         json={"messages": [{"content": {"parts": [f"hi, {EMAIL}"]}}]})
+    assert r.status_code == 200
+    assert EMAIL.encode() not in up.last_body and b"@example." in up.last_body
+    assert EMAIL in r.text          # the canned token in the reply still restores

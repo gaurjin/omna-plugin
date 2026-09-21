@@ -124,6 +124,10 @@ export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # OpenAI SDK, Cursor BYOK
 omna mask "email jane.doe@example.com, key AKIAIOSFODNN7EXAMPLE, phone 212-555-0199"
 # email [EMAIL_1], key [SECRET_AWS_KEY_1], phone [PHONE_1]
 
+omna mask --realistic "email jane.doe@example.com, key AKIAIOSFODNN7EXAMPLE, phone 212-555-0199"
+# email robert.jones@example.org, key [SECRET_AWS_KEY_N], phone 415-555-0128
+#  ...the key stays a label on purpose. See "Two masking styles" below.
+
 omna log         # one line per request: time, route, status, ms, what was masked
 omna log --verify
 ```
@@ -142,6 +146,7 @@ omna log --verify
 | `omna report --merge FILE...` | Add up exported files into one company view plus a per-department view. A machine whose file is collected twice is counted once. |
 | `omna enroll [--org NAME] [--dept NAME] [--forget]` | Tag this machine so its exports can be grouped. With no arguments, shows the current tags. Nothing is sent anywhere — see below. |
 | `omna mask [TEXT or -]` | Mask a string or stdin. |
+| `omna style [tokens\|realistic]` | How a masked value is written: a numbered token (the default, every door) or a realistic fake value (your browser only — refused for anything that writes files). Prints what changed and which doors it affects. |
 | `omna allow VALUE` | Never mask this exact value again (false positive). |
 | `omna forget` | Wipe the token registry and its encryption key (tokens renumber). |
 | `omna crash [--show N] [--send] [--clear]` | What broke on this machine. Masked by Omna's own engine before it is written to disk, and **never sent anywhere** — `--send` opens a GitHub issue pre-filled with the report you just read, and you submit it or close the tab. |
@@ -235,6 +240,69 @@ quietly start riding along. It deliberately leaves out your home path (which
 carries your username) and which apps you run. The device id is random and
 local; it exists so two files can be told apart and a duplicate can be spotted,
 and `omna enroll --forget` deletes it.
+
+## Two masking styles: numbered tokens, or realistic fake values
+
+Omna can write a masked value in one of two ways. **Numbered tokens are the
+default, everywhere**, and most people never need to change it.
+
+| | what the AI receives | when it suits |
+|---|---|---|
+| **tokens** (default) | `email [EMAIL_N]` | anything that writes files, and anywhere you want a mistake to be obvious |
+| **realistic** | `email robert.jones@example.org` | chat and prose, where ordinary-looking text gets you a better answer |
+
+```sh
+omna style              # what is in force, door by door
+omna style realistic    # switch on realistic values (browser only — see below)
+omna style tokens       # back to the default
+
+omna mask --realistic "email jane.doe@acme.com, key AKIAIOSFODNN7EXAMPLE"
+# email michael.jones63@example.org, key [SECRET_AWS_KEY_N]
+```
+
+### Why both exist, and why the realistic style is refused for coding tools
+
+A numbered token fails **loudly**. If a restore ever breaks, a leftover
+`[EMAIL_N]` sitting in your code is visibly wrong and somebody notices
+immediately.
+
+A realistic fake value fails **silently**. A leftover `robert.jones@example.org`
+looks like ordinary data. Nobody notices, and it gets committed to a repository
+for ever.
+
+So this is a safety trade, not a preference — and Omna decides it for you where
+the stakes are one-sided:
+
+| Door | What it reaches | Realistic values |
+|---|---|---|
+| API door | Claude Code, aider, Codex, Continue, VS Code | **refused** — they all write files |
+| System door | your browser and the chat websites | allowed |
+| Deep door | a named desktop app, captured individually | **refused** — that list can hold an editor |
+
+A refusal is never quiet: `omna style realistic` prints which doors kept
+numbered tokens and why, `omna status` shows the style per door, and every
+receipt records which style that request actually used.
+
+**Secrets are never given a fake value, under any style.** An API key, a token,
+a password or a private key always becomes a numbered `[SECRET_…]` label. A fake
+API key that looked real is the worst thing this program could hand you.
+
+### What the realistic style guarantees
+
+- **Stability** — the same real value always becomes the same fake value, on
+  every request and after a restart. Otherwise the provider's prompt cache is
+  thrown away and the AI sees the conversation change under it between turns.
+- **Uniqueness** — a generated value is checked against the text being masked
+  and against every real value Omna already knows, and regenerated on a clash,
+  so restoring can never put back the wrong thing. If no unique value can be
+  made, Omna falls back to the numbered token.
+- **Reversibility** — real values come back in replies, in streamed replies and
+  inside tool-call arguments, exactly as they do with tokens.
+- **Nothing invented can belong to anybody** — e-mail addresses use the reserved
+  `example.org` domains, phone numbers the reserved `555-01xx` range, IP
+  addresses the documentation ranges, and Social Security numbers an area
+  number that is never issued. A generated card number is deliberately left
+  failing its checksum: one that passed might be somebody's real card.
 
 ## Reading browser replies: real values or labels
 
