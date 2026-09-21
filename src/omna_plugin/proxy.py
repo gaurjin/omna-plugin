@@ -30,7 +30,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from . import config, crashlog, receipts
+from . import config, crashlog, mappings, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
@@ -224,6 +224,45 @@ def create_app(
             return _unauthorised()
         return JSONResponse(dash.snapshot(days=7, sent_as_is=stats.get("sent_as_is", 0)))
 
+    _NO_STORE = {"cache-control": "no-store"}
+
+    async def mappings_page(request: Request) -> Response:
+        if not _dashboard_ok(request):
+            return _unauthorised()
+        return Response(mappings.render(mappings.snapshot(session)), media_type="text/html; charset=utf-8",
+                         headers=_NO_STORE)
+
+    async def mappings_json(request: Request) -> Response:
+        if not _dashboard_ok(request):
+            return _unauthorised()
+        q = request.query_params
+        d = mappings.snapshot(
+            session,
+            q=q.get("q", ""), kind=q.get("kind", ""),
+            sort=q.get("sort", "created"), dir=q.get("dir", "desc"),
+            page=int(q.get("page", "1") or "1"), per_page=int(q.get("per_page", "50") or "50"),
+            reveal=q.get("reveal", ""),
+        )
+        return JSONResponse(d, headers=_NO_STORE)
+
+    async def mappings_delete(request: Request) -> Response:
+        if not _dashboard_ok(request):
+            return _unauthorised()
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+        label = str((body or {}).get("label") or "")
+        ok = bool(label) and session.delete_mapping(label)
+        return JSONResponse({"ok": ok}, headers=_NO_STORE)
+
+    async def mappings_clear(request: Request) -> Response:
+        if not _dashboard_ok(request):
+            return _unauthorised()
+        session.forget()
+        mappings.invalidate_cache()
+        return JSONResponse({"ok": True}, headers=_NO_STORE)
+
     async def pac(_: Request) -> Response:
         return Response(
             (policy or Policy.load()).pac(system_port=system_port),
@@ -404,6 +443,10 @@ def create_app(
             Route("/omna/extension-checkin", extension_checkin, methods=["POST"]),
             Route("/omna/dashboard", dashboard, methods=["GET"]),
             Route("/omna/dashboard.json", dashboard_json, methods=["GET"]),
+            Route("/omna/mappings", mappings_page, methods=["GET"]),
+            Route("/omna/mappings.json", mappings_json, methods=["GET"]),
+            Route("/omna/mappings/delete", mappings_delete, methods=["POST"]),
+            Route("/omna/mappings/clear", mappings_clear, methods=["POST"]),
             Route("/{path:path}", relay, methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]),
         ]
     )
