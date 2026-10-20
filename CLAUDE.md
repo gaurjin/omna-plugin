@@ -4,7 +4,7 @@
 Product #4 of Omna: **the plugin** — ONE command that masks everything an AI sees from this machine and will replace the Mac app + Chrome extension. This repo is Stage 1 (the mail-room proxy + coding tools via base URL); Stages 1b–5 (report, Mac system proxy + certificate via mitmproxy, VPN extension, Windows/Linux, sunset) are in the Product Spec §6. Thin Python shell
 (`src/omna_plugin/`) over the compiled `omna-pii-mask` engine wheel (built from the private
 `omna-workspace/bindings/omna-core-py`; never copy engine code here). Strategy and the blueprint live in
-`~/Developer/Omna Notes/:Vision/Omna Plugin — Product Spec.md` §6. Plans: Stage 1 =
+`~/Developer/Omna Labs/Omna Notes/:Vision/Omna Plugin — Product Spec.md` §6. Plans: Stage 1 =
 `docs/superpowers/plans/2026-09-17-product-4-plugin.md` (done); **Stages 2+3 =
 `docs/superpowers/plans/2026-09-17-stage-2-3-mac-coverage.md`** (the architecture decisions with their
 reasons are Product Spec §6.9 — read it before touching Stage 2/3 code).
