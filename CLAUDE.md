@@ -44,13 +44,6 @@ the owner's real e-mail into a plan file; caught before commit. Same trick as th
   Fast masking = L1+L2 (default). Smart masking = +L3 (`--smart`).
 - Never say "compliant". Say "masks secrets and PII".
 
-## How it works (one paragraph)
-`proxy.py` receives a request → `body.py` masks every prose string via `engine.MaskingSession`
-(stable token registry in `~/.omna/registry.json`, per-string cache, allowlist from `ruleset.json`) →
-forwards with httpx to `api.anthropic.com` or `api.openai.com` (chosen by headers/path) → non-stream
-JSON is restored by `body.restore_body`; SSE is restored chunk-by-chunk by `stream.StreamRestorer`
-(holds back a partial `[TOKEN` until it completes) → `receipts.py` appends one hash-chained line.
-
 ## Rules
 - Tests first; `.venv/bin/pytest -q` must be green before any commit. The proxy tests use an in-process
   fake upstream (`tests/test_proxy.py`); no network in tests.
