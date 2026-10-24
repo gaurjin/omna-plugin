@@ -3,7 +3,7 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-24T19:04:48+00:00",
+    "timestamp": "2026-10-24T21:17:55+00:00",
     "component": {
       "type": "application",
       "name": "omna-plugin",
@@ -266,8 +266,8 @@
     {
       "type": "library",
       "name": "omna-pii-mask",
-      "version": "0.2.7",
-      "purl": "pkg:pypi/omna-pii-mask@0.2.7",
+      "version": "0.2.8",
+      "purl": "pkg:pypi/omna-pii-mask@0.2.8",
       "scope": "required",
       "description": "The Omna masking engine. Closed-source kernel, distributed as a compiled binary wheel; built in CI from a private repository."
     },
