@@ -17,6 +17,10 @@ ARCH=$(uname -m)
 OUT="dist/omna-${VERSION}-macos-${ARCH}.zip"
 
 echo "==> PyInstaller (self-contained: Python + deps + the compiled engine)"
+# PyInstaller is a build tool, deliberately NOT in pyproject/uv.lock (make-sbom.py
+# lists everything in uv.lock as shipped). So any `uv sync` removes it from .venv;
+# put it back here instead of failing.
+[ -x .venv/bin/pyinstaller ] || uv pip install --python .venv/bin/python "pyinstaller>=6.22"
 .venv/bin/pyinstaller omna.spec --noconfirm --log-level ERROR
 
 echo "==> smoke test the bundle BEFORE signing it"
