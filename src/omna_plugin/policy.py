@@ -39,6 +39,12 @@ DEFAULT_HOSTS = [
     "chat.mistral.ai",
     "grok.com",
     "copilot.microsoft.com",
+    # Found by the live typing-leak test 2026-10-24 (MASTER #156) — each one
+    # received what a person typed BEFORE pressing Send:
+    "copilot.com",                              # Copilot moved here from copilot.microsoft.com
+    "substrate.office.com",                     # Copilot's suggestions while typing (also Outlook/Teams search — owner chose to mask it)
+    "aistudio.google.com",
+    "alkalimakersuite-pa.clients6.google.com",  # AI Studio's prompts and its CountTokens-while-typing
     "meta.ai",
     "muse.ai",  # Meta's personal AI agent, launched 2026-09-08 — handles real tasks: email, bookings, purchases, forms
     "chat.qwen.ai",
@@ -112,6 +118,10 @@ APP_ACTIONS = ("mask", "bypass")
 class Policy:
     version: int = 1
     hosts: list[str] = field(default_factory=lambda: list(DEFAULT_HOSTS))
+    # Built-in hosts the user deliberately removed (`omna hosts remove`). Kept
+    # separately so that hosts ADDED to DEFAULT_HOSTS in a later version still
+    # reach policies saved earlier, while a deliberate removal stays removed.
+    removed_hosts: list[str] = field(default_factory=list)
     tools: dict[str, str] = field(default_factory=lambda: {"claude-code": "on"})
     apps: dict[str, str] = field(default_factory=dict)      # app name -> mask | bypass
     deep_apps: list[str] = field(default_factory=list)      # Stage 3: captured by the deep door
@@ -172,7 +182,9 @@ class Policy:
             data = json.loads(p.read_text())
             pol = cls()
             pol.version = int(data.get("version", 1))
-            pol.hosts = [h.lower() for h in data.get("hosts", pol.hosts)]
+            pol.removed_hosts = [str(h).lower() for h in data.get("removed_hosts", [])]
+            saved = [h.lower() for h in data.get("hosts", pol.hosts)]
+            pol.hosts = saved + [h for h in DEFAULT_HOSTS if h not in saved and h not in pol.removed_hosts]
             pol.tools = dict(data.get("tools", pol.tools))
             pol.apps = dict(data.get("apps", {}))
             pol.deep_apps = list(data.get("deep_apps", []))
@@ -201,6 +213,7 @@ class Policy:
         payload = {
             "version": self.version,
             "hosts": sorted(set(h.lower() for h in self.hosts)),
+            "removed_hosts": sorted(set(self.removed_hosts)),
             "tools": self.tools,
             "apps": self.apps,
             "deep_apps": self.deep_apps,
@@ -256,9 +269,13 @@ class Policy:
         h = host.lower().strip()
         if h and h not in self.hosts:
             self.hosts.append(h)
+        self.removed_hosts = [r for r in self.removed_hosts if r != h]
 
     def remove_host(self, host: str) -> None:
-        self.hosts = [h for h in self.hosts if h != host.lower().strip()]
+        h = host.lower().strip()
+        self.hosts = [x for x in self.hosts if x != h]
+        if h in DEFAULT_HOSTS and h not in self.removed_hosts:
+            self.removed_hosts.append(h)
 
     def allow_hosts(self) -> list[str]:
         """Regexes for mitmproxy's ``allow_hosts`` (matched against ``host:port`` and ``sni:port``)."""

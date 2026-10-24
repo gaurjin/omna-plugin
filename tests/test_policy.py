@@ -148,6 +148,51 @@ def test_default_hosts_has_no_duplicates():
     assert len(policy.DEFAULT_HOSTS) == len(set(policy.DEFAULT_HOSTS))
 
 
+def test_default_hosts_cover_the_typing_leaks_found_2026_10_24():
+    # Live test 2026-10-24 (MASTER #156): these addresses received what a
+    # person typed BEFORE pressing Send, and none was on the list.
+    for host in [
+        "aistudio.google.com",
+        "alkalimakersuite-pa.clients6.google.com",  # AI Studio's prompts AND its CountTokens-while-typing
+        "copilot.com",                              # Copilot moved here from copilot.microsoft.com
+        "substrate.office.com",                     # Copilot's suggestions-while-typing (also Outlook/Teams search)
+    ]:
+        assert host in policy.DEFAULT_HOSTS
+        assert Policy().is_ai_host(host)
+
+
+def test_new_default_hosts_reach_a_policy_saved_before_they_existed(home):
+    # A policy.json written by an older version lists only the hosts that
+    # existed then. New built-in hosts must still apply after an upgrade.
+    old = [h for h in policy.DEFAULT_HOSTS if h != "copilot.com"]
+    (home / "policy.json").write_text(json.dumps({"version": 1, "hosts": old}))
+    assert Policy.load().is_ai_host("copilot.com")
+
+
+def test_a_default_host_the_user_removed_stays_removed(home):
+    p = Policy.load()
+    p.remove_host("perplexity.ai")
+    p.save()
+    assert not Policy.load().is_ai_host("perplexity.ai")
+
+
+def test_re_adding_a_removed_default_host_brings_it_back(home):
+    p = Policy.load()
+    p.remove_host("perplexity.ai")
+    p.save()
+    p = Policy.load()
+    p.add_host("perplexity.ai")
+    p.save()
+    assert Policy.load().is_ai_host("perplexity.ai")
+
+
+def test_a_user_added_host_survives_reload(home):
+    p = Policy.load()
+    p.add_host("internal-llm.example.com")
+    p.save()
+    assert Policy.load().is_ai_host("internal-llm.example.com")
+
+
 # ---------------------------------------------------------------- masking style
 
 def test_style_defaults_to_tokens(home):
