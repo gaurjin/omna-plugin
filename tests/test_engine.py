@@ -472,3 +472,22 @@ def test_delete_mapping_persists_across_a_restart(home):
     s.mask_text("email john.smith@acme.com", style=TOKENS)
     s.delete_mapping("EMAIL_1")
     assert MaskingSession().registry_rows() == []
+
+
+# The engine reports span positions in UTF-8 BYTES; Python slices by
+# CHARACTER. Any character wider than one byte before a value (a dash, an
+# emoji, an accented letter, a curly quote) shifted every later mask: on
+# 2026-10-24 "Note — ok — fine — yes. Call at maria.lopez@example.org today"
+# went out as "... Call at maria.[EMAIL_2]" — part of the real email leaked
+# and the word after it was swallowed.
+@pytest.mark.parametrize("before", ["Note — ok — fine — yes.", "🙂🙂🙂🙂", "José Müller said “hi”", "日本語のテキスト"])
+@pytest.mark.parametrize("style", [TOKENS, REALISTIC])
+def test_wide_characters_before_a_value_do_not_shift_the_mask(home, before, style):
+    s = MaskingSession()
+    text = f"{before} Call at maria.lopez@example.org today, key AKIAIOSFODNN7EXAMPLE end."
+    r = s.mask_text(text, style)
+    assert "maria" not in r.masked and "lopez" not in r.masked
+    assert "AKIAIOSFODNN7EXAMPLE" not in r.masked
+    assert r.masked.startswith(f"{before} Call at ")
+    assert r.masked.endswith(" end.") and " today, key " in r.masked
+    assert s.restore_text(r.masked) == text

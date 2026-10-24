@@ -554,9 +554,10 @@ class MaskingSession:
                 n_secret += 1
             else:
                 n_pii += 1
+        spans = _spans_in_chars(text, raw["spans"])
         with self._lock:
-            masked, labels, changed = (self._rebuild(text, raw["spans"], style)
-                                       if raw["spans"] else (text, [], False))
+            masked, labels, changed = (self._rebuild(text, spans, style)
+                                       if spans else (text, [], False))
             if changed:
                 self._save_registry()
             result = MaskResult(masked, counts, n_secret, n_pii, by_layer, n_validated, labels)
@@ -628,6 +629,25 @@ class MaskingSession:
                 if buf[i:] in self._fake_prefixes:
                     return i
         return best
+
+
+def _spans_in_chars(text: str, spans: list[dict]) -> list[dict]:
+    """The engine reports start/end in UTF-8 BYTES; Python slices by CHARACTER.
+
+    Any character wider than one byte (a dash, an emoji, an accented letter, a
+    curly quote) before a value shifted every later mask — part of the real
+    value went out and the text after it was swallowed (2026-10-24). Plain
+    ASCII is the same in both units, so it skips the conversion.
+    """
+    if not spans or text.isascii():
+        return spans
+    char_at: dict[int, int] = {}
+    pos = 0
+    for i, ch in enumerate(text):
+        char_at[pos] = i
+        pos += len(ch.encode("utf-8", "surrogatepass"))
+    char_at[pos] = len(text)
+    return [{**sp, "start": char_at[sp["start"]], "end": char_at[sp["end"]]} for sp in spans]
 
 
 def engine_version() -> str:
