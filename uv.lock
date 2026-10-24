@@ -736,14 +736,16 @@ wheels = [
 
 [[package]]
 name = "omna-plugin"
-version = "0.2.0"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "mitmproxy" },
     { name = "omna-pii-mask" },
     { name = "pillow" },
     { name = "pystray" },
+    { name = "ruamel-yaml" },
     { name = "starlette" },
     { name = "uvicorn" },
 ]
@@ -758,6 +760,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4" },
+    { name = "cryptography", specifier = ">=42" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mitmproxy", specifier = ">=12.2,<13" },
     { name = "omna-pii-mask", specifier = ">=0.2.6,<0.3" },
@@ -765,6 +768,7 @@ requires-dist = [
     { name = "pystray", specifier = ">=0.19,<1" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
+    { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "starlette", specifier = ">=0.38" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]

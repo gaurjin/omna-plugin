@@ -6,3 +6,4 @@ dist/
 
 # PyInstaller work directory (dist/ is already ignored above).
 build/
+.DS_Store
