@@ -22,7 +22,7 @@ from mitmproxy.certs import CertStore
 from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
 
-from . import config
+from . import config, while_typing
 from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
@@ -37,6 +37,8 @@ CA_CN = "Omna Local Certificate Authority"
 EXT_HEADER = "x-omna-extension"
 REFUSED_BODY = (b'{"type":"error","error":{"type":"omna_refused",'
                 b'"message":"omna could not mask this request; refused rather than sent unmasked"}}')
+BLOCKED_WHILE_TYPING = (b'{"type":"error","error":{"type":"omna_blocked_while_typing",'
+                        b'"message":"Omna blocked a request this site sends while you type: it would carry what you are typing."}}')
 
 # `mitmdump --mode local:...` (the deep door) extracts this Apple-signed bundle to
 # /Applications on first use of `omna capture app NAME`. The bundle file itself is
@@ -222,6 +224,13 @@ class OmnaAddon:
         # Strip it before forwarding — the AI provider has no business seeing it.
         if flow.request.headers.pop(EXT_HEADER, None) is not None:
             flow.metadata["omna_ext"] = True
+        if while_typing.blocked(flow.request.pretty_host, flow.request.path, dict(flow.request.headers)):
+            # Sent while you type: would carry what is in the box, half-typed
+            # values included. Answered here, never forwarded (MASTER #156).
+            flow.metadata.update(omna_app=app, omna_note="blocked-while-typing", omna_refused=True)
+            flow.response = http.Response.make(403, BLOCKED_WHILE_TYPING, {"content-type": "application/json"})
+            self._receipt(flow, 403, stream=False)
+            return
         adapter = for_host(flow.request.pretty_host)
         req = RequestView(host=flow.request.pretty_host, method=flow.request.method, path=flow.request.path,
                           content_type=flow.request.headers.get("content-type", ""),

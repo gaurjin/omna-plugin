@@ -536,3 +536,46 @@ async def test_an_adapter_can_remove_a_request_header(tmp_path, monkeypatch):
     f.request.set_content(b"File name: a.txt")
     await addon.request(f)
     assert "X-Goog-Upload-Header-Content-Length" not in f.request.headers
+
+
+# ---------------------------------------------------------------- while-typing requests (MASTER #156, choice "A")
+
+def _typing_flow(host, path, method="POST", headers=None, body=b'{"q": "mail jane.doe@example.c"}'):
+    f = tflow.tflow()
+    f.request.host, f.request.path, f.request.method = host, path, method
+    f.request.headers["content-type"] = "application/json"
+    for k, v in (headers or {}).items():
+        f.request.headers[k] = v
+    f.request.set_content(body)
+    return f
+
+
+@pytest.mark.parametrize("host,path,method,headers", [
+    ("chatgpt.com", "/backend-api/f/conversation/prepare", "POST", {}),
+    ("substrate.office.com", "/search/api/v1/suggestions?scenario=x", "POST", {"Origin": "https://copilot.com"}),
+    ("alkalimakersuite-pa.clients6.google.com",
+     "/$rpc/google.internal.alkali.applications.makersuite.v1.MakerSuiteService/CountTokens", "POST", {}),
+    ("suggest.perplexity.ai", "/", "GET", {"Upgrade": "websocket"}),
+])
+async def test_requests_sent_while_typing_are_answered_locally_never_forwarded(tmp_path, monkeypatch, host, path, method, headers):
+    # A half-typed value can't be detected, so masking these still leaked
+    # (Copilot got 18 of 20 characters of an email). They are blocked.
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _typing_flow(host, path, method, headers)
+    await addon.request(flow)
+    assert flow.response is not None and flow.response.status_code == 403
+    assert receipts.tail(1)[0]["note"] == "blocked-while-typing"
+
+
+async def test_outlook_search_suggestions_on_the_same_address_still_work(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _typing_flow("substrate.office.com", "/search/api/v1/suggestions", headers={"Origin": "https://outlook.office.com"})
+    await addon.request(flow)
+    assert flow.response is None
+
+
+async def test_the_real_send_is_not_blocked(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _typing_flow("chatgpt.com", "/backend-api/f/conversation")
+    await addon.request(flow)
+    assert flow.response is None
