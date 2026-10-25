@@ -14,7 +14,7 @@ Run this after **any** dependency change and commit the result. The source of
 truth is `uv.lock`, not whatever happens to be in a virtualenv, because the
 lockfile is what a user's `uv tool install` actually resolves.
 
-**One known difference (0.6.2):** `uv.lock` forces Brotli 1.2.1 (critical
+**One known difference (0.6.2 and later):** `uv.lock` forces Brotli 1.2.1 (critical
 decoder fix) over mitmproxy 12.3.0's `<=1.2.0` cap. That override is in
 `[tool.uv]`, so it reaches the Homebrew binary, which is built from this lockfile,
 but not a `uv tool install` from PyPI, which still resolves Brotli 1.2.0 until
@@ -22,7 +22,7 @@ mitmproxy lifts the cap.
 
 ## What is in it
 
-67 components. The one that always gets asked about:
+66 components. The one that always gets asked about:
 
 | | |
 |---|---|
