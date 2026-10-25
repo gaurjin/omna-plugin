@@ -24,9 +24,13 @@ echo "==> PyInstaller (self-contained: Python + deps + the compiled engine)"
 .venv/bin/pyinstaller omna.spec --noconfirm --log-level ERROR
 
 echo "==> smoke test the bundle BEFORE signing it"
-./dist/omna/omna version
-./dist/omna/omna mask "x jane.doe@example.com" | grep -q "EMAIL_" \
+# In a throwaway folder: `omna mask` saves what it masked, and without this it
+# wrote the test email into the builder's real ~/.omna registry (2026-10-25).
+SMOKE_HOME=$(mktemp -d)
+OMNA_HOME="$SMOKE_HOME" OMNA_REGISTRY_ENCRYPTION=off ./dist/omna/omna version
+OMNA_HOME="$SMOKE_HOME" OMNA_REGISTRY_ENCRYPTION=off ./dist/omna/omna mask "x jane.doe@example.com" | grep -q "EMAIL_" \
   || { echo "FAILED: the bundled engine did not mask"; exit 1; }
+rm -rf "$SMOKE_HOME"
 
 echo "==> codesign --options runtime (hardened runtime, required for notarization)"
 # Sign every nested binary first, then the launcher. --deep is deprecated and
