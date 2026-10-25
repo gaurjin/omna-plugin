@@ -155,3 +155,58 @@ def test_a_receipt_records_which_style_was_used(tmp_path, monkeypatch):
               style=REALISTIC)
     recs = receipts.tail(1)
     assert recs[-1]["style"] == REALISTIC
+
+
+# Grok uploads the file the moment it is attached, as multipart/form-data
+# (live test 2026-10-24, MASTER #157) — the shape below is that real request.
+_B = b"----WebKitFormBoundaryL7MrdSdDYeZeeASz"
+_KEY = "AKIA" "Q7WZLMNOPS3XTUV2"
+
+
+def _multipart(*parts):
+    out = b""
+    for headers, body in parts:
+        out += b"--" + _B + b"\r\n" + headers + b"\r\n\r\n" + body + b"\r\n"
+    return out + b"--" + _B + b"--\r\n"
+
+
+def test_mask_bytes_multipart_masks_the_attached_text_file(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    body = _multipart((b'Content-Disposition: form-data; name="file"; filename="customer-notes.txt"\r\n'
+                       b"Content-Type: text/plain",
+                       f"Contact: {EMAIL}\nAWS_ACCESS_KEY_ID={_KEY}\n".encode()))
+    out = p.mask_bytes(body, "multipart/form-data; boundary=" + _B.decode())
+    assert out.refused is None
+    assert EMAIL.encode() not in out.body and _KEY.encode() not in out.body
+    assert TOK.encode() in out.body
+    assert out.body.startswith(b"--" + _B + b"\r\n") and out.body.endswith(b"--" + _B + b"--\r\n")
+    assert b'filename="customer-notes.txt"' in out.body
+    assert out.stats.pii >= 1 and out.stats.secrets >= 1
+
+
+def test_mask_bytes_multipart_masks_a_dot_env_sent_as_octet_stream(tmp_path, monkeypatch):
+    # Browsers label files they don't recognise (.env, .pem, code) as
+    # application/octet-stream — those are exactly the files that leak secrets.
+    p = _pipe(tmp_path, monkeypatch)
+    body = _multipart((b'Content-Disposition: form-data; name="file"; filename=".env"\r\n'
+                       b"Content-Type: application/octet-stream",
+                       f"AWS_ACCESS_KEY_ID={_KEY}\n".encode()))
+    out = p.mask_bytes(body, "multipart/form-data; boundary=" + _B.decode())
+    assert out.refused is None and _KEY.encode() not in out.body
+
+
+def test_mask_bytes_multipart_leaves_binary_parts_byte_for_byte(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\xff\xfe--" + _B[:6] + b"\x00"
+    body = _multipart((b'Content-Disposition: form-data; name="note"', f"mail {EMAIL}".encode()),
+                      (b'Content-Disposition: form-data; name="file"; filename="a.png"\r\nContent-Type: image/png', png))
+    out = p.mask_bytes(body, "multipart/form-data; boundary=" + _B.decode())
+    assert out.refused is None
+    assert png in out.body
+    assert EMAIL.encode() not in out.body
+
+
+def test_mask_bytes_multipart_without_a_boundary_is_unparseable(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    assert p.mask_bytes(b"whatever", "multipart/form-data").refused == "unparseable"
+    assert p.mask_bytes(b"no delimiter here", "multipart/form-data; boundary=abc").refused == "unparseable"

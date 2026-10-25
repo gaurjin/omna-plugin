@@ -113,6 +113,8 @@ class Pipeline:
                 return MaskedBody(urlencode(out).encode("utf-8"), total)
             except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
                 return MaskedBody(None, MaskStats(), refused="mask-failed")
+        if "multipart/form-data" in ct:
+            return self._mask_multipart(body, content_type, style)
         if ct.startswith("text/"):
             try:
                 text = body.decode("utf-8")
@@ -124,6 +126,59 @@ class Pipeline:
             except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
                 return MaskedBody(None, MaskStats(), refused="mask-failed")
         return MaskedBody(None, MaskStats(), refused="unparseable")
+
+    def mask_file(self, data: bytes, content_type: str, style: str = TOKENS) -> tuple[bytes, MaskStats]:
+        """Mask an uploaded file if it is text; anything else comes back untouched.
+
+        Browsers label files they don't recognise (.env, .pem, source code) as
+        application/octet-stream, and those are exactly the files that carry
+        secrets, so "is it text" is decided by the bytes (strict UTF-8, no NUL),
+        not by the label. Binary formats (PDF, images, Office) never pass that
+        test and go through as they are — masking those is MASTER #160.
+        """
+        ct = (content_type or "").lower()
+        if "json" in ct:
+            out = self.mask_bytes(data, ct, style)
+            if out.refused is None:
+                return out.body, out.stats
+        if b"\x00" in data:
+            return data, MaskStats()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return data, MaskStats()
+        masked, stats = self.mask_text(text, style)
+        return masked.encode("utf-8"), stats
+
+    def _mask_multipart(self, body: bytes, content_type: str, style: str) -> MaskedBody:
+        """multipart/form-data: mask each text part, keep every byte of the framing."""
+        boundary = next((v.strip().strip('"') for k, _, v in
+                         (x.strip().partition("=") for x in content_type.split(";"))
+                         if k.strip().lower() == "boundary"), "")
+        delim = b"--" + boundary.encode("latin-1")
+        if not boundary or not body.startswith(delim):
+            return MaskedBody(None, MaskStats(), refused="unparseable")
+        chunks = body.split(b"\r\n" + delim)
+        first = chunks[0][len(delim):]          # b"\r\n<headers>\r\n\r\n<data>"
+        total, out = MaskStats(), [chunks[0][:len(delim)]]
+        try:
+            for i, chunk in enumerate([first] + chunks[1:]):
+                if chunk.startswith(b"--"):     # the closing delimiter and whatever trails it
+                    out.append(chunk)
+                    continue
+                head, sep, data = chunk.partition(b"\r\n\r\n")
+                if not sep:
+                    return MaskedBody(None, MaskStats(), refused="unparseable")
+                part_ct = next((ln.split(b":", 1)[1].decode("latin-1").strip() for ln in head.split(b"\r\n")
+                                if ln.lower().startswith(b"content-type:")), "")
+                masked, st = self.mask_file(data, part_ct, style)
+                _merge(total, st)
+                out.append(head + sep + masked)
+        except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
+            return MaskedBody(None, MaskStats(), refused="mask-failed")
+        if not out[-1].startswith(b"--"):
+            return MaskedBody(None, MaskStats(), refused="unparseable")
+        return MaskedBody(out[0] + (b"\r\n" + delim).join(out[1:]), total)
 
     # ------------------------------------------------------------ restoring
     def restore_json(self, obj):

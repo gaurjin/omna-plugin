@@ -32,6 +32,7 @@ class MaskOutcome:
     stats: MaskStats
     refused: str | None = None    # set → do NOT forward; answer 400
     passthrough: bool = False     # forwarded unchanged on purpose (not a prompt)
+    headers: dict[str, str | None] | None = None   # request headers to set alongside the body (None = remove)
 
 
 class SiteAdapter(Protocol):

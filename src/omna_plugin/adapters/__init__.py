@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from .base import SiteAdapter
 from .generic import GenericAdapter
+from .uploads import CopilotOneDriveAdapter, GeminiUploadAdapter
 
 _GENERIC = GenericAdapter()
-_REGISTRY: list[SiteAdapter] = []   # site adapters register themselves (a later task, not yours)
+_REGISTRY: list[SiteAdapter] = [CopilotOneDriveAdapter(), GeminiUploadAdapter()]
 
 
 def register(adapter: SiteAdapter) -> None:

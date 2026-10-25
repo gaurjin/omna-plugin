@@ -480,3 +480,59 @@ async def test_a_policy_handed_in_directly_still_wins_when_there_is_no_file(tmp_
     flow = a_prompt_flow()
     await addon.request(flow)
     assert "@example." in flow.request.get_content().decode()
+
+
+# ---------------------------------------------------------------- Copilot's OneDrive upload (MASTER #157)
+
+def _copilot_upload_flow(body: bytes):
+    f = tflow.tflow()
+    f.request.host = "my.microsoftpersonalcontent.com"
+    f.request.path = "/personal/58c0/_api/v2.0/drive/items/012PF/uploadSession?guid=%27b2fb%27"
+    f.request.method = "PUT"
+    f.request.headers["content-type"] = "application/octet-stream"
+    f.request.headers["Referer"] = "https://copilot.com/"
+    f.request.headers["Content-Range"] = f"bytes 0-{len(body) - 1}/{len(body)}"
+    f.request.set_content(body)
+    return f
+
+
+async def test_copilot_upload_is_forwarded_masked_with_a_matching_size_label(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _copilot_upload_flow(f"Contact: {EMAIL}\n".encode())
+    await addon.request(flow)
+    sent = flow.request.get_content()
+    assert EMAIL.encode() not in sent and TOK.encode() in sent
+    assert flow.request.headers["Content-Range"] == f"bytes 0-{len(sent) - 1}/{len(sent)}"
+    assert flow.request.headers["content-length"] == str(len(sent))
+
+
+def _hello(sni: str, app: str, addon):
+    from types import SimpleNamespace
+    addon.resolver = lambda peer: (1, app)
+    client = SimpleNamespace(peername=("127.0.0.1", 5), proxy_mode=SimpleNamespace(), sni=sni)
+    return SimpleNamespace(context=SimpleNamespace(client=client),
+                           client_hello=SimpleNamespace(sni=sni), ignore_connection=False)
+
+
+async def test_the_onedrive_app_is_never_opened_but_the_browser_is(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    sync = _hello("my.microsoftpersonalcontent.com", "OneDrive", addon)
+    await addon.tls_clienthello(sync)
+    assert sync.ignore_connection
+    browser = _hello("my.microsoftpersonalcontent.com", "Google Chrome", addon)
+    await addon.tls_clienthello(browser)
+    assert not browser.ignore_connection
+    other = _hello("chatgpt.com", "OneDrive", addon)
+    await addon.tls_clienthello(other)
+    assert not other.ignore_connection
+
+
+async def test_an_adapter_can_remove_a_request_header(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    f = tflow.tflow()
+    f.request.host, f.request.path, f.request.method = "push.clients6.google.com", "/upload/", "POST"
+    f.request.headers.update({"X-Goog-Upload-Command": "start", "X-Tenant-Id": "bard-storage",
+                              "X-Goog-Upload-Header-Content-Length": "127"})
+    f.request.set_content(b"File name: a.txt")
+    await addon.request(f)
+    assert "X-Goog-Upload-Header-Content-Length" not in f.request.headers

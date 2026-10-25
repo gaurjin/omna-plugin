@@ -45,6 +45,11 @@ DEFAULT_HOSTS = [
     "substrate.office.com",                     # Copilot's suggestions while typing (also Outlook/Teams search — owner chose to mask it)
     "aistudio.google.com",
     "alkalimakersuite-pa.clients6.google.com",  # AI Studio's prompts and its CountTokens-while-typing
+    # Found by the live upload test 2026-10-24 (MASTER #157): an attached file
+    # goes here before Send. Shared storage servers, so only that AI's upload is
+    # masked (adapters/uploads.py); everything else passes untouched.
+    "my.microsoftpersonalcontent.com",          # Copilot -> OneDrive
+    "push.clients6.google.com",                 # Gemini -> Google's upload server
     "meta.ai",
     "muse.ai",  # Meta's personal AI agent, launched 2026-09-08 — handles real tasks: email, bookings, purchases, forms
     "chat.qwen.ai",

@@ -169,6 +169,9 @@ class OmnaAddon:
     # ---------------------------------------------------------------- TLS
     async def tls_clienthello(self, data: tls.ClientHelloData) -> None:
         app = await self._app_of(data.context.client)
+        if app and app in getattr(for_host(data.client_hello.sni or ""), "skip_apps", ()):
+            data.ignore_connection = True   # e.g. the OneDrive app's own sync: never an AI, never opened
+            return
         if self.policy.app_action(app) == "bypass":
             data.ignore_connection = True
             self.pipeline.receipt(door=self._door_for_client(data.context.client), route="CONNECT",
@@ -235,6 +238,11 @@ class OmnaAddon:
             return
         if out.body is not None:
             flow.request.set_content(out.body)
+        for k, v in (out.headers or {}).items():
+            if v is None:
+                flow.request.headers.pop(k, None)
+            else:
+                flow.request.headers[k] = v
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         if flow.response is None or flow.metadata.get("omna_refused"):
@@ -243,6 +251,11 @@ class OmnaAddon:
             return
         adapter = flow.metadata.get("omna_adapter") or for_host(flow.request.pretty_host)
         mode = adapter.response_mode(flow.response.headers.get("content-type", ""))
+        if mode == "passthrough":
+            # Nothing to restore, so don't hold the whole reply in memory first
+            # (a OneDrive download can be gigabytes). `response` still receipts it.
+            flow.response.stream = True
+            return
         if mode not in ("stream-json", "stream-text"):
             return
         restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"))
