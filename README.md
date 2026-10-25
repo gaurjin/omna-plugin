@@ -123,6 +123,12 @@ security checks (Cloudflare's robot check, ChatGPT's anti-abuse check) and its o
 reports are forwarded byte-for-byte and receipted as `passthrough-security-check` /
 `passthrough-site-report`. Editing them got people signed out of claude.ai, so Omna never does.
 
+**Attached files** are masked inside and stay the same kind of file: text, `.env` and code files,
+Word `.docx`, Excel `.xlsx`, LibreOffice `.odt` / `.ods` and `.rtf` (only the text changes;
+formatting, styles and images are kept). PDFs, old `.doc` / `.xls`, PowerPoint and images cannot be
+masked in place by a network proxy, so they go as they are and `omna log` says
+`file NOT masked (pdf)`. (Omna's Chrome extension masks PDFs and screenshots on the AI websites.)
+
 ## Try it in 30 seconds
 
 ```sh
@@ -133,7 +139,7 @@ omna mask --realistic "email jane.doe@example.com, key AKIAIOSFODNN7EXAMPLE, pho
 # email robert.jones@example.org, key [SECRET_AWS_KEY_N], phone 415-555-0128
 #  ...the key stays a label on purpose. See "Two masking styles" below.
 
-omna log         # one line per request: time, route, status, ms, what was masked
+omna log         # one line per request: time, route, status, ms, what was masked (or "file NOT masked")
 omna log --verify
 ```
 
