@@ -45,10 +45,9 @@ ditto -c -k --keepParent dist/omna "$OUT"
 echo "==> notarytool submit --wait (typically 5-30 min)"
 xcrun notarytool submit "$OUT" --keychain-profile "omna-notarize" --wait
 
-echo "==> staple the ticket into the bundle, then re-zip so the zip carries it"
-xcrun stapler staple dist/omna/omna || xcrun stapler staple dist/omna
-rm -f "$OUT"
-ditto -c -k --keepParent dist/omna "$OUT"
+# No staple step: Apple staples only .app/.pkg/.dmg, never a bare command-line
+# program (stapler exits 73). Gatekeeper checks a notarized CLI online instead,
+# so the zip that was just accepted is the one we ship.
 
 echo "==> Gatekeeper check (what a user's Mac will do)"
 spctl --assess --type execute --verbose dist/omna/omna || true
