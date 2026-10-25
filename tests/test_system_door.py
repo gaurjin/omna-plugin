@@ -579,3 +579,25 @@ async def test_the_real_send_is_not_blocked(tmp_path, monkeypatch):
     flow = _typing_flow("chatgpt.com", "/backend-api/f/conversation")
     await addon.request(flow)
     assert flow.response is None
+
+
+# ---------------------------------------------------------------- Cloudflare's own bot check (claude.ai, 2026-10-25)
+
+async def test_cloudflares_bot_check_reports_are_forwarded_byte_for_byte(tmp_path, monkeypatch):
+    # Live on claude.ai: editing these reports (a false CRYPTO_ADDRESS, or just
+    # re-written bytes) made Cloudflare answer every later request with its
+    # "Just a moment..." robot check, and claude.ai signed the browser out.
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    body = b'{"a": "mail jane.doe@acme.com", "b":"1c7A1ZvyRHALzTSUf6EkLUWZ7ZH4dsJye"}'
+    flow = _typing_flow("claude.ai", "/cdn-cgi/challenge-platform/h/b/fo/3986311480:1792894206:tEX20", body=body)
+    await addon.request(flow)
+    assert flow.response is None
+    assert flow.request.get_content() == body
+    assert flow.metadata["omna_note"] == "passthrough-bot-check"
+
+
+async def test_a_prompt_on_the_same_site_is_still_masked(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    assert b"jane.doe@acme.com" not in flow.request.get_content()

@@ -64,8 +64,9 @@ the owner's real e-mail into a plan file; caught before commit. Same trick as th
   `signature`, `cache_control`, or base64 `data`.
 - Live verification = a nested headless run: `env -u CLAUDECODE ANTHROPIC_BASE_URL=http://127.0.0.1:7788
   claude -p "..." --allowedTools Read,Write` with a file containing a fake key; check `omna log`.
-- Claude Code hooks canNOT rewrite prompts or tool results on 2.1.274 (`updatedPrompt`/`updatedResult`
-  are ignored — verified in the debug log). Do not build a hooks-based masker until a release accepts them.
+- Claude Code hooks (re-checked live on 2.1.310, 2026-10-25): PostToolUse `updatedToolOutput` DOES replace a
+  tool result before the model sees it (all tools). Typed prompts still CANNOT be rewritten (`updatedPrompt` is
+  gone; UserPromptSubmit can only block or add context). Hooks = optional second layer, never the main door.
 
 ## Publishing (owner-manual)
 The public GitHub repo `gaurjin/omna-plugin` already exists (tags up to `v0.5.1` pushed). Releasing a

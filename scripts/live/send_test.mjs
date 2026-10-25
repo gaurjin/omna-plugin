@@ -2,9 +2,10 @@
 // (MASTER #156), does the site still send your message and answer it?
 // Types "hello" one letter at a time (so the while-typing requests fire and get
 // blocked), presses Enter, and records whether the AI replied.
-// Usage: PROFILE=<dir> [PROXY=1] [EXT=<extension dist>] node send_test.mjs <site> <chrome binary> <outfile>
+// Usage: PROFILE=<dir> [PROXY=1] [EXT=<extension dist>] [MSG=<text>] [WAIT=<ms>] node send_test.mjs <site> <chrome binary> <outfile>
 //   PROXY=1 → this test Chrome only goes through the sandboxed system door on 127.0.0.1:7789
 //   EXT=dir → load the built Chrome extension (and nothing else)
+//   MSG=text → type this instead of "hello" (e.g. fake values, to prove the AI only saw tokens)
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -67,7 +68,8 @@ try {
   if (!found) throw new Error('message box not found (page did not load, or not signed in)');
   await sleep(2000);
   await ev(`(() => { const el = document.querySelector(${JSON.stringify(S.box)}); el.focus(); document.execCommand('selectAll'); document.execCommand('delete'); return true; })()`);
-  for (const ch of 'hello') { await send('Input.insertText', { text: ch }); await sleep(250); }
+  const MSG = process.env.MSG || 'hello';
+  for (const ch of MSG) { await send('Input.insertText', { text: ch }); await sleep(MSG.length > 5 ? 40 : 250); }
   await sleep(3000);                                  // let the while-typing requests fire (and be blocked)
   const before = await ev('document.body.innerText.length');
   sent = true;
@@ -81,10 +83,10 @@ try {
   const shot = await send('Page.captureScreenshot', { format: 'png' });
   writeFileSync(OUT.replace(/\.json$/, '-after-enter.png'), Buffer.from(shot.result.data, 'base64'));
   out.omnaPopup = await ev(`!!document.querySelector('[class*="omna"][class*="popup"], [class*="omna-confirm"], [id*="omna"]')`);
-  await sleep(21000);                                 // the AI answers
+  await sleep(Number(process.env.WAIT || 21000));      // the AI answers
   const after = await ev('document.body.innerText.length');
   out.textGrowth = after - before;
-  out.boxEmptyAfterSend = await ev(`(() => { const el = document.querySelector(${JSON.stringify(S.box)}); return !el || !(el.innerText || el.value || '').includes('hello'); })()`);
+  out.boxEmptyAfterSend = await ev(`(() => { const el = document.querySelector(${JSON.stringify(S.box)}); return !el || !(el.innerText || el.value || '').includes(${JSON.stringify(MSG.slice(0, 20))}); })()`);
   out.pageTail = (await ev('document.body.innerText.slice(-600)')) || '';
   out.sendRequests = [...reqs.values()];
   // Replied = the box was emptied by Send AND a real amount of new text appeared (the answer).

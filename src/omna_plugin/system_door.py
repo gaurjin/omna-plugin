@@ -35,6 +35,7 @@ CA_CN = "Omna Local Certificate Authority"
 # before forwarding. Lower-case: mitmproxy's header access is case-insensitive,
 # but `pop` wants the name the way we store it.
 EXT_HEADER = "x-omna-extension"
+CLOUDFLARE_PATH = "/cdn-cgi/"   # Cloudflare's robot check on every site it guards — never edited
 REFUSED_BODY = (b'{"type":"error","error":{"type":"omna_refused",'
                 b'"message":"omna could not mask this request; refused rather than sent unmasked"}}')
 BLOCKED_WHILE_TYPING = (b'{"type":"error","error":{"type":"omna_blocked_while_typing",'
@@ -232,6 +233,15 @@ class OmnaAddon:
             self._receipt(flow, 403, stream=False)
             return
         adapter = for_host(flow.request.pretty_host)
+        if flow.request.path.startswith(CLOUDFLARE_PATH):
+            # Cloudflare's own robot check (on claude.ai, chatgpt.com, …): browser
+            # fingerprints, never anything you typed. Changing one byte — a false
+            # CRYPTO_ADDRESS, or re-written JSON — fails the check, and the site
+            # then refuses every request and signs you out (live, claude.ai,
+            # 2026-10-25). Forwarded untouched. TRIPWIRE: if a site ever puts
+            # prompt text under /cdn-cgi/, this is where it would get through.
+            flow.metadata.update(omna_app=app, omna_adapter=adapter, omna_note="passthrough-bot-check")
+            return
         req = RequestView(host=flow.request.pretty_host, method=flow.request.method, path=flow.request.path,
                           content_type=flow.request.headers.get("content-type", ""),
                           body=flow.request.get_content() or b"", headers=dict(flow.request.headers))
