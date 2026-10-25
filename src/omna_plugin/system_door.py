@@ -331,10 +331,20 @@ class OmnaAddon:
         only other place a streamed response gets receipted) never runs on an abnormal
         termination, so the audit trail would otherwise get no entry at all for this
         request. `_receipt`'s own `omna_receipted` guard makes this a no-op if a receipt
-        was already written (normal completion raced the abort, or vice versa)."""
-        if flow.metadata.get("omna_streamed") and not flow.metadata.get("omna_receipted"):
+        was already written (normal completion raced the abort, or vice versa).
+
+        A request that ended before any reply (the site cancelled it while you typed:
+        AI Studio CountTokens, Copilot suggestions) was still masked, so it gets a
+        receipt too, noted "cancelled" — otherwise the report under-states what Omna
+        protected (MASTER #158)."""
+        if flow.metadata.get("omna_receipted"):
+            return
+        if flow.metadata.get("omna_streamed"):
             flow.metadata["omna_note"] = "stream-aborted"
             self._receipt(flow, flow.response.status_code if flow.response else 0, stream=True)
+        elif flow.metadata.get("omna_stats") is not None:
+            flow.metadata["omna_note"] = "cancelled"
+            self._receipt(flow, flow.response.status_code if flow.response else 0, stream=False)
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
         assert flow.websocket

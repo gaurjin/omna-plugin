@@ -91,6 +91,24 @@ async def test_stream_abort_still_writes_a_receipt(door):
     assert rec["door"] == "system" and rec["note"] == "stream-aborted"
 
 
+async def test_masked_request_cancelled_before_any_reply_still_writes_a_receipt(door):
+    """MASTER #158: requests a site cancels while you type (AI Studio CountTokens,
+    Copilot suggestions) were masked but never receipted — `error` only wrote one
+    for streamed replies — so the report under-stated what Omna protected."""
+    up, port, ctx, _ = door
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx, timeout=0.5) as c:
+        with pytest.raises(httpx.TimeoutException):
+            await c.post(f"https://127.0.0.1:{up.port}/api/hang", json={"prompt": f"for {EMAIL}"})
+    for _ in range(40):  # mitmproxy notices the client hang-up and runs `error`
+        await asyncio.sleep(0.05)
+        recs = receipts.tail(1)
+        if recs:
+            break
+    assert recs, "no receipt for a masked, cancelled request"
+    rec = recs[0]
+    assert rec["note"] == "cancelled" and rec["masked"].get("EMAIL") == 1 and rec["app"] == "TestApp"
+
+
 async def test_json_reply_is_restored(door):
     up, port, ctx, _ = door
     async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:

@@ -76,6 +76,11 @@ class FakeUpstream:
         self.last_headers = hdrs
         n = int(hdrs.get("content-length", "0"))
         self.last_body = await r.readexactly(n) if n else b""
+        if path.endswith("/hang"):
+            # Never answers: the client gives up first (a request the site cancels).
+            await asyncio.sleep(5)
+            w.close()
+            return
         if path.endswith("/stream-abort"):
             # One valid chunk, then the connection just dies — no "0\r\n\r\n" terminator,
             # no clean FIN. mitmproxy sees the server connection close while it still
