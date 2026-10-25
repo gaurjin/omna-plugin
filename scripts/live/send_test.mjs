@@ -20,6 +20,10 @@ const SITES = {
   perplexity: { url: 'https://www.perplexity.ai/', box: '#ask-input, textarea' },
   copilot: { url: 'https://copilot.com/chat', box: '#m365-chat-editor-target-element, textarea' },
   claude: { url: 'https://claude.ai/new', box: 'div[contenteditable="true"]' },   // control: no while-typing requests
+  grok: { url: 'https://grok.com/', box: 'textarea, div[contenteditable="true"]' },
+  gemini: { url: 'https://gemini.google.com/app', box: 'div[contenteditable="true"]' },
+  deepseek: { url: 'https://chat.deepseek.com/', box: 'textarea' },
+  meta: { url: 'https://www.meta.ai/', box: 'input[aria-label="Ask Meta AI"], input[placeholder^="Ask Meta AI"], textarea, [contenteditable="true"]' },
 };
 const [site, CHROME, OUT] = process.argv.slice(2);
 const S = SITES[site];

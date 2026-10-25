@@ -22,7 +22,7 @@ from mitmproxy.certs import CertStore
 from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
 
-from . import config, while_typing
+from . import config, hands_off, while_typing
 from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
@@ -35,7 +35,6 @@ CA_CN = "Omna Local Certificate Authority"
 # before forwarding. Lower-case: mitmproxy's header access is case-insensitive,
 # but `pop` wants the name the way we store it.
 EXT_HEADER = "x-omna-extension"
-CLOUDFLARE_PATH = "/cdn-cgi/"   # Cloudflare's robot check on every site it guards — never edited
 REFUSED_BODY = (b'{"type":"error","error":{"type":"omna_refused",'
                 b'"message":"omna could not mask this request; refused rather than sent unmasked"}}')
 BLOCKED_WHILE_TYPING = (b'{"type":"error","error":{"type":"omna_blocked_while_typing",'
@@ -233,14 +232,11 @@ class OmnaAddon:
             self._receipt(flow, 403, stream=False)
             return
         adapter = for_host(flow.request.pretty_host)
-        if flow.request.path.startswith(CLOUDFLARE_PATH):
-            # Cloudflare's own robot check (on claude.ai, chatgpt.com, …): browser
-            # fingerprints, never anything you typed. Changing one byte — a false
-            # CRYPTO_ADDRESS, or re-written JSON — fails the check, and the site
-            # then refuses every request and signs you out (live, claude.ai,
-            # 2026-10-25). Forwarded untouched. TRIPWIRE: if a site ever puts
-            # prompt text under /cdn-cgi/, this is where it would get through.
-            flow.metadata.update(omna_app=app, omna_adapter=adapter, omna_note="passthrough-bot-check")
+        untouched = hands_off.reason(flow.request.pretty_host, flow.request.path)
+        if untouched:
+            # The site's own security check or report — never what you typed.
+            # Editing one got people signed out of claude.ai (hands_off.py).
+            flow.metadata.update(omna_app=app, omna_adapter=adapter, omna_note=untouched, omna_hands_off=True)
             return
         req = RequestView(host=flow.request.pretty_host, method=flow.request.method, path=flow.request.path,
                           content_type=flow.request.headers.get("content-type", ""),
@@ -265,6 +261,9 @@ class OmnaAddon:
 
     def responseheaders(self, flow: http.HTTPFlow) -> None:
         if flow.response is None or flow.metadata.get("omna_refused"):
+            return
+        if flow.metadata.get("omna_hands_off"):
+            flow.response.stream = True   # their answer is left alone too; `response` still receipts it
             return
         if self._skip_restore(flow):
             return
@@ -309,6 +308,9 @@ class OmnaAddon:
 
     def response(self, flow: http.HTTPFlow) -> None:
         if flow.response is None or flow.metadata.get("omna_streamed") or flow.metadata.get("omna_refused"):
+            return
+        if flow.metadata.get("omna_hands_off"):
+            self._receipt(flow, flow.response.status_code, stream=False)
             return
         adapter = flow.metadata.get("omna_adapter") or for_host(flow.request.pretty_host)
         if self._skip_restore(flow):

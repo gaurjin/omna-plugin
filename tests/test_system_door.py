@@ -593,7 +593,18 @@ async def test_cloudflares_bot_check_reports_are_forwarded_byte_for_byte(tmp_pat
     await addon.request(flow)
     assert flow.response is None
     assert flow.request.get_content() == body
-    assert flow.metadata["omna_note"] == "passthrough-bot-check"
+    assert flow.metadata["omna_note"] == "passthrough-security-check"
+
+
+async def test_the_answer_to_a_security_check_is_left_alone_too(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _typing_flow("www.perplexity.ai", "/?__cf_chl_tk=abc", body=b"md=1.2.3.4")
+    await addon.request(flow)
+    flow.response = http.Response.make(200, b"<html>1.2.3.4</html>", {"content-type": "text/html"})
+    addon.responseheaders(flow)
+    addon.response(flow)
+    assert flow.response.stream is True and flow.response.get_content() == b"<html>1.2.3.4</html>"
+    assert receipts.tail(1)[0]["note"] == "passthrough-security-check"
 
 
 async def test_a_prompt_on_the_same_site_is_still_masked(tmp_path, monkeypatch):
