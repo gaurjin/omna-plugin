@@ -118,6 +118,11 @@ export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # OpenAI SDK, Cursor BYOK
 | Desktop apps that ignore the system proxy | `omna capture app NAME` (Stage 3, per app, its own signed network extension) | `omna bypass app NAME` (stops masking; there's no command yet to release the app from capture itself) |
 | Any specific app, at any layer | `omna bypass app NAME` — tunnelled through untouched, still receipted | `omna mask app NAME` |
 
+On a chat website, Omna masks what **you** send (your messages, pastes and files). The site's own
+security checks (Cloudflare's robot check, ChatGPT's anti-abuse check) and its own usage and error
+reports are forwarded byte-for-byte and receipted as `passthrough-security-check` /
+`passthrough-site-report`. Editing them got people signed out of claude.ai, so Omna never does.
+
 ## Try it in 30 seconds
 
 ```sh
