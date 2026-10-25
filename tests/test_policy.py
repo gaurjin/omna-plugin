@@ -214,3 +214,12 @@ def test_an_unknown_style_on_disk_falls_back_to_tokens(home):
     data["style"] = "fancy"
     path.write_text(json.dumps(data))
     assert Policy.load().style == TOKENS
+
+
+def test_the_addresses_ai_sites_upload_an_attached_file_to_are_built_in():
+    # Live upload test 2026-10-24 (MASTER #157): each receives the whole file
+    # the moment it is attached, before Send. ChatGPT's raw file goes to its
+    # storage (sdmntprcentralus.oaiusercontent.com) — not on the list, so it
+    # passed unmasked for curl-command users.
+    for host in ["oaiusercontent.com", "my.microsoftpersonalcontent.com", "push.clients6.google.com", "grok.com"]:
+        assert host in policy.DEFAULT_HOSTS, host

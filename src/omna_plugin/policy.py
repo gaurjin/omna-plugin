@@ -50,6 +50,7 @@ DEFAULT_HOSTS = [
     # masked (adapters/uploads.py); everything else passes untouched.
     "my.microsoftpersonalcontent.com",          # Copilot -> OneDrive
     "push.clients6.google.com",                 # Gemini -> Google's upload server
+    "oaiusercontent.com",                       # ChatGPT -> its own file storage (the raw file, at attach time)
     "meta.ai",
     "muse.ai",  # Meta's personal AI agent, launched 2026-09-08 — handles real tasks: email, bookings, purchases, forms
     "chat.qwen.ai",
