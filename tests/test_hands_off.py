@@ -24,6 +24,9 @@ def test_security_checks_are_hands_off(host, path):
     ("grok.com", "/ht/v1/track"),
     ("gemini.google.com", "/_/BardChatUi/jserror?bl=x"),
     ("gemini.google.com", "/_/BardChatUi/web-reports"),
+    ("chatgpt.com", "/realtime/wm"),
+    ("www.meta.ai", "/monitoring?o=1"),
+    ("www.meta.ai", "/api/analytics"),
 ])
 def test_the_sites_own_reports_are_hands_off(host, path):
     assert hands_off.reason(host, path) == "passthrough-site-report"

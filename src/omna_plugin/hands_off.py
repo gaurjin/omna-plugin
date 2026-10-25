@@ -40,9 +40,12 @@ _REPORTS_BY_HOST = [
     ("claude.ai", re.compile(r"^/api/event_logging/")),
     ("chatgpt.com", re.compile(r"/events/statsc/")),
     ("chatgpt.com", re.compile(r"^/ces/")),
+    ("chatgpt.com", re.compile(r"^/realtime/wm$")),   # device codes + numbers, no text (purpose not public)
     ("grok.com", re.compile(r"^/monitoring\b")),
     ("grok.com", re.compile(r"^/ht/v1/")),
     ("gemini.google.com", re.compile(r"^/_/BardChatUi/(jserror|web-reports)\b")),
+    ("meta.ai", re.compile(r"^/monitoring\b")),        # rejected 401 once masked
+    ("meta.ai", re.compile(r"^/api/analytics$")),
 ]
 
 
