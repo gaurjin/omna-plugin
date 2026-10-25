@@ -13,5 +13,5 @@ sandbox folder and only a test Chrome is pointed at it.
 
 - Uses the signed-in test profile `~/.omna-live-profile` (same as the extension's live-sites.mjs). Always invisible (hidden Chrome with the normal browser ID, so ChatGPT accepts it) — never an off-screen window: those show up on a second monitor.
 - `out.json` lists every request sent before Send and which fake values the BROWSER put in it. Prove Omna masked them by (a) the sandbox `registry.json` holding the fake email/phone (secrets are memory-only, never written), or (b) running the captured body through `adapters.for_host(host).mask(...)`.
-- Receipts are written only when a reply finishes, so cancelled while-typing requests are missing from `omna log` (MASTER #158).
+- A masked request the site cancels before any reply is receipted with the note `cancelled` (MASTER #158, fixed 2026-10-25); blocked while-typing requests show as `blocked-while-typing`.
 - Results 2026-10-24: MASTER #156 (typing) and #157 (uploads).
