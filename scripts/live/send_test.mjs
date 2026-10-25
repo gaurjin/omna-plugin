@@ -2,10 +2,11 @@
 // (MASTER #156), does the site still send your message and answer it?
 // Types "hello" one letter at a time (so the while-typing requests fire and get
 // blocked), presses Enter, and records whether the AI replied.
-// Usage: PROFILE=<dir> [PROXY=1] [EXT=<extension dist>] [MSG=<text>] [WAIT=<ms>] node send_test.mjs <site> <chrome binary> <outfile>
+// Usage: PROFILE=<dir> [PROXY=1] [EXT=<extension dist>] [MSG=<text>] [FILE=<path>] [WAIT=<ms>] node send_test.mjs <site> <chrome binary> <outfile>
 //   PROXY=1 → this test Chrome only goes through the sandboxed system door on 127.0.0.1:7789
 //   EXT=dir → load the built Chrome extension (and nothing else)
 //   MSG=text → type this instead of "hello" (e.g. fake values, to prove the AI only saw tokens)
+//   FILE=path → attach this file first (the page's own file input) and let it upload (MASTER #160)
 import { spawn } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -72,6 +73,19 @@ try {
   if (!found) throw new Error('message box not found (page did not load, or not signed in)');
   await sleep(2000);
   await ev(`(() => { const el = document.querySelector(${JSON.stringify(S.box)}); el.focus(); document.execCommand('selectAll'); document.execCommand('delete'); return true; })()`);
+  if (process.env.FILE) {
+    await send('DOM.enable');
+    const doc = await send('DOM.getDocument', { depth: -1, pierce: true });
+    const q = await send('DOM.querySelectorAll', { nodeId: doc.result.root.nodeId, selector: 'input[type=file]' });
+    const node = (q.result?.nodeIds || [])[0];
+    if (!node) throw new Error('no file input on the page');
+    const r = await send('DOM.setFileInputFiles', { files: [process.env.FILE], nodeId: node });
+    out.attached = !r.error;
+    await sleep(15000);                               // let the site upload it
+    const shotA = await send('Page.captureScreenshot', { format: 'png' });
+    writeFileSync(OUT.replace(/\.json$/, '-attached.png'), Buffer.from(shotA.result.data, 'base64'));
+    await ev(`document.querySelector(${JSON.stringify(S.box)}).focus()`);
+  }
   const MSG = process.env.MSG || 'hello';
   for (const ch of MSG) { await send('Input.insertText', { text: ch }); await sleep(MSG.length > 5 ? 40 : 250); }
   await sleep(3000);                                  // let the while-typing requests fire (and be blocked)

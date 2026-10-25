@@ -213,3 +213,110 @@ def test_meta_ai_upload_in_pieces_with_something_to_mask_is_refused(tmp_path, mo
 
 def test_meta_ai_replies_are_never_restored():
     assert for_host(_MR).response_mode("application/json") == "passthrough"
+
+
+# --- ChatGPT PUTs the raw file to its storage, labelled by file type (MASTER #160) ---
+
+def _office_and_env():
+    import sys
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    import test_office
+    env = ("GITHUB_TOKEN=ghp_" + "fgYFNmLOZlhOWtmhi0EwWcTCEsLvKQdOrH3k\nADMIN_EMAIL=jane.doe@example.com\n").encode()
+    return test_office.docx(), test_office.xlsx(), env
+
+
+def test_a_word_file_put_raw_to_chatgpt_storage_is_masked(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin import office
+    docx, xlsx, _ = _office_and_env()
+    p = Pipeline(MaskingSession())
+    for body, ct in ((docx, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+                     (xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")):
+        r = _req("files.example-ai.com", "/file-abc?se=2026", body, ct, "PUT")
+        out = for_host(r.host).mask(p, r)
+        assert out.body is not None and out.refused is None
+        assert office.kind(out.body) == office.kind(body)
+        assert b"jane.doe@example.com" not in out.body
+        assert out.stats.pii >= 1
+
+
+def test_an_env_file_labelled_unknown_type_is_masked(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    _, _, env = _office_and_env()
+    p = Pipeline(MaskingSession())
+    for ct in ("application/octet-stream", ""):
+        r = _req("files.example-ai.com", "/file-abc", env, ct, "PUT")
+        out = for_host(r.host).mask(p, r)
+        assert out.body is not None, ct
+        assert b"ghp_" not in out.body and b"jane.doe@" not in out.body
+        assert out.body.startswith(b"GITHUB_TOKEN=")
+
+
+def test_other_binary_labels_are_never_touched(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    _, _, env = _office_and_env()
+    p = Pipeline(MaskingSession())
+    for ct in ("application/x-protobuf", "application/grpc-web+proto", "image/png", "audio/webm"):
+        r = _req("files.example-ai.com", "/x", env, ct, "PUT")
+        out = for_host(r.host).mask(p, r)
+        assert out.body is None and out.passthrough, ct
+
+
+# --- ChatGPT announces the file's size first, then refuses a different size:
+# "file_size_mismatch" (live, 2026-10-25). The masked file keeps the size. ---
+
+def _chatgpt_put(body, ct):
+    return _req("sdmntprcentralus.oaiusercontent.com", "/files/00000000-c3a4-81f5-9738-6fe60a76087e/raw?se=x&sig=y", body, ct, "PUT")
+
+
+def test_chatgpt_storage_gets_a_masked_file_of_the_very_same_size(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin import office
+    docx, xlsx, env = _office_and_env()
+    text = b"Customer record (test only, fake values)\nEmail: jane.doe@example.com\nPhone: 555-123-4567\n"
+    p = Pipeline(MaskingSession())
+    cases = ((text, "text/plain"), (env, "application/octet-stream"), (env, ""),
+             (docx, "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+             (xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+    for body, ct in cases:
+        out = for_host("sdmntprcentralus.oaiusercontent.com").mask(p, _chatgpt_put(body, ct))
+        assert out.refused is None and out.body is not None, ct
+        assert len(out.body) == len(body), (ct, len(out.body), len(body))
+        assert b"jane.doe@example.com" not in out.body and b"jane.doe@" not in out.body
+        if office.kind(body):
+            assert office.kind(out.body) == office.kind(body)
+            assert office.mask_office(out.body, lambda t: t) == out.body   # still a readable zip
+    # text padding is spaces at the very end, nothing else moves
+    out = for_host("x.oaiusercontent.com").mask(p, _chatgpt_put(text, "text/plain")).body
+    assert out.rstrip(b" ").endswith(b"\n") and out.startswith(b"Customer record")
+
+
+def test_chatgpt_storage_refuses_a_masked_file_that_would_grow(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    p = Pipeline(MaskingSession())
+    # short secrets whose stand-ins are longer than the values, nothing to pad with
+    body = ("password=" + "Xq7#kL9z\n") .encode() * 3
+    masked, _ = p.mask_file(body, "text/plain")
+    if len(masked) <= len(body):
+        return  # this engine masks it shorter; the refusal path is covered below
+    out = for_host("x.oaiusercontent.com").mask(p, _chatgpt_put(body, "text/plain"))
+    assert out.refused == "unmaskable-size" and out.body is None
+
+
+def test_a_file_that_grows_is_refused_never_sent_unmasked(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    p = Pipeline(MaskingSession())
+    monkeypatch.setattr(p, "mask_text", lambda t, style="tokens": (t.replace("jane.doe@example.com", "X" * 200), __import__("omna_plugin.pipeline", fromlist=["MaskStats"]).MaskStats(pii=1)))
+    body = b"Email: jane.doe@example.com\n"
+    out = for_host("x.oaiusercontent.com").mask(p, _chatgpt_put(body, "text/plain"))
+    assert out.refused == "unmaskable-size" and out.body is None
+
+
+def test_chatgpt_storage_clean_file_and_other_requests_pass_untouched(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    p = Pipeline(MaskingSession())
+    clean = b"Shopping list\nApples\n"
+    out = for_host("x.oaiusercontent.com").mask(p, _chatgpt_put(clean, "text/plain"))
+    assert out.body is None and out.refused is None
+    get = _req("x.oaiusercontent.com", "/files/abc/raw", b"", "", "GET")
+    assert for_host(get.host).mask(p, get).passthrough

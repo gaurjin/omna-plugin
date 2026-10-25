@@ -5,6 +5,16 @@ from ..style import TOKENS
 from .base import ENDPOINT_RE, MaskOutcome, RequestView, ResponseMode
 
 _MASKABLE = ("json", "x-www-form-urlencoded", "text/", "multipart/form-data")
+# A raw file sent on its own (ChatGPT PUTs it to its storage at attach time)
+# carries the file's own label: none, "unknown type" (.env, code) or a Word /
+# Excel label. For those the bytes decide (Pipeline.mask_file). Any other
+# binary label (protobuf, images, audio) is a site's own format: never touched.
+_FILE_LABELS = ("", "application/octet-stream", "officedocument", "application/vnd.ms-excel", "application/msword")
+
+
+def _is_file_label(ct: str) -> bool:
+    ct = ct.split(";")[0].strip()
+    return ct in ("", "application/octet-stream") or any(m in ct for m in _FILE_LABELS[2:])
 
 
 class GenericAdapter:
@@ -19,6 +29,11 @@ class GenericAdapter:
     def mask(self, pipeline: Pipeline, req: RequestView, style: str = TOKENS) -> MaskOutcome:
         ct = (req.content_type or "").lower()
         maskable = any(m in ct for m in _MASKABLE)
+        if not maskable and req.body and _is_file_label(ct):
+            masked, stats = pipeline.mask_file(req.body, req.content_type, style)
+            if masked == req.body:
+                return MaskOutcome(None, stats, passthrough=not self.is_prompt(req))
+            return MaskOutcome(masked, stats)
         if not self.is_prompt(req):
             if maskable and req.body:
                 out = pipeline.mask_bytes(req.body, req.content_type, style)   # best effort on non-prompt text; never refuse

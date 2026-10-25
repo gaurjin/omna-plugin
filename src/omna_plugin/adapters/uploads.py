@@ -75,6 +75,34 @@ class CopilotOneDriveAdapter:
         return "passthrough"
 
 
+class ChatGptStorageAdapter:
+    """*.oaiusercontent.com (ChatGPT's own file storage): at attach time ChatGPT
+    first tells chatgpt.com the file's size, then PUTs the raw file here, and
+    refuses the file when the two differ ("file_size_mismatch", live
+    2026-10-25). So the masked file is made exactly the original size; when it
+    cannot be, the upload is refused, never sent unmasked."""
+
+    name = "chatgpt-storage"
+    hosts: tuple[str, ...] = ("oaiusercontent.com",)
+    skip_apps: tuple[str, ...] = ()
+
+    def is_prompt(self, req: RequestView) -> bool:
+        return req.method == "PUT" and req.path.split("?")[0].endswith("/raw")
+
+    def mask(self, pipeline: Pipeline, req: RequestView, style: str = TOKENS) -> MaskOutcome:
+        if not self.is_prompt(req) or not req.body:
+            return MaskOutcome(None, MaskStats(), passthrough=True)
+        masked, stats = pipeline.mask_file_same_size(req.body, req.content_type, style)
+        if masked is None:
+            return MaskOutcome(None, stats, refused="unmaskable-size")
+        if masked == req.body:
+            return MaskOutcome(None, stats)
+        return MaskOutcome(masked, stats)
+
+    def response_mode(self, content_type: str) -> ResponseMode:
+        return "passthrough"
+
+
 class GeminiUploadAdapter:
     """push.clients6.google.com (Google's upload server): Gemini sends "start"
     (promising the size), then "upload, finalize" with the raw file. Mask the
