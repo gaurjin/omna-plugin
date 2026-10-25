@@ -107,3 +107,31 @@ class GeminiUploadAdapter:
 
     def response_mode(self, content_type: str) -> ResponseMode:
         return "passthrough"
+
+
+class MetaAiUploadAdapter:
+    """rupload.meta.ai: Meta AI uploads the attached file here at attach time.
+    Meta encrypts its chat messages, but NOT this upload. It describes the file
+    in its own headers (x-entity-type, x-entity-length, Offset) instead of a
+    Content-Type. Mask the file and fix x-entity-length to the masked size."""
+
+    name = "meta-ai-upload"
+    hosts: tuple[str, ...] = ("rupload.meta.ai",)
+    skip_apps: tuple[str, ...] = ()
+
+    def is_prompt(self, req: RequestView) -> bool:
+        return req.method in ("POST", "PUT") and bool(_header(req, "x-entity-length"))
+
+    def mask(self, pipeline: Pipeline, req: RequestView, style: str = TOKENS) -> MaskOutcome:
+        if not self.is_prompt(req) or not req.body:
+            return MaskOutcome(None, MaskStats(), passthrough=True)
+        masked, stats = pipeline.mask_file(req.body, _header(req, "x-entity-type"), style)
+        if masked == req.body:
+            return MaskOutcome(None, stats)
+        whole = _header(req, "Offset").strip() in ("", "0") and _header(req, "x-entity-length").strip() == str(len(req.body))
+        if not whole:
+            return MaskOutcome(None, stats, refused="unmaskable-chunk")
+        return MaskOutcome(masked, stats, headers={"x-entity-length": str(len(masked))})
+
+    def response_mode(self, content_type: str) -> ResponseMode:
+        return "passthrough"

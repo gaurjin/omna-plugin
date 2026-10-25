@@ -11,7 +11,7 @@ sandbox folder and only a test Chrome is pointed at it.
     node scripts/live/upload_test.mjs grok "$C" file.txt out.json        # attach a file, never Send
     OMNA_HOME=$SB .venv/bin/omna stop
 
-- Uses the signed-in test profile `~/.omna-live-profile` (same as the extension's live-sites.mjs). ChatGPT blocks hidden Chrome, so the window opens off-screen.
+- Uses the signed-in test profile `~/.omna-live-profile` (same as the extension's live-sites.mjs). Always invisible (hidden Chrome with the normal browser ID, so ChatGPT accepts it) — never an off-screen window: those show up on a second monitor.
 - `out.json` lists every request sent before Send and which fake values the BROWSER put in it. Prove Omna masked them by (a) the sandbox `registry.json` holding the fake email/phone (secrets are memory-only, never written), or (b) running the captured body through `adapters.for_host(host).mask(...)`.
 - Receipts are written only when a reply finishes, so cancelled while-typing requests are missing from `omna log` (MASTER #158).
 - Results 2026-10-24: MASTER #156 (typing) and #157 (uploads).

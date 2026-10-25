@@ -178,3 +178,38 @@ def test_other_google_uploads_on_the_same_server_are_never_touched(tmp_path, mon
         out = for_host(_GP).mask(p, req)
         assert out.body is None and out.headers is None and out.passthrough
     assert for_host(_GP).response_mode("application/json") == "passthrough"
+
+
+# Meta AI uploads an attached file to rupload.meta.ai the moment it is attached
+# (live test 2026-10-24, MASTER #157) — NOT encrypted, and labelled in Meta's own
+# headers (x-entity-type / x-entity-length / Offset), with no Content-Type, so
+# the generic adapter let it through.
+_MR = "rupload.meta.ai"
+
+
+def _meta(body, length=None, offset="0", etype="text/plain", path="/gen_ai_document_gen_ai_tenant/b995afc4"):
+    h = {"Referer": "https://www.meta.ai/", "Offset": offset, "x-entity-length": str(len(body) if length is None else length),
+         "x-entity-type": etype, "x-entity-name": "customer-notes.txt"}
+    return RequestView(host=_MR, method="POST", path=path, content_type="", body=body, headers=h)
+
+
+def test_meta_ai_upload_is_masked_and_its_size_header_fixed(tmp_path, monkeypatch):
+    out = for_host(_MR).mask(_p(tmp_path, monkeypatch), _meta(_NOTES))
+    assert out.refused is None and out.body is not None
+    assert b"jane.doe@example.com" not in out.body and b"AKIAQ7WZ" not in out.body
+    assert out.headers == {"x-entity-length": str(len(out.body))}
+
+
+def test_meta_ai_binary_upload_passes_as_is(tmp_path, monkeypatch):
+    out = for_host(_MR).mask(_p(tmp_path, monkeypatch), _meta(b"\x89PNG\r\n\x1a\n\x00\xff", etype="image/png"))
+    assert out.body is None and out.refused is None
+
+
+def test_meta_ai_upload_in_pieces_with_something_to_mask_is_refused(tmp_path, monkeypatch):
+    p = _p(tmp_path, monkeypatch)
+    assert for_host(_MR).mask(p, _meta(_NOTES, length=999999)).refused == "unmaskable-chunk"
+    assert for_host(_MR).mask(p, _meta(_NOTES, offset="4096", length=4096 + len(_NOTES))).refused == "unmaskable-chunk"
+
+
+def test_meta_ai_replies_are_never_restored():
+    assert for_host(_MR).response_mode("application/json") == "passthrough"

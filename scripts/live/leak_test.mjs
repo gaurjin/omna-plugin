@@ -10,6 +10,10 @@ import { writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+// Always invisible: an off-screen window still shows up on a second monitor and
+// in the Dock (owner, 2026-10-24). Hidden Chrome normally says "HeadlessChrome"
+// in its browser ID, which some sites (ChatGPT) refuse — so send the normal one.
+const HUMAN_UA = '--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
 
 const SITES = {
   chatgpt: { url: 'https://chatgpt.com/', box: 'div.ProseMirror[contenteditable="true"], #prompt-textarea' },
@@ -34,7 +38,7 @@ const chrome = spawn(CHROME, [
   '--proxy-server=http://127.0.0.1:7789',   // ONLY this browser goes through Omna
   '--ignore-certificate-errors',            // trust Omna's sandbox certificate in THIS browser only
   '--disable-extensions',                   // test the curl command alone
-  '--window-position=-3000,0', '--window-size=1280,900',
+  '--headless=new', HUMAN_UA, '--window-size=1280,900',
   '--no-first-run', '--no-default-browser-check', 'about:blank',
 ], { stdio: 'ignore' });
 

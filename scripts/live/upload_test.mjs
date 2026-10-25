@@ -9,11 +9,16 @@ import { writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+// Always invisible: an off-screen window still shows up on a second monitor and
+// in the Dock (owner, 2026-10-24). Hidden Chrome normally says "HeadlessChrome"
+// in its browser ID, which some sites (ChatGPT) refuse — so send the normal one.
+const HUMAN_UA = '--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
 
 const SITES = {
   chatgpt: 'https://chatgpt.com/', claude: 'https://claude.ai/new', gemini: 'https://gemini.google.com/app',
   aistudio: 'https://aistudio.google.com/prompts/new_chat', perplexity: 'https://www.perplexity.ai/',
   grok: 'https://grok.com/', deepseek: 'https://chat.deepseek.com/', copilot: 'https://copilot.com/chat',
+  meta: 'https://www.meta.ai/', muse: 'https://muse.ai/',
 };
 const [site, CHROME, FILE, OUT] = process.argv.slice(2);
 const FAKE_KEY = 'AKIA' + 'Q7WZ' + 'LMNO' + 'PS3X' + 'TUV2';
@@ -22,7 +27,7 @@ const PORT = 9334;
 const chrome = spawn(CHROME, [
   `--remote-debugging-port=${PORT}`, `--user-data-dir=${join(homedir(), '.omna-live-profile')}`,
   '--proxy-server=http://127.0.0.1:7789', '--ignore-certificate-errors', '--disable-extensions',
-  '--window-position=-3000,0', '--window-size=1280,900', '--no-first-run', '--no-default-browser-check', 'about:blank',
+  '--headless=new', HUMAN_UA, '--window-size=1280,900', '--no-first-run', '--no-default-browser-check', 'about:blank',
 ], { stdio: 'ignore' });
 
 const out = { site, attached: false, inputFound: false, requests: [], error: null };
