@@ -483,10 +483,15 @@ def test_delete_mapping_persists_across_a_restart(home):
 @pytest.mark.parametrize("before", ["Note — ok — fine — yes.", "🙂🙂🙂🙂", "José Müller said “hi”", "日本語のテキスト"])
 @pytest.mark.parametrize("style", [TOKENS, REALISTIC])
 def test_wide_characters_before_a_value_do_not_shift_the_mask(home, before, style):
+    # The real email's names must never be in the fake-name lists: with
+    # "maria.lopez" the realistic stand-in was "maria.porter17@…" ~1 run in
+    # 10 and this test failed for no reason (MASTER #164).
+    from omna_plugin.fakes import FIRST_NAMES, LAST_NAMES
+    assert not {"zoltan", "quayle"} & {n.lower() for n in FIRST_NAMES + LAST_NAMES}
     s = MaskingSession()
-    text = f"{before} Call at maria.lopez@example.org today, key AKIAIOSFODNN7EXAMPLE end."
+    text = f"{before} Call at zoltan.quayle@example.org today, key AKIAIOSFODNN7EXAMPLE end."
     r = s.mask_text(text, style)
-    assert "maria" not in r.masked and "lopez" not in r.masked
+    assert "zoltan" not in r.masked and "quayle" not in r.masked
     assert "AKIAIOSFODNN7EXAMPLE" not in r.masked
     assert r.masked.startswith(f"{before} Call at ")
     assert r.masked.endswith(" end.") and " today, key " in r.masked
