@@ -313,7 +313,11 @@ def cmd_log(a) -> int:
     print(f"{'time':<20} {'route':<28} {'st':>3} {'ms':>6}  masked")
     for r in rows:
         ts = str(r.get("ts", ""))[:19].replace("T", " ")
-        print(f"{ts:<20} {str(r.get('route',''))[:28]:<28} {r.get('status',''):>3} {r.get('ms',''):>6}  {_fmt_counts(r.get('masked') or {})}")
+        what = _fmt_counts(r.get('masked') or {})
+        note = str(r.get("note") or "")
+        if note.startswith("file-not-masked:"):     # a PDF / image / old Office file went as it is (#160)
+            what = f"file NOT masked ({note.split(':', 1)[1]})"
+        print(f"{ts:<20} {str(r.get('route',''))[:28]:<28} {r.get('status',''):>3} {r.get('ms',''):>6}  {what}")
     return 0
 
 

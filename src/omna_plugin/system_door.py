@@ -242,8 +242,10 @@ class OmnaAddon:
                           content_type=flow.request.headers.get("content-type", ""),
                           body=flow.request.get_content() or b"", headers=dict(flow.request.headers))
         out = adapter.mask(self.pipeline, req, self._style_for(flow))
+        note = f"file-not-masked:{out.stats.not_masked}" if out.stats.not_masked else (
+            "passthrough-nonprompt" if out.passthrough else None)
         flow.metadata.update(omna_app=app, omna_adapter=adapter, omna_stats=out.stats, omna_nbytes=len(req.body),
-                             omna_note="passthrough-nonprompt" if out.passthrough else None)
+                             omna_note=note)
         if out.refused:
             # Fail closed: answer locally, never forward a body we could not mask.
             flow.metadata["omna_note"] = out.refused

@@ -703,3 +703,13 @@ def test_mask_realistic_shows_a_fake_value_but_keeps_secrets_numbered(capsys):
     out, _ = capsys.readouterr()
     assert "jane.doe@acme.com" not in out and "@example." in out
     assert "AKIAIOSFODNN7EXAMPLE" not in out and "[SECRET_AWS_KEY_" in out
+
+
+def test_log_says_when_a_file_was_not_masked(capsys):
+    # A PDF / image / old Office file the curl command cannot mask goes as it
+    # is; the log must say so, not show an empty "masked" column (#160).
+    from omna_plugin import receipts
+    receipts.append({"door": "system", "route": "/files/abc/raw", "host": "x.oaiusercontent.com", "status": 201,
+                     "masked": {}, "ms": 5, "note": "file-not-masked:pdf"})
+    assert main(["log"]) == 0
+    assert "file NOT masked (pdf)" in capsys.readouterr()[0]

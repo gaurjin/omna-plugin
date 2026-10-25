@@ -19,12 +19,13 @@ MASTER #160, option 2 ("original file, masked").
 
 from __future__ import annotations
 
-import copy
 import difflib
 import html
 import io
 import re
+import struct
 import zipfile
+import zlib
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -61,6 +62,10 @@ class _Rules:
     text: frozenset[str]
     split: frozenset[str] = frozenset()
     skip: frozenset[str] = frozenset()
+    # OpenDocument writes text straight into the paragraph (<text:p>Hi
+    # <text:span>Ja</text:span>ne</text:p>), not into a text element: every
+    # run of characters inside a unit is a piece.
+    mixed: bool = False
 
 
 _WORD = _Rules(unit=frozenset({"p"}), text=frozenset({"t", "delText", "instrText"}),
@@ -69,6 +74,14 @@ _EXCEL_STRINGS = _Rules(unit=frozenset({"si", "is", "text", "comment"}), text=fr
                         skip=frozenset({"rPh"}))
 _EXCEL_THREADED = _Rules(unit=frozenset({"text"}), text=frozenset({"text"}))
 _CHART = _Rules(unit=frozenset({"p", "pt"}), text=frozenset({"t", "v"}))
+_ODF_TEXT = _Rules(unit=frozenset({"p", "h"}), text=frozenset(), split=frozenset({"tab", "line-break", "s"}),
+                  skip=frozenset({"note-citation", "bookmark-ref", "reference-ref"}), mixed=True)
+_ODF_META = _Rules(unit=frozenset({"creator", "initial-creator", "title", "subject", "description", "keyword"}),
+                   text=frozenset({"creator", "initial-creator", "title", "subject", "description", "keyword"}))
+_ODF_KINDS = {"application/vnd.oasis.opendocument.text": "odt",
+              "application/vnd.oasis.opendocument.spreadsheet": "ods"}
+_ODS_NUM_CELL_RE = re.compile(r"<table:table-cell\b([^>]*?\soffice:value=\"([^\"]*)\"[^>]*?)(/?)>")
+_ODS_TYPE_RE = re.compile(r'\s(?:office|calcext):value-type="[^"]*"|\soffice:value="[^"]*"')
 _DOC_PROPS = _Rules(unit=frozenset({"creator", "lastModifiedBy", "title", "subject", "description",
                                     "keywords", "Company", "Manager"}),
                     text=frozenset({"creator", "lastModifiedBy", "title", "subject", "description",
@@ -76,7 +89,8 @@ _DOC_PROPS = _Rules(unit=frozenset({"creator", "lastModifiedBy", "title", "subje
 
 
 def kind(data: bytes) -> str | None:
-    """"docx" / "xlsx" when the bytes are a Word or Excel file, else None."""
+    """"docx" / "xlsx" / "odt" / "ods" when the bytes are a Word, Excel or
+    OpenDocument (LibreOffice) text / spreadsheet file, else None."""
     if not data.startswith(b"PK\x03\x04"):
         return None
     try:
@@ -88,10 +102,48 @@ def kind(data: bytes) -> str | None:
         return "docx"
     if "xl/workbook.xml" in names:
         return "xlsx"
+    if "mimetype" in names and "content.xml" in names:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                return _ODF_KINDS.get(z.read("mimetype").decode("ascii", "replace").strip())
+        except (zipfile.BadZipFile, ValueError, OSError, KeyError):
+            return None
     return None
 
 
+_UNMASKABLE_MAGIC = (
+    (b"%PDF-", "pdf"),
+    (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "old-office"),   # .doc / .xls / .ppt (binary)
+    (b"\x89PNG\r\n\x1a\n", "image"), (b"\xff\xd8\xff", "image"), (b"GIF8", "image"),
+)
+
+
+def unmaskable_kind(data: bytes) -> str:
+    """A file type the curl command recognises but cannot mask in place
+    ("pdf", "old-office", "image", "pptx"), or "" for anything else. Such a
+    file goes through as it is and its receipt says so."""
+    for magic, name in _UNMASKABLE_MAGIC:
+        if data.startswith(magic):
+            return name
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP" or data[4:12] in (b"ftypheic", b"ftypheix", b"ftypmif1"):
+        return "image"
+    if data.startswith(b"PK\x03\x04"):
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as z:
+                if "ppt/presentation.xml" in z.namelist():
+                    return "pptx"
+        except (zipfile.BadZipFile, ValueError, OSError):
+            return ""
+    return ""
+
+
 def _rules_for(name: str, doc: str) -> _Rules | None:
+    if doc in ("odt", "ods"):
+        if name == "meta.xml":
+            return _ODF_META
+        if name in ("content.xml", "styles.xml"):          # body; headers and footers
+            return _ODF_TEXT
+        return None
     if name in ("docProps/core.xml", "docProps/app.xml"):
         return _DOC_PROPS
     if "/charts/" in name and name.endswith(".xml") and "/_rels/" not in name:
@@ -121,8 +173,12 @@ def _scan(xml: str, rules: _Rules) -> _Part:
             part.units.append(stack[-1])
             stack[-1] = []
 
+    last = 0
     for m in _TAG_RE.finditer(xml):
         closing, local, self_closing = m.group(1) == "/", m.group(3), m.group(5) == "/"
+        if rules.mixed and stack and not skip and m.start() > last:
+            stack[-1].append((last, m.start()))     # characters between two tags
+        last = m.end()
         if local in rules.skip:
             if not self_closing:
                 skip += -1 if closing else 1
@@ -233,6 +289,8 @@ def _mask_part(xml: str, rules: _Rules, mask: Mask, excel_sheet: bool) -> str:
             if new_text == old_text:
                 continue
             edits.append((a, b, _escape(new_text)))
+            if a not in part.open_tags:             # OpenDocument: no text element to mark
+                continue
             tag_a, tag_b = part.open_tags[a]
             tag = xml[tag_a:tag_b]
             if new_text != new_text.strip() and not _SPACE_ATTR_RE.search(tag):
@@ -243,10 +301,32 @@ def _mask_part(xml: str, rules: _Rules, mask: Mask, excel_sheet: bool) -> str:
             new = mask(name) if name.strip() else name
             if new != name:
                 edits.append((m.start(2), m.end(2), _escape(new).replace('"', "&quot;")))
+    if rules is _ODF_TEXT:
+        edits.extend(_ods_number_cell_edits(xml, mask))
     out = _apply(xml, edits)
     if excel_sheet:
         out = _mask_number_cells(out, mask)
     return out
+
+
+def _ods_number_cell_edits(xml: str, mask: Mask) -> list[tuple[int, int, str]]:
+    """OpenDocument keeps a number cell's value twice: ``office:value="…"``
+    and the text shown. The text is masked like any paragraph; a flagged value
+    makes the cell a text cell (the number itself is dropped). Formula cells
+    are left alone: the program recomputes them."""
+    cells = [m for m in _ODS_NUM_CELL_RE.finditer(xml) if "table:formula=" not in m.group(1)]
+    if not cells:
+        return []
+    masked = _mask_units([m.group(2) for m in cells], mask)
+    # calcext (LibreOffice's own attributes) only where the file declares it.
+    calcext = ' calcext:value-type="string"' if "xmlns:calcext=" in xml else ""
+    edits = []
+    for m, new in zip(cells, masked):
+        if new == m.group(2):
+            continue
+        attrs = _ODS_TYPE_RE.sub("", m.group(1))
+        edits.append((m.start(), m.end(), f'<table:table-cell{attrs} office:value-type="string"{calcext}{m.group(3)}>'))
+    return edits
 
 
 def _apply(xml: str, edits: list[tuple[int, int, str]]) -> str:
@@ -280,6 +360,64 @@ def _mask_number_cells(xml: str, mask: Mask) -> str:
         space = ' xml:space="preserve"' if new != new.strip() else ""
         edits.append((m.start(), m.end(), f'<c{attrs} t="inlineStr"><is><t{space}>{_escape(new)}</t></is></c>'))
     return _apply(xml, edits)
+
+
+# zlib (level, memLevel, strategy) for the masked parts: the usual default
+# first; the rest only when a size-keeping upload needs bytes back.
+_DEFLATE_SETTINGS = ((6, 8, zlib.Z_DEFAULT_STRATEGY), (9, 9, zlib.Z_DEFAULT_STRATEGY),
+                     (9, 9, zlib.Z_FILTERED), (9, 8, zlib.Z_DEFAULT_STRATEGY))
+
+
+def _raw_entry(data: bytes, info: zipfile.ZipInfo) -> bytes:
+    """An entry's compressed bytes exactly as stored in ``data``."""
+    at = info.header_offset
+    if data[at:at + 4] != b"PK\x03\x04":
+        raise zipfile.BadZipFile("bad local header")
+    name_len, extra_len = struct.unpack("<HH", data[at + 26:at + 30])
+    start = at + 30 + name_len + extra_len
+    return data[start:start + info.compress_size]
+
+
+def _write_zip(infos: list[zipfile.ZipInfo], raw: dict[str, bytes], changed: dict[str, bytes],
+               setting: tuple[int, int, int], comment: bytes) -> bytes:
+    """A zip with the same entries in the same order: unchanged ones copied
+    as stored, changed ones compressed with ``setting`` (stored ones stay
+    stored — OpenDocument's "mimetype" must). Sizes go in the headers, so no
+    data descriptors; ZIP64 is never needed under _MAX_UNZIPPED."""
+    level, mem, strategy = setting
+    out = io.BytesIO()
+    central = []
+    for info in infos:
+        name = info.filename.encode("utf-8" if info.flag_bits & 0x800 else "cp437")
+        if info.filename in changed:
+            body = changed[info.filename]
+            crc, size = zlib.crc32(body) & 0xFFFFFFFF, len(body)
+            if info.compress_type == zipfile.ZIP_DEFLATED:
+                c = zlib.compressobj(level, zlib.DEFLATED, -15, mem, strategy)
+                payload = c.compress(body) + c.flush()
+            else:
+                payload = body
+        else:
+            payload, crc, size = raw[info.filename], info.CRC, info.file_size
+        flags = info.flag_bits & ~0x8                       # sizes are in the header: no data descriptor
+        dt = info.date_time
+        dos_time = dt[3] << 11 | dt[4] << 5 | dt[5] // 2
+        dos_date = (dt[0] - 1980) << 9 | dt[1] << 5 | dt[2]
+        offset = out.tell()
+        out.write(struct.pack("<4s5H3L2H", b"PK\x03\x04", info.extract_version, flags, info.compress_type,
+                              dos_time, dos_date, crc, len(payload), size, len(name), len(info.extra)))
+        out.write(name + info.extra + payload)
+        central.append(struct.pack("<4s6H3L5H2L", b"PK\x01\x02", info.create_version | info.create_system << 8,
+                                   info.extract_version, flags, info.compress_type, dos_time, dos_date, crc,
+                                   len(payload), size, len(name), len(info.extra), len(info.comment), 0,
+                                   info.internal_attr, info.external_attr, offset)
+                       + name + info.extra + info.comment)
+    cd_start = out.tell()
+    for c in central:
+        out.write(c)
+    out.write(struct.pack("<4s4H2LH", b"PK\x05\x06", 0, 0, len(infos), len(infos), out.tell() - cd_start,
+                          cd_start, len(comment)) + comment)
+    return out.getvalue()
 
 
 class SizeChanged(Exception):
@@ -334,32 +472,163 @@ def mask_office(data: bytes, mask: Mask, _depth: int = 0, same_size: bool = Fals
         # Read every part once: ZipFile.writestr updates the ZipInfo it is
         # given (offsets, sizes), so the originals are copied for each write
         # and never read back through a used one.
-        bodies = {i.filename: changed.get(i.filename) or zin.read(i) for i in infos}
-
-        def write(level: int | None, comment: bytes) -> bytes:
-            # Every part is compressed again (same content): level None is
-            # zlib's default, 9 squeezes harder when the masked file grew.
-            buf = io.BytesIO()
-            with zipfile.ZipFile(buf, "w") as zout:
-                zout.comment = comment
-                for info in infos:
-                    zout.writestr(copy.copy(info), bodies[info.filename], compress_type=info.compress_type,
-                                  compresslevel=level)
-            return buf.getvalue()
-
-        level = None                            # zlib's default, as the original was most likely written
-        out = write(level, zin.comment)
+        # Parts that did not change are copied as their original compressed
+        # bytes; only the masked parts are compressed again, with each setting
+        # in _DEFLATE_SETTINGS tried until the file fits (smallest kept).
+        raw = {i.filename: _raw_entry(data, i) for i in infos if i.filename not in changed}
+        settings = _DEFLATE_SETTINGS[:1] if not same_size else _DEFLATE_SETTINGS
+        best = None
+        for setting in settings:
+            out = _write_zip(infos, raw, changed, setting, zin.comment)
+            if best is None or len(out) < len(best[0]):
+                best = (out, setting)
+            if len(out) <= len(data):
+                break
+        out, setting = best
         if not same_size or len(out) == len(data):
             return out
-        if len(out) > len(data):
-            level = 9
-            out = write(level, zin.comment)
         gap = len(data) - len(out)
         if gap < 0 or len(zin.comment) + gap > _ZIP_COMMENT_MAX:
             raise SizeChanged(f"masked {len(out)} bytes, original {len(data)}")
-        out = write(level, zin.comment + b" " * gap)
+        out = _write_zip(infos, raw, changed, setting, zin.comment + b" " * gap)
         if len(out) != len(data):
             raise SizeChanged(f"masked {len(out)} bytes, original {len(data)}")
         return out
     except (zipfile.BadZipFile, zipfile.LargeZipFile, ValueError, KeyError, OSError, EOFError, NotImplementedError):
         return None
+
+
+# --- RTF -------------------------------------------------------------------
+# RTF is text, but formatting codes sit inside the words ("jane.doe@\b
+# example.com" when half the address is bold), so the raw file never shows
+# the engine a whole value. Read it like Word: the text between codes is a
+# piece, a paragraph / tab / line break ends a unit, header tables (fonts,
+# colours, styles, document info, pictures, "\*" destinations) are skipped.
+# Only the characters of the pieces are rewritten; every code stays.
+
+_RTF_SPLIT = frozenset({"par", "line", "tab", "cell", "row", "sect", "page", "column"})
+_RTF_SKIP = frozenset({"fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "listtable",
+                       "listoverridetable", "rsidtbl", "generator", "themedata", "datastore", "xmlnstbl"})
+_RTF_WORD_RE = re.compile(r"\\([a-zA-Z]{1,32})(-?\d{1,10})? ?")
+
+
+def is_rtf(data: bytes) -> bool:
+    return data.startswith(b"{\\rtf")
+
+
+def _rtf_units(src: str) -> list[list[tuple[int, int, str]]]:
+    """Units of (start, end, text) pieces; ``src`` is the file decoded as latin-1."""
+    units: list[list[tuple[int, int, str]]] = [[]]
+    skip_stack = [False]
+    uc = 1                                   # characters that follow a \uN as its fallback
+    piece_start, piece_text = -1, []
+    i, n = 0, len(src)
+
+    def end_piece(at: int) -> None:
+        nonlocal piece_start, piece_text
+        if piece_start >= 0 and piece_text:
+            units[-1].append((piece_start, at, "".join(piece_text)))
+        piece_start, piece_text = -1, []
+
+    def add(ch: str, start: int) -> None:
+        nonlocal piece_start
+        if skip_stack[-1]:
+            return
+        if piece_start < 0:
+            piece_start = start
+        piece_text.append(ch)
+
+    while i < n:
+        c = src[i]
+        if c == "{":
+            end_piece(i)
+            skip_stack.append(skip_stack[-1])
+            i += 1
+        elif c == "}":
+            end_piece(i)
+            if len(skip_stack) > 1:
+                skip_stack.pop()
+            i += 1
+        elif c == "\\":
+            nxt = src[i + 1] if i + 1 < n else ""
+            if nxt == "'" and i + 3 < n:                    # \'hh: one byte in the document's code page
+                try:
+                    add(bytes([int(src[i + 2:i + 4], 16)]).decode("cp1252"), i)
+                except (ValueError, UnicodeDecodeError):
+                    end_piece(i)
+                i += 4
+            elif nxt in "\\{}":
+                add(nxt, i)
+                i += 2
+            elif nxt == "*":                                 # an ignorable destination
+                end_piece(i)
+                skip_stack[-1] = True
+                i += 2
+            else:
+                m = _RTF_WORD_RE.match(src, i)
+                if not m:
+                    end_piece(i)
+                    if nxt in "\r\n" and units[-1]:        # backslash + line break = a paragraph (macOS writes these)
+                        units.append([])
+                    i += 2                                   # other control symbols (\~, \-, …)
+                    continue
+                word, num = m.group(1), m.group(2)
+                if word == "u" and num is not None:          # \uN then `uc` fallback characters
+                    code = int(num) + (65536 if int(num) < 0 else 0)
+                    add(chr(code), i)
+                    i = m.end()
+                    for _ in range(uc):
+                        if i < n and src[i] not in "\\{}":
+                            i += 1
+                    continue
+                end_piece(i)
+                if word == "uc" and num is not None:
+                    uc = int(num)
+                elif word in _RTF_SKIP:
+                    skip_stack[-1] = True
+                elif word in _RTF_SPLIT and units[-1]:
+                    units.append([])
+                i = m.end()
+        elif c in "\r\n":                                   # line breaks in the file are not text
+            end_piece(i)
+            i += 1
+        else:
+            add(c, i)
+            i += 1
+    end_piece(n)
+    return [u for u in units if u]
+
+
+def _rtf_escape(text: str) -> str:
+    out = []
+    for ch in text:
+        if ch in "\\{}":
+            out.append("\\" + ch)
+        elif ord(ch) < 128:
+            out.append(ch)
+        elif (b := ch.encode("cp1252", "ignore")):            # the way RTF writers spell é: \'e9
+            out.append(f"\\'{b[0]:02x}")
+        else:
+            for unit in ch.encode("utf-16-be").hex(" ", 2).split():   # surrogate pairs become two \u
+                v = int(unit, 16)
+                out.append(f"\\u{v - 65536 if v > 32767 else v}?")
+    return "".join(out)
+
+
+def mask_rtf(data: bytes, mask: Mask) -> bytes:
+    """The masked RTF file (``data`` itself when there was nothing to mask)."""
+    src = data.decode("latin-1")
+    units = _rtf_units(src)
+    pieces = [[t for _, _, t in u] for u in units]
+    joined = ["".join(p) for p in pieces]
+    masked = _mask_units(joined, mask)
+    edits: list[tuple[int, int, str]] = []
+    for unit, before, orig, new in zip(units, pieces, joined, masked):
+        if new == orig:
+            continue
+        for (a, b, old_text), new_text in zip(unit, _spread(before, new)):
+            if new_text != old_text:
+                edits.append((a, b, _rtf_escape(new_text)))
+    if not edits:
+        return data
+    return _apply(src, edits).encode("latin-1")

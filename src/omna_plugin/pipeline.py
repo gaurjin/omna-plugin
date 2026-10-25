@@ -29,6 +29,10 @@ class MaskStats:
     # than an average confidence score.
     validated: int = 0
     by_layer: dict[str, int] = field(default_factory=dict)
+    # A file the curl command recognised but cannot mask in place (PDF, old
+    # binary Word/Excel, an image, PowerPoint): it went through as it is, and
+    # the receipt says so (MASTER #160 step 3, owner decision "A").
+    not_masked: str = ""
 
 
 @dataclass
@@ -48,6 +52,7 @@ def _merge(total: MaskStats, st: MaskStats) -> None:
     for k, v in st.by_layer.items():
         total.by_layer[k] = total.by_layer.get(k, 0) + v
     total.tokens = sorted(set(total.tokens) | set(st.tokens))
+    total.not_masked = total.not_masked or st.not_masked
 
 
 class Pipeline:
@@ -167,7 +172,16 @@ class Pipeline:
             if out is not None:
                 return out, total
             return data, MaskStats()
-        out, stats = self._mask_plain_file(data, content_type, style)
+        if office.is_rtf(data):
+            total = MaskStats()
+
+            def mask_rtf_text(text: str) -> str:
+                masked, st = self.mask_text(text, style)
+                _merge(total, st)
+                return masked
+            out, stats = office.mask_rtf(data, mask_rtf_text), total
+        else:
+            out, stats = self._mask_plain_file(data, content_type, style)
         if not same_size or len(out) == len(data):
             return out, stats
         if len(out) > len(data):
@@ -175,6 +189,9 @@ class Pipeline:
         return out + b" " * (len(data) - len(out)), stats
 
     def _mask_plain_file(self, data: bytes, content_type: str, style: str) -> tuple[bytes, MaskStats]:
+        kind = office.unmaskable_kind(data)
+        if kind:
+            return data, MaskStats(not_masked=kind)
         ct = (content_type or "").lower()
         if "json" in ct:
             out = self.mask_bytes(data, ct, style)

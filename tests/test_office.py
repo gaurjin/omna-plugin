@@ -237,3 +237,126 @@ def test_spread_always_joins_back_to_the_masked_text():
         out = office._spread(pieces, masked)
         assert "".join(out) == masked, (pieces, out)
         assert len(out) == len(pieces)
+
+
+# --- OpenDocument (LibreOffice) and RTF, MASTER #160 step 3 ---
+
+ODF_NS = ('xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+          'xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" '
+          'xmlns:table="urn:oasis:names:tc:opendocument:xmlns:table:1.0" '
+          'xmlns:calcext="urn:org:documentfoundation:names:experimental:calc:xmlns:calcext:1.0"')
+ODT_CONTENT = ('<?xml version="1.0" encoding="UTF-8"?>'
+               f'<office:document-content {ODF_NS}><office:body><office:text>'
+               # the email split by a bold span, and a space element
+               '<text:p text:style-name="P1">Write to jane.doe@<text:span text:style-name="B">example.com</text:span><text:s/>today.</text:p>'
+               f'<text:h text:outline-level="1">SSN {SSN}</text:h>'
+               '<text:p>Smith &amp; Sons<text:tab/>Q3 plan</text:p>'
+               '</office:text></office:body></office:document-content>')
+ODT_STYLES = (f'<?xml version="1.0" encoding="UTF-8"?><office:document-styles {ODF_NS}><office:master-styles>'
+              f'<text:p>Footer {EMAIL2}</text:p></office:master-styles></office:document-styles>')
+ODF_META = ('<?xml version="1.0" encoding="UTF-8"?><office:document-meta xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" '
+            'xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0" xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            f'<office:meta><meta:initial-creator>{EMAIL}</meta:initial-creator><dc:title>Plan</dc:title></office:meta></office:document-meta>')
+ODS_CONTENT = ('<?xml version="1.0" encoding="UTF-8"?>'
+               f'<office:document-content {ODF_NS}><office:body><office:spreadsheet><table:table table:name="Sheet1">'
+               f'<table:table-row><table:table-cell office:value-type="string" calcext:value-type="string"><text:p>{EMAIL}</text:p></table:table-cell>'
+               '<table:table-cell office:value-type="float" office:value="4155550134" calcext:value-type="float"><text:p>4155550134</text:p></table:table-cell>'
+               '<table:table-cell office:value-type="float" office:value="42" calcext:value-type="float"><text:p>42</text:p></table:table-cell>'
+               '<table:table-cell table:formula="of:=[.B1]" office:value-type="float" office:value="4155550134"><text:p>4155550134</text:p></table:table-cell>'
+               '</table:table-row></table:table></office:spreadsheet></office:body></office:document-content>')
+
+
+def odf(mime: str, content: str) -> bytes:
+    # The OpenDocument rule: "mimetype" first and stored (not compressed).
+    return zip_of({"mimetype": mime, "content.xml": content, "styles.xml": ODT_STYLES, "meta.xml": ODF_META,
+                   "Pictures/p.png": PNG}, stored=("mimetype", "Pictures/p.png"))
+
+
+def test_opendocument_text_stays_odt_and_nothing_real_is_left(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    original = odf("application/vnd.oasis.opendocument.text", ODT_CONTENT)
+    assert office.kind(original) == "odt"
+    masked, stats = pipeline().mask_file(original, "application/vnd.oasis.opendocument.text")
+    assert office.kind(masked) == "odt"
+    assert infos(masked) == infos(original)          # mimetype still first and stored
+    assert infos(masked)[0] == ("mimetype", zipfile.ZIP_STORED)
+    out = parts(masked)
+    everything = b"".join(out.values()).decode("utf-8", "replace")
+    for real in (EMAIL, EMAIL2, SSN, "jane.doe@"):
+        assert real not in everything, real
+    content = out["content.xml"].decode()
+    p1 = re.search(r'<text:p text:style-name="P1">(.*?)</text:p>', content).group(1)
+    assert re.fullmatch(r'Write to \[EMAIL_\d+\]<text:span text:style-name="B"></text:span><text:s/>today\.', p1), p1
+    assert "Smith &amp; Sons<text:tab/>Q3 plan" in content
+    assert re.search(rb"Footer \[EMAIL_\d+\]", out["styles.xml"])
+    assert re.search(rb"<meta:initial-creator>\[EMAIL_\d+\]</meta:initial-creator>", out["meta.xml"])
+    assert b"<dc:title>Plan</dc:title>" in out["meta.xml"]
+    assert out["Pictures/p.png"] == PNG
+    assert stats.pii >= 3
+
+
+def test_opendocument_spreadsheet_number_cell_becomes_text(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    original = odf("application/vnd.oasis.opendocument.spreadsheet", ODS_CONTENT)
+    assert office.kind(original) == "ods"
+    content = parts(pipeline().mask_file(original, "")[0])["content.xml"].decode()
+    assert EMAIL not in content
+    # the phone stored as a number: now a text cell holding the stand-in, the number gone
+    assert re.search(r'<table:table-cell office:value-type="string" calcext:value-type="string"><text:p>\[PHONE_\d+\]</text:p></table:table-cell>', content), content
+    assert 'office:value="4155550134"' in content and content.count("4155550134") == 1   # only the formula cell's cached value
+    assert '<table:table-cell office:value-type="float" office:value="42" calcext:value-type="float"><text:p>42</text:p>' in content
+
+
+def test_rtf_is_masked_and_stays_rtf(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    rtf = (r"{\rtf1\ansi\deff0 {\fonttbl {\f0 Helvetica;}}" "\n"
+           r"\f0\fs24 Customer (test only): " + EMAIL + r"\par" "\n"
+           r"Phone 555-123-4567\par" "\n}").encode()
+    masked, stats = pipeline().mask_file(rtf, "application/rtf")
+    assert masked.startswith(rb"{\rtf1\ansi\deff0 {\fonttbl {\f0 Helvetica;}}")
+    assert EMAIL.encode() not in masked and b"555-123-4567" not in masked
+    assert masked.rstrip().endswith(b"}") and stats.pii >= 2
+
+
+def test_files_the_curl_command_cannot_mask_are_labelled(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    pptx = zip_of({"[Content_Types].xml": "<Types/>", "ppt/presentation.xml": "<p/>"})
+    cases = {b"%PDF-1.7\n" + EMAIL.encode(): "pdf",
+             b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 50: "old-office",
+             PNG: "image", b"\xff\xd8\xff\xe0" + b"\x00" * 20: "image", pptx: "pptx"}
+    for data, kind in cases.items():
+        masked, stats = pipeline().mask_file(data, "")
+        assert masked == data and stats.not_masked == kind, kind
+    plain, stats = pipeline().mask_file(b"hello there\n", "text/plain")
+    assert stats.not_masked == ""
+
+
+def test_rtf_value_split_by_formatting_and_mac_paragraphs(tmp_path, monkeypatch):
+    # Exactly what macOS TextEdit writes when half the address is bold: the
+    # address split by \f1\b, paragraphs ended by a backslash + line break.
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    rtf = ("{\\rtf1\\ansi\\ansicpg1252\\cocoartf2907\n{\\fonttbl\\f0\\froman\\fcharset0 Times-Roman;\\f1\\froman\\fcharset0 Times-Bold;}\n"
+           "{\\colortbl;\\red255\\green255\\blue255;}\n{\\*\\expandedcolortbl;;}\n\\pard\\pardeftab720\n\n"
+           "\\f0\\fs24 \\cf0 Customer record (test only)\\\nEmail: jane.doe@\n\\f1\\b example.com\\\n\n"
+           "\\f0\\b0 Phone: 555-123-4567\\\nJos\\'e9 M\\u252?ller, 123-45-6789\\\n}").encode("latin-1")
+    masked, stats = pipeline().mask_file(rtf, "")
+    text = masked.decode("latin-1")
+    for real in ("jane.doe@", "example.com", "555-123-4567", "123-45-6789"):
+        assert real not in text, real
+    assert re.search(r"Email: \[EMAIL_\d+\]\n\\f1\\b \\\n", text), text
+    assert re.search(r"\\f0\\b0 Phone: \[PHONE_\d+\]\\\n", text), text
+    assert "{\\fonttbl\\f0\\froman\\fcharset0 Times-Roman;" in text          # header tables untouched
+    # accents survive: the rewritten piece reads "José Müller" (RTF may spell a letter two valid ways)
+    assert any("José Müller, " in t for u in office._rtf_units(text) for _, _, t in u)
+    assert office.mask_rtf(rtf, lambda t: t) == rtf                         # nothing to mask -> same bytes
+
+
+def test_unchanged_parts_are_copied_byte_for_byte_even_compressed(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    original = docx()
+    masked, _ = pipeline().mask_file(original, "")
+    with zipfile.ZipFile(io.BytesIO(original)) as a, zipfile.ZipFile(io.BytesIO(masked)) as b:
+        assert b.testzip() is None
+        for name in ("word/styles.xml", "word/media/image1.png", "[Content_Types].xml"):
+            assert office._raw_entry(masked, b.getinfo(name)) == office._raw_entry(original, a.getinfo(name)), name
+            assert b.getinfo(name).date_time == a.getinfo(name).date_time
