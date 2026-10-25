@@ -129,6 +129,10 @@ formatting, styles and images are kept). PDFs, old `.doc` / `.xls`, PowerPoint a
 masked in place by a network proxy, so they go as they are and `omna log` says
 `file NOT masked (pdf)`. (Omna's Chrome extension masks PDFs and screenshots on the AI websites.)
 
+It makes no difference how a file or text gets into the chat box — the + button, drag and drop,
+or a paste (some sites turn a long paste into a file) — and Perplexity's uploads to its own Amazon
+storage are covered too. A value Omna finds once is masked everywhere it appears in that message.
+
 ## Try it in 30 seconds
 
 ```sh

@@ -320,3 +320,46 @@ def test_chatgpt_storage_clean_file_and_other_requests_pass_untouched(tmp_path, 
     assert out.body is None and out.refused is None
     get = _req("x.oaiusercontent.com", "/files/abc/raw", b"", "", "GET")
     assert for_host(get.host).mask(p, get).passthrough
+
+
+# Perplexity puts an attached file in its own Amazon S3 bucket through a signed
+# upload form (live 2026-10-25, MASTER #176): the host was not on the list, so
+# the file went out unmasked. Only the file part may change — the signature
+# parts must arrive exactly as Amazon signed them.
+_PX = "ppl-ai-file-upload.s3.amazonaws.com"
+
+
+def _s3_form(file_body, filename="notes.txt"):
+    b = "omnaS3boundary"
+    sig = b"X7fGQ2kz9pL4mN8rT1vW3yB6cD0eH5jA2sF9gK4lP7qR"   # looks like a key: must stay
+    parts = [
+        b'Content-Disposition: form-data; name="key"\r\n\r\nuploads/abc/' + filename.encode(),
+        b'Content-Disposition: form-data; name="x-amz-signature"\r\n\r\n' + sig,
+        b'Content-Disposition: form-data; name="file"; filename="' + filename.encode()
+        + b'"\r\nContent-Type: text/plain\r\n\r\n' + file_body,
+    ]
+    body = b"".join(b"--" + b.encode() + b"\r\n" + p + b"\r\n" for p in parts) + b"--" + b.encode() + b"--\r\n"
+    return RequestView(host=_PX, method="POST", path="/", content_type=f"multipart/form-data; boundary={b}",
+                       body=body, headers={"Origin": "https://www.perplexity.ai"}), sig
+
+
+def test_perplexity_upload_masks_only_the_file_part(tmp_path, monkeypatch):
+    req, sig = _s3_form(_NOTES)
+    assert for_host(_PX).name == "perplexity-upload"
+    out = for_host(_PX).mask(_p(tmp_path, monkeypatch), req)
+    assert out.refused is None and out.body is not None
+    assert b"jane.doe@example.com" not in out.body and b"AKIAQ7WZ" not in out.body
+    assert sig in out.body and b"uploads/abc/notes.txt" in out.body
+
+
+def test_perplexity_upload_with_nothing_to_mask_goes_as_it_is(tmp_path, monkeypatch):
+    req, _ = _s3_form(b"just a shopping list: milk, eggs\n")
+    out = for_host(_PX).mask(_p(tmp_path, monkeypatch), req)
+    assert out.body is None and out.refused is None
+
+
+def test_perplexity_bucket_is_opened_by_the_system_door(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin.policy import Policy
+    assert Policy.load().is_ai_host(_PX)
+    assert not Policy.load().is_ai_host("someone-else.s3.amazonaws.com")

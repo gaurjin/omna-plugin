@@ -51,6 +51,7 @@ DEFAULT_HOSTS = [
     "my.microsoftpersonalcontent.com",          # Copilot -> OneDrive
     "push.clients6.google.com",                 # Gemini -> Google's upload server
     "oaiusercontent.com",                       # ChatGPT -> its own file storage (the raw file, at attach time)
+    "ppl-ai-file-upload.s3.amazonaws.com",      # Perplexity -> its own Amazon S3 bucket (MASTER #176)
     "meta.ai",
     "muse.ai",  # Meta's personal AI agent, launched 2026-09-08 — handles real tasks: email, bookings, purchases, forms
     "chat.qwen.ai",

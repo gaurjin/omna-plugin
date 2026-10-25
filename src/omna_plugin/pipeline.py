@@ -132,6 +132,11 @@ class Pipeline:
                 return MaskedBody(None, MaskStats(), refused="mask-failed")
         return MaskedBody(None, MaskStats(), refused="unparseable")
 
+    def mask_upload_form(self, body: bytes, content_type: str, style: str = TOKENS) -> MaskedBody:
+        """A multipart upload form: mask the file parts only, leave every other
+        part byte-for-byte (see ``_mask_multipart(files_only=True)``)."""
+        return self._mask_multipart(body, content_type, style, files_only=True)
+
     def mask_file(self, data: bytes, content_type: str, style: str = TOKENS) -> tuple[bytes, MaskStats]:
         """Mask an uploaded file if it is text; anything else comes back untouched.
 
@@ -206,8 +211,12 @@ class Pipeline:
         masked, stats = self.mask_text(text, style)
         return masked.encode("utf-8"), stats
 
-    def _mask_multipart(self, body: bytes, content_type: str, style: str) -> MaskedBody:
-        """multipart/form-data: mask each text part, keep every byte of the framing."""
+    def _mask_multipart(self, body: bytes, content_type: str, style: str, files_only: bool = False) -> MaskedBody:
+        """multipart/form-data: mask each text part, keep every byte of the framing.
+
+        ``files_only``: mask only the parts that carry a file (``filename=``) —
+        for storage forms whose other parts are a signature that must arrive
+        exactly as signed (Perplexity's Amazon S3 upload, MASTER #176)."""
         boundary = next((v.strip().strip('"') for k, _, v in
                          (x.strip().partition("=") for x in content_type.split(";"))
                          if k.strip().lower() == "boundary"), "")
@@ -227,6 +236,9 @@ class Pipeline:
                     return MaskedBody(None, MaskStats(), refused="unparseable")
                 part_ct = next((ln.split(b":", 1)[1].decode("latin-1").strip() for ln in head.split(b"\r\n")
                                 if ln.lower().startswith(b"content-type:")), "")
+                if files_only and b"filename=" not in head.lower():
+                    out.append(chunk)
+                    continue
                 masked, st = self.mask_file(data, part_ct, style)
                 _merge(total, st)
                 out.append(head + sep + masked)

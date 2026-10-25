@@ -163,3 +163,31 @@ class MetaAiUploadAdapter:
 
     def response_mode(self, content_type: str) -> ResponseMode:
         return "passthrough"
+
+
+class PerplexityUploadAdapter:
+    """ppl-ai-file-upload.s3.amazonaws.com: Perplexity's own bucket on Amazon S3
+    (only Perplexity's files live there). The attached file goes up in a signed
+    upload form; the signature parts must arrive exactly as signed, so only the
+    file part is masked (MASTER #176, live 2026-10-25: it went out unmasked)."""
+
+    name = "perplexity-upload"
+    hosts: tuple[str, ...] = ("ppl-ai-file-upload.s3.amazonaws.com",)
+    skip_apps: tuple[str, ...] = ()
+
+    def is_prompt(self, req: RequestView) -> bool:
+        return req.method in ("POST", "PUT")
+
+    def mask(self, pipeline: Pipeline, req: RequestView, style: str = TOKENS) -> MaskOutcome:
+        if not self.is_prompt(req) or not req.body:
+            return MaskOutcome(None, MaskStats(), passthrough=True)
+        if "multipart/form-data" in req.content_type.lower():
+            out = pipeline.mask_upload_form(req.body, req.content_type, style)
+            if out.body is None:
+                return MaskOutcome(None, out.stats, refused=out.refused)
+            return MaskOutcome(None if out.body == req.body else out.body, out.stats)
+        masked, stats = pipeline.mask_file(req.body, req.content_type, style)
+        return MaskOutcome(None if masked == req.body else masked, stats)
+
+    def response_mode(self, content_type: str) -> ResponseMode:
+        return "passthrough"

@@ -3,12 +3,12 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-25T16:46:42+00:00",
+    "timestamp": "2026-10-25T23:34:51+00:00",
     "component": {
       "type": "application",
       "name": "omna-plugin",
-      "version": "0.6.2",
-      "purl": "pkg:pypi/omna-plugin@0.6.2",
+      "version": "0.6.3",
+      "purl": "pkg:pypi/omna-plugin@0.6.3",
       "description": "Omna \u2014 local privacy proxy for AI coding tools. Masks secrets and PII before a prompt leaves your machine, restores them in the reply.",
       "licenses": [
         {
@@ -266,8 +266,8 @@
     {
       "type": "library",
       "name": "omna-pii-mask",
-      "version": "0.2.9",
-      "purl": "pkg:pypi/omna-pii-mask@0.2.9",
+      "version": "0.2.10",
+      "purl": "pkg:pypi/omna-pii-mask@0.2.10",
       "scope": "required",
       "description": "The Omna masking engine. Closed-source kernel, distributed as a compiled binary wheel; built in CI from a private repository."
     },
