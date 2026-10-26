@@ -676,13 +676,15 @@ class MaskingSession:
         now = (len(self._token_to_value), len(self._fake_to_value), self._fake_salt)
         return "".join(out), labels, now != changed_before or meta_touched
 
-    def mask_text(self, text: str, style: str = TOKENS) -> MaskResult:
+    def mask_text(self, text: str, style: str = TOKENS, only: frozenset[str] | None = None) -> MaskResult:
+        """``only``: mask just secrets and these entities (``{"EMAIL"}`` for a
+        field a site names as one of its own identifiers — body.py)."""
         if len(text) < 3:
             return MaskResult(text)
         # The style is part of the cache key: the same text masks to two
         # different things, and handing one style the other's answer would send
         # a realistic fake value to a door that refused it.
-        key = style + "\x00" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+        key = style + "\x00" + ",".join(sorted(only or ())) + "\x00" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
         with self._lock:
             if self._stamp_now() != self._stamp:
                 # Another program changed the file (a forget clears the cache):
@@ -697,6 +699,9 @@ class MaskingSession:
                     self._save_registry()
                 return hit
         raw = omna_pii_mask.mask(text, model=self.smart, ruleset=self._ruleset_arg())
+        if only is not None:
+            raw = {**raw, "spans": [sp for sp in raw["spans"]
+                                    if sp.get("layer") == "L2" or sp.get("entity") in only]}
         counts: dict[str, int] = {}
         by_layer: dict[str, int] = {}
         n_secret = n_pii = n_validated = 0

@@ -36,7 +36,10 @@ class GenericAdapter:
             return MaskOutcome(masked, stats)
         if not self.is_prompt(req):
             if maskable and req.body:
-                out = pipeline.mask_bytes(req.body, req.content_type, style)   # best effort on non-prompt text; never refuse
+                # Best effort on non-prompt text, never refused: a site's
+                # analytics can carry what you typed (Perplexity, Grok — #162),
+                # but its own identifiers are left alone (``careful``, #178).
+                out = pipeline.mask_bytes(req.body, req.content_type, style, careful=True)
                 if out.refused is None:
                     return MaskOutcome(out.body, out.stats)
             return MaskOutcome(None, MaskStats(), passthrough=True)

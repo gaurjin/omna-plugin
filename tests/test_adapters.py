@@ -370,3 +370,36 @@ def test_perplexity_bucket_is_opened_by_the_system_door(tmp_path, monkeypatch):
     from omna_plugin.policy import Policy
     assert Policy.load().is_ai_host(_PX)
     assert not Policy.load().is_ai_host("someone-else.s3.amazonaws.com")
+
+
+def test_non_prompt_data_leaves_the_sites_own_identifiers_alone(tmp_path, monkeypatch):
+    """Architecture review (MASTER #178): best-effort masking of non-prompt
+    data on every listed host minted false phone/card tokens inside the site's
+    own IDs (a request ID like x-req-555-123-4567 became [PHONE_1]) and broke
+    its requests. A field the site names as an identifier keeps everything
+    but secrets and email addresses; every other field is masked as before."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    body = _json.dumps({
+        "requestId": "x-req-555-123-4567", "trace_id": "2125551234", "session": "+14155552671",
+        "user_id": "jane.doe@acme.com", "note": "call me at 212-555-1234",
+        "events": [{"name": "typed", "value": "my card 4024007193524683"}],
+    }).encode()
+    req = RequestView(host="www.perplexity.ai", method="POST", path="/rest/analytics/track",
+                      content_type="application/json", body=body)
+    out = for_host(req.host).mask(Pipeline(MaskingSession()), req)
+    got = _json.loads(out.body)
+    assert got["requestId"] == "x-req-555-123-4567"
+    assert got["trace_id"] == "2125551234"
+    assert got["session"] == "+14155552671"
+    assert "jane.doe@acme.com" not in got["user_id"]
+    assert "212-555-1234" not in got["note"]
+    assert "4024007193524683" not in got["events"][0]["value"]
+
+
+def test_a_prompt_is_still_masked_everywhere(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    body = _json.dumps({"prompt": "hi", "requestId": "call 212-555-1234"}).encode()
+    req = RequestView(host="claude.ai", method="POST", path="/api/append_message",
+                      content_type="application/json", body=body)
+    out = for_host(req.host).mask(Pipeline(MaskingSession()), req)
+    assert "212-555-1234" not in out.body.decode()

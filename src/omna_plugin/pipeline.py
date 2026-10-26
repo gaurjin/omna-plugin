@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, urlencode
 
 from . import office, receipts
-from .body import mask_body, restore_body
+from .body import ONLY_IN_IDS, is_id_key, mask_body, restore_body
 from .engine import MaskingSession
 from .policy import Policy
 from .stream import StreamRestorer, TextRestorer
@@ -60,9 +60,9 @@ class Pipeline:
         self.session = session
 
     # ------------------------------------------------------------ masking
-    def mask_json(self, obj, style: str = TOKENS) -> tuple[object, MaskStats]:
+    def mask_json(self, obj, style: str = TOKENS, careful: bool = False) -> tuple[object, MaskStats]:
         t0 = time.time()
-        masked, counts, labels = mask_body(self.session, obj, style)
+        masked, counts, labels = mask_body(self.session, obj, style, careful=careful)
         c = dict(counts)
         by_layer = {k[len("_layer_"):]: c.pop(k) for k in [x for x in list(c) if x.startswith("_layer_")]}
         stats = MaskStats(
@@ -76,14 +76,14 @@ class Pipeline:
         )
         return masked, stats
 
-    def mask_text(self, text: str, style: str = TOKENS) -> tuple[str, MaskStats]:
+    def mask_text(self, text: str, style: str = TOKENS, only: frozenset[str] | None = None) -> tuple[str, MaskStats]:
         t0 = time.time()
-        r = self.session.mask_text(text, style=style)
+        r = self.session.mask_text(text, style=style, only=only)
         return r.masked, MaskStats(counts=dict(r.counts), secrets=r.secrets, pii=r.pii,
                                     validated=r.validated, by_layer=dict(r.by_layer),
                                     mask_ms=int((time.time() - t0) * 1000), tokens=list(r.labels))
 
-    def mask_bytes(self, body: bytes, content_type: str, style: str = TOKENS) -> MaskedBody:
+    def mask_bytes(self, body: bytes, content_type: str, style: str = TOKENS, careful: bool = False) -> MaskedBody:
         """Mask a request body by content type. Never forwarded unmasked.
 
         Two distinct refusal reasons: "unparseable" means the body itself
@@ -92,6 +92,8 @@ class Pipeline:
         fine but the masking step itself blew up on it (e.g. a lone Unicode
         surrogate that survives ``json.loads`` but can't be re-encoded to
         UTF-8). Both are refused, but callers may treat them differently.
+
+        ``careful``: the body is not a prompt (see ``body.mask_body``).
         """
         ct = (content_type or "").lower()
         if "json" in ct:
@@ -100,7 +102,7 @@ class Pipeline:
             except ValueError:
                 return MaskedBody(None, MaskStats(), refused="unparseable")
             try:
-                masked, stats = self.mask_json(obj, style)
+                masked, stats = self.mask_json(obj, style, careful=careful)
                 return MaskedBody(json.dumps(masked, ensure_ascii=False).encode("utf-8"), stats)
             except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
                 return MaskedBody(None, MaskStats(), refused="mask-failed")
@@ -112,7 +114,7 @@ class Pipeline:
             try:
                 total, out = MaskStats(), []
                 for k, v in pairs:
-                    mv, st = self.mask_text(v, style)
+                    mv, st = self.mask_text(v, style, only=ONLY_IN_IDS if careful and is_id_key(k) else None)
                     out.append((k, mv))
                     _merge(total, st)
                 return MaskedBody(urlencode(out).encode("utf-8"), total)

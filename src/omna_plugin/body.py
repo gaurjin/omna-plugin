@@ -63,11 +63,27 @@ def _skip_in(parent: dict, key: str, value) -> bool:
     return False
 
 
+# A field a site names as one of its own identifiers ("requestId", "trace_id",
+# "session", "hash", "version"). In data that is not a prompt, its value is
+# the site's, not yours: masking it as a phone or card number broke the
+# site's request (architecture review, MASTER #178). Secrets and email
+# addresses are still masked there; nothing changes in a prompt.
+_ID_KEY_CAMEL = re.compile(r"[a-z0-9](?:Id|Ids|ID|Uuid|Hash|Nonce|Ts|Timestamp|Time|Version)$")
+_ID_KEY_PLAIN = re.compile(
+    r"(?:^|[_\-.])(?:ids?|uuid|guid|nonce|hash|sha\d*|checksum|crc|etag|trace|span|session|sid|cid|rid|"
+    r"ts|timestamp|time|version|build|rev|seq|index|offset)$", re.I)
+ONLY_IN_IDS = frozenset({"EMAIL"})
+
+
+def is_id_key(key: str | None) -> bool:
+    return bool(key) and bool(_ID_KEY_CAMEL.search(key) or _ID_KEY_PLAIN.search(key))
+
+
 def _walk(obj, fn, counts: dict[str, int], key: str | None = None):
     if isinstance(obj, str):
         if key in SKIP_KEYS or _is_blob(obj):
             return obj
-        return fn(obj, counts)
+        return fn(obj, counts, key)
     if isinstance(obj, list):
         if key in SKIP_KEYS:
             return obj
@@ -82,7 +98,7 @@ def _walk(obj, fn, counts: dict[str, int], key: str | None = None):
     return obj
 
 
-def mask_body(session: MaskingSession, obj, style: str = TOKENS):
+def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool = False):
     """Return (masked_copy, counts, labels). ``obj`` is not modified.
 
     ``counts`` maps entity name -> occurrences and carries reserved keys that
@@ -92,12 +108,15 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS):
     ``labels`` are the numbered token names minted for this body ("EMAIL_1"),
     whatever the style. Receipts count those, so the audit trail is the same
     under both styles even when the masked body carries no brackets at all.
+
+    ``careful``: data that is not a prompt — a field named as the site's own
+    identifier keeps everything but secrets and emails (``is_id_key``).
     """
     counts: dict[str, int] = {}
     labels: list[str] = []
 
-    def fn(s: str, c: dict[str, int]) -> str:
-        r = session.mask_text(s, style=style)
+    def fn(s: str, c: dict[str, int], key: str | None = None) -> str:
+        r = session.mask_text(s, style=style, only=ONLY_IN_IDS if careful and is_id_key(key) else None)
         labels.extend(r.labels)
         for k, n in r.counts.items():
             c[k] = c.get(k, 0) + n
@@ -118,7 +137,7 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS):
 def restore_body(session: MaskingSession, obj):
     """Return a copy with every reversible token replaced by its real value."""
 
-    def fn(s: str, _c) -> str:
+    def fn(s: str, _c, _key=None) -> str:
         return session.restore_text(s)
 
     return _walk(obj, fn, {})
