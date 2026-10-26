@@ -133,3 +133,39 @@ def test_a_sealed_line_we_cannot_open_is_reported_not_skipped(home, receipt_keyc
     assert ok is False
     assert n == 1, "the unreadable line must still be counted, not skipped"
     assert "not valid JSON" in msg
+
+
+# ------------------------------------------------- cost of one receipt (MASTER #178)
+def test_a_new_receipt_does_not_reread_the_whole_log(home, receipt_keychain, monkeypatch):
+    """Each receipt decrypted EVERY earlier line to find the last hash, and
+    asked the Keychain for the key each time: the curl command got slower
+    with every request it had ever handled (architecture review)."""
+    from omna_plugin import vault
+
+    for i in range(50):
+        receipts.append({"route": "/v1/messages", "masked": {"EMAIL": i}})
+    opened = []
+    real_open = vault.open_sealed
+    monkeypatch.setattr(vault, "open_sealed", lambda t, k: opened.append(1) or real_open(t, k))
+    looked_up = []
+    real_load = vault.load_key
+    monkeypatch.setattr(vault, "load_key", lambda *a, **kw: looked_up.append(1) or real_load(*a, **kw))
+    for i in range(10):
+        receipts.append({"route": "/v1/messages", "masked": {"EMAIL": i}})
+    assert len(opened) <= 10, f"{len(opened)} lines decrypted for 10 receipts"
+    assert len(looked_up) <= 1, f"{len(looked_up)} Keychain look-ups for 10 receipts"
+    monkeypatch.setattr(vault, "open_sealed", real_open)
+    assert receipts.verify()[:2] == (True, 60)
+
+
+def test_a_receipt_written_by_another_program_still_chains(home):
+    receipts.append({"route": "a"})
+    path = receipts.config.receipts_path()
+    # another program appends a line (its own process: no shared memory)
+    other = dict(receipts.tail(1)[0])
+    rec = {"route": "b", "ts": "x", "prev": other["hash"]}
+    rec["hash"] = receipts._hash(rec["prev"], rec)
+    with open(path, "a") as f:
+        f.write(json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n")
+    receipts.append({"route": "c"})
+    assert receipts.verify() == (True, 3, "chain intact")

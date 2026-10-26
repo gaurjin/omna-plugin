@@ -37,6 +37,16 @@ GENESIS = "0" * 64
 # read-last_hash-then-write sequence so the chain never forks.
 _LOCK = threading.Lock()
 
+# What one receipt costs (architecture review, MASTER #178): finding the last
+# hash decrypted EVERY earlier line, and the key was fetched from the Keychain
+# (a separate program) for every request — the curl command got slower with
+# every request it had ever handled. Now the chain head is remembered with the
+# file's size and time; if another program appended since, only the file's
+# last lines are read. The key is fetched once per receipts file.
+_HEAD: dict[str, tuple[tuple[int, int], str]] = {}   # path -> (stamp, last hash)
+_KEYS: dict[str, bytes | None] = {}
+_TAIL_BYTES = 64 * 1024
+
 
 def _canonical(rec: dict) -> str:
     body = {k: v for k, v in rec.items() if k != "hash"}
@@ -47,8 +57,35 @@ def _hash(prev: str, rec: dict) -> str:
     return hashlib.sha256((prev + _canonical(rec)).encode()).hexdigest()
 
 
-def _key() -> bytes | None:
-    return vault.load_key(create=True, account=vault.RECEIPTS_ACCOUNT)
+def _key(cached: bool = False) -> bytes | None:
+    """The receipts key. ``cached``: the writing path, which asks the Keychain
+    once per file; reading always asks, so a deleted key shows as unreadable."""
+    path = str(config.receipts_path())
+    if not cached:
+        return vault.load_key(create=True, account=vault.RECEIPTS_ACCOUNT)
+    if path not in _KEYS:
+        _KEYS[path] = vault.load_key(create=True, account=vault.RECEIPTS_ACCOUNT)
+    return _KEYS[path]
+
+
+def _stamp(path) -> tuple[int, int] | None:
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _open_line(line: str, key: bytes | None) -> dict:
+    if vault.is_sealed(line):
+        try:
+            return vault.open_sealed(line, key)
+        except vault.RegistryLocked:
+            return {"_corrupt": "sealed line could not be opened"}
+    try:
+        return json.loads(line)
+    except ValueError:
+        return {"_corrupt": line}
 
 
 def _iter(path) -> Iterator[dict]:
@@ -68,24 +105,52 @@ def _iter(path) -> Iterator[dict]:
             line = line.strip()
             if not line:
                 continue
-            if vault.is_sealed(line):
-                if not key_loaded:
-                    key, key_loaded = _key(), True
-                try:
-                    yield vault.open_sealed(line, key)
-                except vault.RegistryLocked:
-                    yield {"_corrupt": "sealed line could not be opened"}
-                continue
-            try:
-                yield json.loads(line)
-            except ValueError:
-                yield {"_corrupt": line}
+            if vault.is_sealed(line) and not key_loaded:
+                key, key_loaded = _key(), True
+            yield _open_line(line, key)
+
+
+def _scan_last_hash(path) -> str:
+    """The hash of the last record that has one, reading the file from its end."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - _TAIL_BYTES))
+            chunk = f.read()
+    except OSError:
+        return GENESIS
+    lines = chunk.decode("utf-8", "replace").splitlines()
+    if size > _TAIL_BYTES:
+        lines = lines[1:]   # the first one may be cut in half
+    key = None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        if key is None and vault.is_sealed(line):
+            key = _key(cached=True)
+        h = _open_line(line, key).get("hash")
+        if h:
+            return h
+    if size > _TAIL_BYTES:
+        h = GENESIS   # nothing usable at the end: the slow, whole-file answer
+        for rec in _iter(path):
+            h = rec.get("hash", h)
+        return h
+    return GENESIS
 
 
 def last_hash() -> str:
-    h = GENESIS
-    for rec in _iter(config.receipts_path()):
-        h = rec.get("hash", h)
+    path = config.receipts_path()
+    stamp = _stamp(path)
+    if stamp is None:
+        return GENESIS
+    cached = _HEAD.get(str(path))
+    if cached and cached[0] == stamp:
+        return cached[1]
+    h = _scan_last_hash(path)
+    _HEAD[str(path)] = (stamp, h)
     return h
 
 
@@ -98,12 +163,15 @@ def append(record: dict) -> dict:
     with _LOCK:
         rec["prev"] = last_hash()
         rec["hash"] = _hash(rec["prev"], rec)
-        key = _key()
+        key = _key(cached=True)
         line = (vault.seal(rec, key) if key
                 else json.dumps(rec, sort_keys=True, separators=(",", ":")))
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(line + "\n")
+        stamp = _stamp(path)
+        if stamp is not None:
+            _HEAD[str(path)] = (stamp, rec["hash"])
     return rec
 
 
