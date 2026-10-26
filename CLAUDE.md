@@ -70,5 +70,7 @@ the owner's real e-mail into a plan file; caught before commit. Same trick as th
 
 ## Publishing (owner-manual)
 The public GitHub repo `gaurjin/omna-plugin` already exists (tags up to `v0.5.1` pushed). Releasing a
-new version: `git tag vX.Y.Z && git push origin vX.Y.Z` → update the version pin in `README.md` and
-`install.sh` to match → `uv build && uv publish`. The installer URL in README assumes that repo path.
+new version: bump `pyproject.toml` AND `OMNA_VERSION` in `install.sh` (a test fails if they differ) →
+`git tag vX.Y.Z && git push origin vX.Y.Z` → `uv build && uv publish` → **attach `install.sh` to the
+GitHub release** (`gh release upload vX.Y.Z install.sh`): omna.dev/cli/install.sh runs the copy attached
+to the latest release, never the main branch (#178).
