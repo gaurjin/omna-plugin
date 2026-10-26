@@ -14,16 +14,11 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
-_COPILOT = ("copilot.com", "copilot.microsoft.com")
+from . import sites
 
-# (host, path pattern, only when the request comes from one of these sites)
-_RULES: list[tuple[str, re.Pattern[str], tuple[str, ...]]] = [
-    ("chatgpt.com", re.compile(r"^/backend-api/f/conversation/prepare$"), ()),
-    # The same address serves Outlook's search-as-you-type, which must keep working.
-    ("substrate.office.com", re.compile(r"^/search/api/v1/suggestions"), _COPILOT),
-    ("alkalimakersuite-pa.clients6.google.com", re.compile(r"CountTokens"), ()),
-    ("suggest.perplexity.ai", re.compile(r"^/"), ()),   # a WebSocket: blocking the handshake blocks every frame
-]
+# (host, path pattern, only when the request comes from one of these sites),
+# listed per site in sites.py.
+_RULES: list[tuple[str, re.Pattern[str], tuple[str, ...]]] = sites.compiled("typing")
 
 
 def _from(headers: dict[str, str], sites: tuple[str, ...]) -> bool:

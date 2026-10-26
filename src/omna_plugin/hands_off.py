@@ -13,7 +13,7 @@ company's security layer, never fight them. Live, through the system door:
 
 Checked live the same day: these reports carried the sites' own data
 (timings, `googlers@google.com`, a Sentry address), never the typed message.
-Site reports are listed per site, only where verified live — a report path on
+Site reports are listed per site in sites.py, only where verified live — a report path on
 another site is still masked. TRIPWIRE: if a site ever puts what you typed in
 one of these, this list is where it would get through.
 """
@@ -21,6 +21,8 @@ one of these, this list is where it would get through.
 from __future__ import annotations
 
 import re
+
+from . import sites
 
 SECURITY = "passthrough-security-check"
 SITE_REPORT = "passthrough-site-report"
@@ -31,26 +33,9 @@ _SECURITY_ANY_HOST = [
     re.compile(r"[?&]__cf_chl_"),          # the browser's answer to Cloudflare's check
 ]
 
-# (host, path pattern) — verified live 2026-10-25.
-_SECURITY_BY_HOST = [
-    ("chatgpt.com", re.compile(r"^/backend-api/sentinel/")),   # ChatGPT's anti-abuse check before each message
-]
-_REPORTS_BY_HOST = [
-    ("claude.ai", re.compile(r"^/api/v2/rum\b")),
-    ("claude.ai", re.compile(r"^/api/event_logging/")),
-    ("chatgpt.com", re.compile(r"/events/statsc/")),
-    ("chatgpt.com", re.compile(r"^/ces/")),
-    ("chatgpt.com", re.compile(r"^/realtime/wm$")),   # device codes + numbers, no text (purpose not public)
-    ("grok.com", re.compile(r"^/monitoring\b")),
-    ("grok.com", re.compile(r"^/ht/v1/")),
-    ("gemini.google.com", re.compile(r"^/_/BardChatUi/(jserror|web-reports)\b")),
-    ("meta.ai", re.compile(r"^/monitoring\b")),        # rejected 401 once masked
-    ("meta.ai", re.compile(r"^/api/analytics$")),
-]
-
-
-def _on(host: str, site: str) -> bool:
-    return host == site or host.endswith("." + site)
+# (host, path pattern) per site — verified live 2026-10-25; listed in sites.py.
+_SECURITY_BY_HOST = sites.compiled("security")
+_REPORTS_BY_HOST = sites.compiled("reports")
 
 
 def reason(host: str, path: str) -> str | None:
@@ -60,8 +45,8 @@ def reason(host: str, path: str) -> str | None:
     if any(rx.search(p) for rx in _SECURITY_ANY_HOST):
         return SECURITY
     bare = p.split("?", 1)[0]
-    if any(_on(h, site) and rx.search(bare) for site, rx in _SECURITY_BY_HOST):
+    if any(sites.on(h, site) and rx.search(bare) for site, rx in _SECURITY_BY_HOST):
         return SECURITY
-    if any(_on(h, site) and rx.search(bare) for site, rx in _REPORTS_BY_HOST):
+    if any(sites.on(h, site) and rx.search(bare) for site, rx in _REPORTS_BY_HOST):
         return SITE_REPORT
     return None

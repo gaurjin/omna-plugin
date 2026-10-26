@@ -12,111 +12,12 @@ import secrets
 from dataclasses import dataclass, field
 
 from . import config
+from .sites import all_hosts
 from .style import STYLES, TOKENS
 
-DEFAULT_HOSTS = [
-    # the public APIs: the API door already covers tools that use base URLs;
-    # these are for apps that call the APIs directly through the system door
-    "api.anthropic.com",
-    "api.openai.com",
-    "generativelanguage.googleapis.com",
-    "api.mistral.ai",
-    "api.groq.com",
-    "api.deepseek.com",
-    "api.x.ai",
-    "openrouter.ai",
-    "api.cohere.com",
-    "api.together.xyz",
-    "api.fireworks.ai",
-    "api.githubcopilot.com",
-    # the chat websites
-    "claude.ai",
-    "chatgpt.com",
-    "chat.openai.com",
-    "gemini.google.com",
-    "perplexity.ai",
-    "chat.deepseek.com",
-    "chat.mistral.ai",
-    "grok.com",
-    "copilot.microsoft.com",
-    # Found by the live typing-leak test 2026-10-24 (MASTER #156) — each one
-    # received what a person typed BEFORE pressing Send:
-    "copilot.com",                              # Copilot moved here from copilot.microsoft.com
-    "substrate.office.com",                     # Copilot's suggestions while typing (also Outlook/Teams search — owner chose to mask it)
-    "aistudio.google.com",
-    "alkalimakersuite-pa.clients6.google.com",  # AI Studio's prompts and its CountTokens-while-typing
-    # Found by the live upload test 2026-10-24 (MASTER #157): an attached file
-    # goes here before Send. Shared storage servers, so only that AI's upload is
-    # masked (adapters/uploads.py); everything else passes untouched.
-    "my.microsoftpersonalcontent.com",          # Copilot -> OneDrive
-    "push.clients6.google.com",                 # Gemini -> Google's upload server
-    "oaiusercontent.com",                       # ChatGPT -> its own file storage (the raw file, at attach time)
-    "ppl-ai-file-upload.s3.amazonaws.com",      # Perplexity -> its own Amazon S3 bucket (MASTER #176)
-    "meta.ai",
-    "muse.ai",  # Meta's personal AI agent, launched 2026-09-08 — handles real tasks: email, bookings, purchases, forms
-    "chat.qwen.ai",
-    "poe.com",
-    "character.ai",
-    "pi.ai",
-    # general-purpose chatbots
-    "duck.ai",
-    "huggingface.co",
-    "you.com",
-    "assistant.kagi.com",
-    "lmarena.ai",
-    "kimi.com",
-    "t3.chat",
-    "z.ai",
-    "andisearch.com",
-    # Chinese / regional AI chatbots
-    "chatglm.cn",
-    "yiyan.baidu.com",
-    "xinghuo.xfyun.cn",
-    "doubao.com",
-    "hunyuan.tencent.com",
-    "minimax.io",
-    # AI coding / agent web platforms (browser chat, not IDE extensions)
-    "v0.app",
-    "bolt.new",
-    "lovable.dev",
-    "replit.com",
-    "warp.dev",
-    "devin.ai",
-    "manus.im",
-    # AI writing / productivity assistants
-    "jasper.ai",
-    "copy.ai",
-    "writesonic.com",
-    "rytr.me",
-    "wordtune.com",
-    "quillbot.com",
-    "jenni.ai",
-    "fireflies.ai",
-    # AI companion / character chat
-    "replika.com",
-    "chai-research.com",
-    "polybuzz.ai",
-    "janitorai.com",
-    # enterprise AI assistant
-    "glean.com",
-    # education AI tutor
-    "khanmigo.khanacademy.org",
-    # legal / medical AI (high sensitivity)
-    "harvey.ai",
-    "nabla.com",
-    # research AI
-    "app.reka.ai",
-    "elicit.org",
-    "deepai.org",
-    # creative tools with a real chat/prompt interface
-    "midjourney.com",
-    "ideogram.ai",
-    "leonardo.ai",
-    "elevenlabs.io",
-    "heygen.com",
-    # computation
-    "wolframalpha.com",
-]
+# Every built-in AI host. The list itself, with why each host is on it, lives
+# in sites.py — the one table of what Omna knows about each AI site.
+DEFAULT_HOSTS = all_hosts()
 
 APP_ACTIONS = ("mask", "bypass")
 
