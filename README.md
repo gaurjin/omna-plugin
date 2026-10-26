@@ -378,6 +378,12 @@ read back in a browser reply: the real name, or the `[EMAIL_1]` label that was
 actually sent. **Masking is not affected by it and is never optional** — this
 only changes what comes back.
 
+A browser reply only ever gets back the real values that were sent to **that
+same site** (0.6.5): a value you typed into claude.ai is never put into a
+ChatGPT page, and a value only a coding tool sent is never put into any
+website. The site's own page already saw what you typed into it; another site
+never did. Values saved before 0.6.5 keep coming back everywhere, as before.
+
 It is scoped to the browser on purpose. The coding tools always get real values
 put back, because there a label reaching the tool breaks it: Claude Code would
 write `[SECRET_AWS_KEY_1]` into your file instead of editing the real line.
@@ -395,7 +401,7 @@ leave that reply alone — masking still happens either way.
 
 A request to an inference path (`/v1/messages`, `/v1/chat/completions`, `/v1/responses`, …) whose body cannot be
 parsed as JSON (compressed, malformed, wrong content type) is answered with `400 omna_refused` and never forwarded.
-Non-inference uploads (`/v1/files`, audio) pass through unmasked and are marked `passthrough` in the receipt.
+Uploads (`/v1/files` and other non-JSON bodies) are masked like an attached file: text, code, Word and Excel are masked; a picture, PDF or audio goes as it is and the receipt says `file-not-masked:<kind>` or `passthrough`. An upload form that cannot be read is refused.
 If the proxy is not running, the tool's requests fail to connect: nothing leaves unmasked.
 If masking itself fails at the system door (an engine error, a full disk), the request is refused
 (`refused-error:<kind>` in the receipt), never forwarded as it was.
