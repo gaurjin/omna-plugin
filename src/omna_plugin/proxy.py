@@ -71,6 +71,12 @@ _DROP_RESP = {"content-length", "content-encoding", "connection", "keep-alive",
 _LOCAL_ORIGIN_RE = __import__("re").compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", __import__("re").I)
 
 
+def _note(passthrough: bool, mstats: MaskStats) -> str | None:
+    if mstats.not_masked:
+        return f"file-not-masked:{mstats.not_masked}"
+    return "passthrough" if passthrough else None
+
+
 def _local_host(host: str) -> bool:
     """True for a Host header naming this machine (any port)."""
     h = host.strip().lower()
@@ -378,8 +384,24 @@ def create_app(
             elif is_inference:
                 _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note="unparseable")
                 return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": f"omna only forwards JSON to {path} (got content-type {ctype!r}, content-encoding {request.headers.get('content-encoding')!r}); refused rather than sent unmasked"}}, status_code=400)
+            elif request.headers.get("content-encoding"):
+                passthrough = True  # compressed and not a prompt route: forwarded as-is, marked in the receipt
+            elif "multipart/form-data" in ctype.lower():
+                # An upload form (/v1/files): its file parts are masked like an
+                # attached file at the system door; the other parts stay
+                # byte-for-byte. Used to go out exactly as it came in
+                # (architecture review, MASTER #178). Unreadable: refused.
+                out = await run_in_threadpool(pipeline.mask_upload_form, body, ctype, api_style.style)
+                if out.body is None:
+                    _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note=out.refused)
+                    return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": "omna could not read this upload form; refused rather than sent unmasked"}}, status_code=400)
+                body, mstats = out.body, out.stats
             else:
-                passthrough = True  # e.g. file/audio uploads: forwarded as-is, marked in the receipt
+                # A raw file (text, code, .env, Word, Excel) is masked; a
+                # picture, audio or PDF goes as it is and the receipt says so.
+                masked, mstats = await run_in_threadpool(pipeline.mask_file, body, ctype, api_style.style)
+                passthrough = masked == body and not mstats.counts
+                body = masked
 
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _DROP_REQ}
         headers["host"] = upstream_host
@@ -428,7 +450,7 @@ def create_app(
                         yield tail
                 finally:
                     await resp.aclose()
-                    _receipt(request, path, upstream_host, resp.status_code, mstats, len(body), t0, stream=True, note="passthrough" if passthrough else None)
+                    _receipt(request, path, upstream_host, resp.status_code, mstats, len(body), t0, stream=True, note=_note(passthrough, mstats))
 
             return StreamingResponse(gen(), status_code=resp.status_code, headers=resp_headers)
 
@@ -439,7 +461,7 @@ def create_app(
                 data = json.dumps(pipeline.restore_json(json.loads(data), sent=body, received=received), ensure_ascii=False).encode("utf-8")
             except ValueError:
                 pass
-        _receipt(request, path, upstream_host, resp.status_code, mstats, len(body), t0, stream=False, note="passthrough" if passthrough else None)
+        _receipt(request, path, upstream_host, resp.status_code, mstats, len(body), t0, stream=False, note=_note(passthrough, mstats))
         return Response(data, status_code=resp.status_code, headers=resp_headers)
 
     def _receipt(request: Request, path: str, upstream_host: str, status: int, mstats: MaskStats, nbytes: int, t0: float, stream: bool, note: str | None = None):

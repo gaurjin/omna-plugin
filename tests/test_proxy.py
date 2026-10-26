@@ -35,12 +35,13 @@ class Upstream:
                 Route("/v1/chat/completions", self.chat, methods=["POST"]),
                 Route("/v1/models", self.models, methods=["GET"]),
                 Route("/v1/error", self.error, methods=["POST"]),
+                Route("/v1/files", self.files, methods=["POST"]),
             ]
         )
 
     async def _record(self, request: Request) -> dict:
         body = await request.body()
-        call = {"host": request.headers.get("host"), "path": request.url.path, "headers": dict(request.headers), "raw": body.decode()}
+        call = {"host": request.headers.get("host"), "path": request.url.path, "headers": dict(request.headers), "raw": body.decode("utf-8", "replace")}
         try:
             call["json"] = json.loads(body)
         except ValueError:
@@ -78,6 +79,10 @@ class Upstream:
     async def models(self, request: Request):
         await self._record(request)
         return JSONResponse({"data": [{"id": "claude-sonnet-5"}]})
+
+    async def files(self, request: Request):
+        await self._record(request)
+        return JSONResponse({"id": "file_1", "type": "file"})
 
     async def error(self, request: Request):
         await self._record(request)
@@ -673,3 +678,34 @@ async def test_a_request_addressed_to_another_name_is_refused(env):
     for ok in ("localhost:7788", "127.0.0.1", "[::1]:7788"):
         r = await client.get("/v1/models", headers={"host": ok})
         assert r.status_code == 200, ok
+
+
+@pytest.mark.anyio
+async def test_a_file_uploaded_through_the_files_api_is_masked(env):
+    """Architecture review (MASTER #178): /v1/files (multipart) and any other
+    non-JSON body went to the provider exactly as it was."""
+    up, session, client = env
+    r = await client.post("/v1/files", files={"file": ("notes.txt", f"call {EMAIL}\nkey {KEY}\n".encode(), "text/plain")},
+                          data={"purpose": "assistants"}, headers={"anthropic-version": "2023-06-01"})
+    assert r.status_code == 200
+    raw = up.calls[-1]["raw"]
+    assert EMAIL not in raw and KEY not in raw
+    assert "[EMAIL_" in raw and 'name="purpose"' in raw and "assistants" in raw
+
+
+@pytest.mark.anyio
+async def test_a_raw_text_file_body_is_masked_and_a_picture_passes(env):
+    up, session, client = env
+    await client.post("/v1/files", content=f"call {EMAIL}".encode(), headers={"content-type": "application/octet-stream"})
+    assert EMAIL not in up.calls[-1]["raw"]
+    png = b"\x89PNG\r\n\x1a\n" + bytes(200)
+    await client.post("/v1/files", content=png, headers={"content-type": "image/png"})
+    assert receipts.tail(1)[0].get("note", "").startswith(("passthrough", "file-not-masked"))
+
+
+@pytest.mark.anyio
+async def test_an_upload_form_we_cannot_read_is_refused(env):
+    up, session, client = env
+    before = len(up.calls)
+    r = await client.post("/v1/files", content=b"garbage, not a form", headers={"content-type": "multipart/form-data; boundary=xyz"})
+    assert r.status_code == 400 and len(up.calls) == before
