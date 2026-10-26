@@ -32,6 +32,8 @@ the worst output this program could produce.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import os
@@ -51,6 +53,15 @@ TOKEN_RE = re.compile(r"\[([A-Z][A-Z0-9_]*?)_(\d+)\]")
 # The engine's irreversible form: [REDACTED:AWS_KEY]
 REDACTED_RE = re.compile(r"\[REDACTED:([A-Z0-9_]+)\]")
 SECRET_PREFIX = "SECRET_"
+
+# Which site the request being masked right now is going to (MASTER #179b).
+# Set by the system door around each request (``MaskingSession.sending_to``);
+# unset at the API door, so a value only Claude Code sent belongs to no site.
+# A context variable, not an attribute: mitmproxy masks many flows at once.
+_SENDING_TO: contextvars.ContextVar[str | None] = contextvars.ContextVar("omna_sending_to", default=None)
+# A value saved before sites were recorded: put back on every site, as it
+# always was, so old chats do not fill up with tokens (owner "A", 2026-10-25).
+EVERYWHERE = "*"
 
 _CACHE_SIZE = 4096
 
@@ -130,6 +141,14 @@ class MaskingSession:
         # agree on identity. A row written before this existed has no entry
         # here — `registry_rows()` must report that honestly, never guess.
         self._meta: dict[str, dict] = {}
+        # Which sites each value was sent to ("KIND\x00value" -> site names,
+        # or [EVERYWHERE] for a value saved before this was recorded). A reply
+        # from a website only gets back values sent to that site (#179b).
+        # Persisted with the tokens; secrets keep theirs in memory, like the
+        # secrets themselves.
+        self._sites: dict[str, list[str]] = {}
+        self._secret_sites: dict[str, set[str]] = {}
+        self._fake_kind: dict[str, str] = {}       # fake -> KIND, to find its registry key
         self._restore_re: re.Pattern | None = None
         # At-rest state (#131), surfaced by `omna status` and /omna/health.
         self._key: bytes | None = None
@@ -203,6 +222,13 @@ class MaskingSession:
             if val and fake:
                 self._remember_fake(fake, val, kind)
         self._meta = dict(data.get("meta", {}))
+        # A file written before sites were recorded has no "sites" at all, and a
+        # row missing from it was written by an older version: both mean
+        # "everywhere", exactly as those values behaved when they were saved.
+        saved_sites = data.get("sites")
+        self._sites = dict(saved_sites) if isinstance(saved_sites, dict) else {}
+        for key in self._value_to_token:
+            self._sites.setdefault(key, [EVERYWHERE])
         try:
             self._fake_salt = bytes.fromhex(str(data.get("fake_salt", "")))
         except ValueError:
@@ -237,7 +263,7 @@ class MaskingSession:
             return
         payload = {"tokens": self._token_to_value, "counters": self._counters,
                    "fakes": self._value_to_fake, "fake_salt": self._fake_salt.hex(),
-                   "meta": self._meta}
+                   "meta": self._meta, "sites": self._sites}
         body = vault.seal(payload, self._key) if self._key else json.dumps(payload)
         tmp = self._registry_file.with_suffix(".json.tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -271,6 +297,7 @@ class MaskingSession:
 
     def _remember_fake(self, fake: str, value: str, kind: str) -> None:
         self._fake_to_value[fake] = value
+        self._fake_kind[fake] = kind
         self._value_to_fake[f"{kind}\x00{value}"] = fake
         self._max_fake_len = max(self._max_fake_len, len(fake))
         for i in range(1, len(fake)):
@@ -337,6 +364,9 @@ class MaskingSession:
             self._fake_prefixes.clear()
             self._real_values.clear()
             self._meta.clear()
+            self._sites.clear()
+            self._secret_sites.clear()
+            self._fake_kind.clear()
             self._max_fake_len = 0
             self._fake_salt = b""
             self._restore_re = None
@@ -385,6 +415,7 @@ class MaskingSession:
                     "validated": bool(meta.get("validated")),
                     "style": meta.get("style"),
                     "created": meta.get("created"),
+                    "sites": list(self._sites.get(key, [EVERYWHERE])),
                 })
             return rows
 
@@ -408,9 +439,11 @@ class MaskingSession:
             self._value_to_token.pop(key, None)
             self._real_values.discard(value)
             self._meta.pop(key, None)
+            self._sites.pop(key, None)
             fake = self._value_to_fake.pop(key, None)
             if fake is not None:
                 self._fake_to_value.pop(fake, None)
+                self._fake_kind.pop(fake, None)
                 self._fake_prefixes = set()
                 self._max_fake_len = 0
                 for f in self._fake_to_value:
@@ -511,6 +544,7 @@ class MaskingSession:
                 if style == REALISTIC:
                     tok = self._stable_fake(kind, sp.get("entity") or kind, core, text) or label
                 meta_key = f"{kind}\x00{core}"
+                self._sites.setdefault(meta_key, [])   # new: sent nowhere yet (see mask_text)
                 meta = self._meta.setdefault(meta_key, {"created": time.strftime("%Y-%m-%dT%H:%M:%S%z")})
                 meta["layer"] = sp.get("layer") or meta.get("layer") or "?"
                 meta["validated"] = bool(sp.get("validated"))
@@ -539,6 +573,8 @@ class MaskingSession:
             if hit is not None:
                 self._cache.move_to_end(key)
                 self.cache_hits += 1
+                if self._note_site(hit.labels):
+                    self._save_registry()
                 return hit
         raw = omna_pii_mask.mask(text, model=self.smart, ruleset=self._ruleset_arg())
         counts: dict[str, int] = {}
@@ -558,6 +594,8 @@ class MaskingSession:
         with self._lock:
             masked, labels, changed = (self._rebuild(text, spans, style)
                                        if spans else (text, [], False))
+            if self._note_site(labels):
+                changed = True
             if changed:
                 self._save_registry()
             result = MaskResult(masked, counts, n_secret, n_pii, by_layer, n_validated, labels)
@@ -565,6 +603,67 @@ class MaskingSession:
             if len(self._cache) > _CACHE_SIZE:
                 self._cache.popitem(last=False)
         return result
+
+    # ------------------------------------------------------------------ sites
+    @contextlib.contextmanager
+    def sending_to(self, site: str | None):
+        """Mask inside this block as text going to ``site`` (MASTER #179b)."""
+        tok = _SENDING_TO.set(site)
+        try:
+            yield
+        finally:
+            _SENDING_TO.reset(tok)
+
+    def _note_site(self, labels: list[str]) -> bool:
+        """Record that these values are going to the current site. Caller holds
+        the lock. True when the persisted record changed."""
+        site = _SENDING_TO.get()
+        if not site:
+            return False
+        changed = False
+        for label in labels:
+            token = f"[{label}]"
+            if token in self._secret_token_to_value:
+                self._secret_sites.setdefault(token, set()).add(site)
+                continue
+            key = self._key_of(token)
+            if key is None:
+                continue
+            got = self._sites.setdefault(key, [])
+            if site not in got:
+                got.append(site)
+                changed = True
+        return changed
+
+    def _key_of(self, stand_in: str) -> str | None:
+        """The registry key ("KIND\x00value") behind a token or a fake value."""
+        value = self._token_to_value.get(stand_in)
+        if value is not None:
+            m = TOKEN_RE.fullmatch(stand_in)
+            return f"{m.group(1)}\x00{value}" if m else None
+        value = self._fake_to_value.get(stand_in)
+        if value is not None:
+            return f"{self._fake_kind.get(stand_in, '')}\x00{value}"
+        return None
+
+    def sent_to(self, stand_in: str, site: str) -> bool:
+        """Was the value behind ``stand_in`` sent to ``site``?"""
+        if stand_in in self._secret_token_to_value:
+            return site in self._secret_sites.get(stand_in, ())
+        key = self._key_of(stand_in)
+        if key is None:
+            return False
+        got = self._sites.get(key, ())
+        return EVERYWHERE in got or site in got
+
+    def for_site(self, site: str) -> "ScopedRestore":
+        """A restore-only view for a reply from ``site``: only values that were
+        sent to that site come back (MASTER #179b). A website keeps its history
+        on its own servers, so — unlike the API door — the reply cannot be
+        checked against this one request; the site is the unit instead. The
+        site's own page saw every value typed into it already; another site,
+        or a value only Claude Code sent, never did."""
+        return ScopedRestore(self, lambda t: self.sent_to(t, site))
 
     def lookup(self, token: str) -> str | None:
         v = self._token_to_value.get(token)
@@ -614,7 +713,8 @@ class MaskingSession:
         can mention is minted again from the real value in that request."""
         def found(t: str) -> set[str]:
             return {m.group(0) for m in self._pattern().finditer(t or "")}
-        return ScopedRestore(self, found(sent) - found(received))
+        allowed = found(sent) - found(received)
+        return ScopedRestore(self, allowed.__contains__, any_allowed=bool(allowed))
 
     def hold_from(self, buf: str) -> int:
         """Where text that might still become a token or a fake value starts.
@@ -646,18 +746,20 @@ class MaskingSession:
 
 
 class ScopedRestore:
-    """``MaskingSession``'s restore side, limited to an allowed set of
-    stand-ins (see ``MaskingSession.scoped``). Anything else stays as it is."""
+    """``MaskingSession``'s restore side, limited to the stand-ins ``allowed``
+    accepts (see ``MaskingSession.scoped`` and ``for_site``). Anything else
+    stays as it is."""
 
-    def __init__(self, session: MaskingSession, allowed: set[str]):
+    def __init__(self, session: MaskingSession, allowed, any_allowed: bool = True):
         self._session = session
         self._allowed = allowed
+        self._any = any_allowed
 
     def lookup(self, token: str) -> str | None:
-        return self._session.lookup(token) if token in self._allowed else None
+        return self._session.lookup(token) if self._allowed(token) else None
 
     def restore_text(self, text: str, json_escape: bool = False) -> str:
-        if not text or not self._allowed:
+        if not text or not self._any:
             return text
 
         def sub(m: re.Match) -> str:

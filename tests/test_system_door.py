@@ -647,3 +647,96 @@ async def test_a_prompt_on_the_same_site_is_still_masked(tmp_path, monkeypatch):
     flow = a_prompt_flow()
     await addon.request(flow)
     assert b"jane.doe@acme.com" not in flow.request.get_content()
+
+
+# ---------------------------------------------------------------- whose values come back (MASTER #179b)
+
+def _reply(flow, obj):
+    flow.response = http.Response.make(200, json.dumps(obj).encode(), {"content-type": "application/json"})
+
+
+def _flow_on(host: str, body: bytes = b'{"prompt": "mail jane.doe@acme.com"}'):
+    f = a_prompt_flow(body)
+    f.request.host = host
+    return f
+
+
+async def test_a_reply_from_another_site_does_not_get_your_value(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    sent = _flow_on("chatgpt.com")
+    await addon.request(sent)
+    token = json.loads(sent.request.get_content())["prompt"].split("mail ")[1]
+    other = _flow_on("claude.ai", b'{"prompt": "hello"}')
+    await addon.request(other)
+    _reply(other, {"reply": f"you wrote {token}"})
+    addon.response(other)
+    assert "jane.doe@acme.com" not in other.response.get_content().decode()
+    # ...while ChatGPT's own reply (the same site, even a different host of it) gets it back.
+    same = _flow_on("chat.openai.com", b'{"prompt": "hello"}')
+    await addon.request(same)
+    _reply(same, {"reply": f"you wrote {token}"})
+    addon.response(same)
+    assert "jane.doe@acme.com" in same.response.get_content().decode()
+
+
+async def test_a_value_only_claude_code_sent_never_reaches_a_website(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    token = addon.pipeline.mask_text("mail jane.doe@acme.com")[0].split("mail ")[1]   # no site: the API door
+    flow = _flow_on("claude.ai", b'{"prompt": "hello"}')
+    await addon.request(flow)
+    _reply(flow, {"reply": f"you wrote {token}"})
+    addon.response(flow)
+    assert token in flow.response.get_content().decode()
+
+
+def _ws(flow, from_client: bool, text: str):
+    flow.websocket = flow.websocket or WebSocketData()
+    flow.websocket.messages.append(WebSocketMessage(Opcode.TEXT, from_client, text.encode()))
+
+
+async def test_a_websocket_reply_from_another_site_does_not_get_your_value(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    sent = _flow_on("chatgpt.com")
+    _ws(sent, True, "mail jane.doe@acme.com")
+    addon.websocket_message(sent)
+    token = sent.websocket.messages[-1].content.decode().split("mail ")[1]
+    _ws(sent, False, f"echo {token}")
+    addon.websocket_message(sent)
+    assert sent.websocket.messages[-1].content.decode() == "echo jane.doe@acme.com"
+    other = _flow_on("grok.com")
+    _ws(other, False, f"echo {token}")
+    addon.websocket_message(other)
+    assert other.websocket.messages[-1].content.decode() == f"echo {token}"
+
+
+async def test_a_websocket_reply_obeys_the_restore_switch_and_the_extension_tag(tmp_path, monkeypatch):
+    """Architecture review (MASTER #178): WebSocket replies ignored both."""
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _flow_on("claude.ai")
+    _ws(flow, True, "mail jane.doe@acme.com")
+    addon.websocket_message(flow)
+    token = flow.websocket.messages[-1].content.decode().split("mail ")[1]
+    addon.policy.restore_browser = False
+    _ws(flow, False, f"echo {token}")
+    addon.websocket_message(flow)
+    assert flow.websocket.messages[-1].content.decode() == f"echo {token}"
+    addon.policy.restore_browser = True
+    flow.metadata["omna_ext"] = True
+    _ws(flow, False, f"echo {token}")
+    addon.websocket_message(flow)
+    assert flow.websocket.messages[-1].content.decode() == f"echo {token}"
+
+
+async def test_a_websocket_json_reply_stays_valid_json_when_a_value_has_a_quote(tmp_path, monkeypatch):
+    """Architecture review (MASTER #178): a restored value with a quote or a
+    backslash was spliced into a JSON frame raw, breaking the frame."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    value = 'C:\\Users\\jo "JJ"'
+    (tmp_path / "registry.json").write_text(json.dumps(
+        {"tokens": {"[PERSON_1]": value}, "counters": {"PERSON": 1}, "fakes": {}, "fake_salt": "", "meta": {}}))
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _flow_on("claude.ai")
+    _ws(flow, False, json.dumps({"type": "delta", "text": "hi [PERSON_1]!"}))
+    addon.websocket_message(flow)
+    got = json.loads(flow.websocket.messages[-1].content.decode())
+    assert got == {"type": "delta", "text": f"hi {value}!"}

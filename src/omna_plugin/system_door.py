@@ -23,7 +23,7 @@ from mitmproxy.certs import CertStore
 from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
 
-from . import config, hands_off, while_typing
+from . import config, hands_off, sites, while_typing
 from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
@@ -83,6 +83,16 @@ def _utf8_split(buf: bytearray) -> tuple[str, bytes]:
     return bytes(buf[:cut]).decode("utf-8", "replace"), bytes(buf[cut:])
 
 
+def _is_json(text: str) -> bool:
+    if text.lstrip()[:1] not in ("{", "["):
+        return False
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
+
+
 class OmnaAddon:
     def __init__(self, pipeline: Pipeline, policy: Policy, door: str, resolver: Resolver):
         self.pipeline = pipeline
@@ -138,6 +148,12 @@ class OmnaAddon:
         same ``connection.Client`` object, and ``proxy_mode`` is fixed once the connection
         lands on a given listener, before TLS even starts)."""
         return "deep" if type(client.proxy_mode).__name__ == "LocalMode" else self.door
+
+    @staticmethod
+    def _site(flow: http.HTTPFlow) -> str:
+        """The site this flow talks to: what it sends is recorded against it,
+        and its replies get back only what was sent to it (MASTER #179b)."""
+        return sites.site_of(flow.request.pretty_host)
 
     def _door_for(self, flow: http.HTTPFlow) -> str:
         return self._door_for_client(flow.client_conn)
@@ -263,7 +279,8 @@ class OmnaAddon:
         req = RequestView(host=flow.request.pretty_host, method=flow.request.method, path=flow.request.path,
                           content_type=flow.request.headers.get("content-type", ""),
                           body=flow.request.get_content() or b"", headers=dict(flow.request.headers))
-        out = adapter.mask(self.pipeline, req, self._style_for(flow))
+        with self.pipeline.session.sending_to(self._site(flow)):
+            out = adapter.mask(self.pipeline, req, self._style_for(flow))
         note = f"file-not-masked:{out.stats.not_masked}" if out.stats.not_masked else (
             "passthrough-nonprompt" if out.passthrough else None)
         flow.metadata.update(omna_app=app, omna_adapter=adapter, omna_stats=out.stats, omna_nbytes=len(req.body),
@@ -300,7 +317,7 @@ class OmnaAddon:
             return
         if mode not in ("stream-json", "stream-text"):
             return
-        restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"))
+        restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"), site=self._site(flow))
         buf = bytearray()
 
         def cb(chunk: bytes) -> bytes | list[bytes]:
@@ -343,7 +360,8 @@ class OmnaAddon:
         if adapter.response_mode(flow.response.headers.get("content-type", "")) == "json" and flow.response.status_code < 400:
             try:
                 obj = json.loads(flow.response.get_content() or b"null")
-                flow.response.set_content(json.dumps(self.pipeline.restore_json(obj), ensure_ascii=False).encode("utf-8"))
+                restored = self.pipeline.restore_json(obj, site=self._site(flow))
+                flow.response.set_content(json.dumps(restored, ensure_ascii=False).encode("utf-8"))
             except ValueError:
                 pass
         self._receipt(flow, flow.response.status_code, stream=False)
@@ -375,7 +393,8 @@ class OmnaAddon:
             return
         if msg.from_client:
             try:
-                masked, stats = self.pipeline.mask_text(msg.text, self._style_for(flow))
+                with self.pipeline.session.sending_to(self._site(flow)):
+                    masked, stats = self.pipeline.mask_text(msg.text, self._style_for(flow))
             except Exception as e:  # noqa: BLE001 — same rule as `request`: never send it unmasked
                 log.error("omna: masking a WebSocket message failed (%s) — message dropped", type(e).__name__)
                 msg.drop()
@@ -386,8 +405,14 @@ class OmnaAddon:
                 st.counts[k] = st.counts.get(k, 0) + v
             st.secrets += stats.secrets
             st.pii += stats.pii
-        else:
-            msg.content = self.pipeline.restore_text(msg.text).encode("utf-8")
+        elif not self._skip_restore(flow):
+            # Same rules as an HTTP reply: the restore switch and the
+            # extension's tag are honoured, only this site's values come back,
+            # and a value spliced into a JSON frame is JSON-escaped (a quote
+            # in it broke the frame — architecture review, MASTER #178).
+            text = msg.text
+            msg.content = self.pipeline.restore_text(text, json_escape=_is_json(text),
+                                                     site=self._site(flow)).encode("utf-8")
 
 
 def build_master(policy: Policy, addon: OmnaAddon, *, port: int, ca_dir: Path,
