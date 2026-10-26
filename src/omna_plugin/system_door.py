@@ -83,6 +83,17 @@ def _utf8_split(buf: bytearray) -> tuple[str, bytes]:
     return bytes(buf[:cut]).decode("utf-8", "replace"), bytes(buf[cut:])
 
 
+def _binary_text(data: bytes) -> str | None:
+    """A binary WebSocket frame that is really text (strict UTF-8, no NUL) —
+    a site can send its JSON that way — or None."""
+    if not data or b"\x00" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def _is_json(text: str) -> bool:
     if text.lstrip()[:1] not in ("{", "["):
         return False
@@ -270,7 +281,8 @@ class OmnaAddon:
             self._receipt(flow, 403, stream=False)
             return
         adapter = for_host(flow.request.pretty_host)
-        untouched = hands_off.reason(flow.request.pretty_host, flow.request.path)
+        untouched = hands_off.reason(flow.request.pretty_host, flow.request.path,
+                                     flow.request.get_content() or b"")
         if untouched:
             # The site's own security check or report — never what you typed.
             # Editing one got people signed out of claude.ai (hands_off.py).
@@ -389,12 +401,18 @@ class OmnaAddon:
     def websocket_message(self, flow: http.HTTPFlow) -> None:
         assert flow.websocket
         msg = flow.websocket.messages[-1]
-        if not msg.is_text:
+        text = msg.text if msg.is_text else _binary_text(msg.content)
+        if text is None:
+            # Audio, a picture, a site's own packed format: nothing readable to
+            # mask, and dropping it would break voice chat. It passes — and
+            # the receipt says so instead of saying nothing (MASTER #178).
+            if msg.from_client:
+                flow.metadata["omna_note"] = "websocket-binary-not-masked"
             return
         if msg.from_client:
             try:
                 with self.pipeline.session.sending_to(self._site(flow)):
-                    masked, stats = self.pipeline.mask_text(msg.text, self._style_for(flow))
+                    masked, stats = self.pipeline.mask_text(text, self._style_for(flow))
             except Exception as e:  # noqa: BLE001 — same rule as `request`: never send it unmasked
                 log.error("omna: masking a WebSocket message failed (%s) — message dropped", type(e).__name__)
                 msg.drop()
@@ -410,9 +428,21 @@ class OmnaAddon:
             # extension's tag are honoured, only this site's values come back,
             # and a value spliced into a JSON frame is JSON-escaped (a quote
             # in it broke the frame — architecture review, MASTER #178).
-            text = msg.text
             msg.content = self.pipeline.restore_text(text, json_escape=_is_json(text),
                                                      site=self._site(flow)).encode("utf-8")
+
+
+    def websocket_end(self, flow: http.HTTPFlow) -> None:
+        """One receipt for what this WebSocket masked, written when it closes."""
+        st: MaskStats | None = flow.metadata.get("omna_stats")
+        note = flow.metadata.get("omna_note")
+        if not (st and (st.counts or st.secrets or st.pii)) and note != "websocket-binary-not-masked":
+            return
+        self.pipeline.receipt(
+            door=self._door_for(flow), route="websocket", host=flow.request.pretty_host,
+            status=101, stats=st or MaskStats(), nbytes=0, ms=0, stream=True,
+            app=flow.metadata.get("omna_app"), note=note, session_id=None,
+            style=flow.metadata.get("omna_style", TOKENS))
 
 
 def build_master(policy: Policy, addon: OmnaAddon, *, port: int, ca_dir: Path,

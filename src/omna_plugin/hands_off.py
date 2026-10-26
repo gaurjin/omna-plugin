@@ -30,19 +30,36 @@ SITE_REPORT = "passthrough-site-report"
 # Any host: these are never anything you typed.
 _SECURITY_ANY_HOST = [
     re.compile(r"^/cdn-cgi/"),             # Cloudflare's robot check (scripts + fingerprint reports)
-    re.compile(r"[?&]__cf_chl_"),          # the browser's answer to Cloudflare's check
 ]
+# The browser's answer to Cloudflare's check goes to the page's own address
+# with `?__cf_chl_…` added. A web form that was challenged is re-sent to that
+# same address WITH the person's form in its body, so only Cloudflare's own
+# answer — no body, or one carrying Cloudflare's fields — is left alone; any
+# other body there is masked as usual (architecture review, MASTER #178).
+# TRIPWIRE: a replayed form that ALSO carries Cloudflare's fields still passes.
+_CF_CHALLENGE = re.compile(r"[?&]__cf_chl_")
+_CF_ANSWER_FIELDS = re.compile(
+    r'(^|[&{,\s"])(md|cf[-_][\w-]*|h-captcha-response|g-recaptcha-response|jschl[\w-]*)"?\s*[=:]')
 
 # (host, path pattern) per site — verified live 2026-10-25; listed in sites.py.
 _SECURITY_BY_HOST = sites.compiled("security")
 _REPORTS_BY_HOST = sites.compiled("reports")
 
 
-def reason(host: str, path: str) -> str | None:
+def _cloudflare_answer(body: bytes) -> bool:
+    if not body.strip():
+        return True
+    head = body[:4096].decode("utf-8", "replace")
+    return _CF_ANSWER_FIELDS.search(head) is not None
+
+
+def reason(host: str, path: str, body: bytes = b"") -> str | None:
     """Why this request must be forwarded untouched, or None to mask it as usual."""
     h = (host or "").lower().rsplit(":", 1)[0]
     p = path or ""
     if any(rx.search(p) for rx in _SECURITY_ANY_HOST):
+        return SECURITY
+    if _CF_CHALLENGE.search(p) and _cloudflare_answer(body or b""):
         return SECURITY
     bare = p.split("?", 1)[0]
     if any(sites.on(h, site) and rx.search(bare) for site, rx in _SECURITY_BY_HOST):

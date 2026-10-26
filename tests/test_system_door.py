@@ -740,3 +740,44 @@ async def test_a_websocket_json_reply_stays_valid_json_when_a_value_has_a_quote(
     addon.websocket_message(flow)
     got = json.loads(flow.websocket.messages[-1].content.decode())
     assert got == {"type": "delta", "text": f"hi {value}!"}
+
+
+async def test_a_binary_websocket_message_that_is_text_is_masked(tmp_path, monkeypatch):
+    """Architecture review (MASTER #178): binary frames were never looked at,
+    and a site can send its JSON as a binary frame."""
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _flow_on("claude.ai")
+    flow.websocket = WebSocketData()
+    flow.websocket.messages.append(WebSocketMessage(Opcode.BINARY, True, b'{"text": "mail jane.doe@acme.com"}'))
+    addon.websocket_message(flow)
+    msg = flow.websocket.messages[-1]
+    assert b"jane.doe@acme.com" not in msg.content and b"[EMAIL_" in msg.content
+    assert not msg.is_text                      # still a binary frame
+    flow.websocket.messages.append(WebSocketMessage(Opcode.BINARY, False, msg.content))
+    addon.websocket_message(flow)
+    assert b"jane.doe@acme.com" in flow.websocket.messages[-1].content
+
+
+async def test_a_binary_websocket_message_that_is_not_text_passes_and_says_so(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _flow_on("chatgpt.com")
+    audio = bytes(range(256)) * 4
+    flow.websocket = WebSocketData()
+    flow.websocket.messages.append(WebSocketMessage(Opcode.BINARY, True, audio))
+    addon.websocket_message(flow)
+    assert flow.websocket.messages[-1].content == audio
+    assert flow.metadata.get("omna_note") == "websocket-binary-not-masked"
+
+
+async def test_what_a_websocket_masked_is_receipted_when_it_closes(tmp_path, monkeypatch):
+    """The only receipt used to be the handshake's, written before any message
+    was masked, so a WebSocket chat never showed up in the report."""
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    flow = _flow_on("claude.ai")
+    flow.response = http.Response.make(101, b"", {})
+    addon.response(flow)
+    _ws(flow, True, "mail jane.doe@acme.com")
+    addon.websocket_message(flow)
+    addon.websocket_end(flow)
+    rec = receipts.tail(1)[0]
+    assert rec["route"] == "websocket" and rec["masked"].get("EMAIL") == 1

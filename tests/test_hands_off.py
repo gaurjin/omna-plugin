@@ -44,3 +44,27 @@ def test_the_sites_own_reports_are_hands_off(host, path):
 ])
 def test_what_you_send_is_never_hands_off(host, path):
     assert hands_off.reason(host, path) is None
+
+
+CF = "/contact?__cf_chl_f_tk=abc"
+
+
+@pytest.mark.parametrize("ct,body", [
+    ("application/x-www-form-urlencoded", b"md=Zm9v.bar-baz&r=abc123&sh=1&aw=2"),
+    ("application/x-www-form-urlencoded", b"cf-turnstile-response=0.abc&md=x"),
+    ("application/json", b'{"md": "Zm9v", "r": "abc"}'),
+    ("", b""),
+])
+def test_cloudflares_own_answer_stays_hands_off(ct, body):
+    assert hands_off.reason("www.perplexity.ai", CF, body) == "passthrough-security-check"
+
+
+@pytest.mark.parametrize("ct,body", [
+    # A challenged web-form POST is re-sent to the same address with the
+    # person's own form in its body (architecture review, MASTER #178).
+    ("application/x-www-form-urlencoded", b"name=Jane+Doe&email=jane.doe%40acme.com&message=hi"),
+    ("application/json", b'{"prompt": "mail jane.doe@acme.com"}'),
+    ("text/plain", b"mail jane.doe@acme.com"),
+])
+def test_a_body_that_is_not_cloudflares_answer_is_masked(ct, body):
+    assert hands_off.reason("www.perplexity.ai", CF, body) is None
