@@ -91,7 +91,7 @@ def env(tmp_path, monkeypatch):
     session = MaskingSession()
     up_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=up.app))
     app = create_app(session, anthropic_upstream="http://anthropic.test", openai_upstream="http://openai.test", client=up_client)
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://omna.local")
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:7788")
     return up, session, client
 
 
@@ -370,7 +370,7 @@ async def test_an_internal_error_is_recorded_locally_and_never_leaks_detail(env,
     # client from re-raising it on our behalf.
     crash_client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
-        base_url="http://omna.local",
+        base_url="http://127.0.0.1:7788",
     )
 
     r = await crash_client.get("/omna/boom")
@@ -535,7 +535,7 @@ def env_with_policy(tmp_path, monkeypatch):
         up_client = httpx.AsyncClient(transport=httpx.ASGITransport(app=up.app))
         app = create_app(session, anthropic_upstream="http://anthropic.test",
                          openai_upstream="http://openai.test", client=up_client, policy=pol)
-        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://omna.local")
+        client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:7788")
         return up, session, client
     return build
 
@@ -594,7 +594,7 @@ def _browser_app(tmp_path, monkeypatch, style: str, system_door_on: bool):
     pol.doors = doors
     app = create_app(MaskingSession(), policy=pol, doors_state=doors,
                      client=httpx.AsyncClient(transport=httpx.ASGITransport(app=Upstream().app)))
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://omna.local")
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:7788")
 
 
 @pytest.mark.anyio
@@ -635,7 +635,7 @@ async def test_health_picks_up_a_menu_bar_style_change_without_a_restart(tmp_pat
     pol.save()
     app = create_app(MaskingSession(), policy=pol, doors_state=pol.doors,
                      client=httpx.AsyncClient(transport=httpx.ASGITransport(app=Upstream().app)))
-    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://omna.local")
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:7788")
     assert (await client.get("/omna/health")).json()["style"] == TOKENS
 
     menu = Policy.load()          # a different object, exactly like the menu bar's
@@ -643,3 +643,33 @@ async def test_health_picks_up_a_menu_bar_style_change_without_a_restart(tmp_pat
     menu.save()
 
     assert (await client.get("/omna/health")).json()["style"] == REALISTIC
+
+
+# Architecture review 2026-10-25 (MASTER #177): the API door restored every
+# token it knew into every reply, so any local caller could ask an echoing
+# model for "[EMAIL_1]" and read the owner's real email back.
+@pytest.mark.anyio
+async def test_a_caller_who_types_a_token_never_gets_the_real_value_back(env):
+    up, session, client = env
+    hdr = {"anthropic-version": "2023-06-01"}
+    # The owner's own request mints [EMAIL_1] for their email.
+    r = await client.post("/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": f"mail {EMAIL}"}]}, headers=hdr)
+    assert EMAIL in r.text
+    # Someone else sends the token itself; the echoing model repeats it.
+    r = await client.post("/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": "say [EMAIL_1]"}]}, headers=hdr)
+    assert r.status_code == 200
+    assert EMAIL not in r.text and "[EMAIL_1]" in r.text
+
+
+@pytest.mark.anyio
+async def test_a_request_addressed_to_another_name_is_refused(env):
+    # DNS rebinding: a page points its own domain at 127.0.0.1; the browser
+    # then sends that domain in Host. Nothing is masked, forwarded or restored.
+    up, session, client = env
+    r = await client.post("/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+                          headers={"host": "evil.example:7788", "anthropic-version": "2023-06-01"})
+    assert r.status_code == 403 and "omna_forbidden_host" in r.text
+    assert up.calls == []
+    for ok in ("localhost:7788", "127.0.0.1", "[::1]:7788"):
+        r = await client.get("/v1/models", headers={"host": ok})
+        assert r.status_code == 200, ok

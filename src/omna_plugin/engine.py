@@ -602,6 +602,20 @@ class MaskingSession:
 
         return self._pattern().sub(sub, text)
 
+    def scoped(self, sent: str, received: str) -> "ScopedRestore":
+        """A restore-only view that puts back ONLY the stand-ins this request
+        itself produced: in ``sent`` (as it left, masked) but not already in
+        ``received`` (as it arrived). Restoring every token we know, for any
+        caller, let any local program — another user on the Mac, a
+        DNS-rebinding page — post "[EMAIL_1] [SECRET_AWS_KEY_1]" to an echoing
+        model and read the real values back (architecture review, MASTER
+        #177). Typing a token yourself therefore earns nothing back. An agent
+        resends its real conversation every turn, so every token its answer
+        can mention is minted again from the real value in that request."""
+        def found(t: str) -> set[str]:
+            return {m.group(0) for m in self._pattern().finditer(t or "")}
+        return ScopedRestore(self, found(sent) - found(received))
+
     def hold_from(self, buf: str) -> int:
         """Where text that might still become a token or a fake value starts.
 
@@ -629,6 +643,33 @@ class MaskingSession:
                 if buf[i:] in self._fake_prefixes:
                     return i
         return best
+
+
+class ScopedRestore:
+    """``MaskingSession``'s restore side, limited to an allowed set of
+    stand-ins (see ``MaskingSession.scoped``). Anything else stays as it is."""
+
+    def __init__(self, session: MaskingSession, allowed: set[str]):
+        self._session = session
+        self._allowed = allowed
+
+    def lookup(self, token: str) -> str | None:
+        return self._session.lookup(token) if token in self._allowed else None
+
+    def restore_text(self, text: str, json_escape: bool = False) -> str:
+        if not text or not self._allowed:
+            return text
+
+        def sub(m: re.Match) -> str:
+            v = self.lookup(m.group(0))
+            if v is None:
+                return m.group(0)
+            return json.dumps(v)[1:-1] if json_escape else v
+
+        return self._session._pattern().sub(sub, text)
+
+    def hold_from(self, buf: str) -> int:
+        return self._session.hold_from(buf)
 
 
 def _spans_in_chars(text: str, spans: list[dict]) -> list[dict]:

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 import time
 from pathlib import Path
@@ -28,6 +29,8 @@ from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
 from .style import TOKENS, style_for_door
+
+log = logging.getLogger("omna.system_door")
 
 CA_ORG = "Omna"
 CA_CN = "Omna Local Certificate Authority"
@@ -212,6 +215,25 @@ class OmnaAddon:
         flow.metadata["omna_t0"] = time.time()
 
     async def request(self, flow: http.HTTPFlow) -> None:
+        # mitmproxy logs an add-on's exception and FORWARDS THE ORIGINAL
+        # request: a full disk while saving the registry, an engine error or an
+        # unknown content-encoding sent the real values (architecture review,
+        # MASTER #177). Anything unexpected here is refused instead.
+        try:
+            await self._request(flow)
+        except Exception as e:  # noqa: BLE001 — every failure must fail closed
+            self._refuse_after_crash(flow, e)
+
+    def _refuse_after_crash(self, flow: http.HTTPFlow, e: Exception) -> None:
+        log.error("omna: masking failed (%s: %s) — request refused, nothing sent", type(e).__name__, e)
+        flow.metadata.update(omna_note=f"refused-error:{type(e).__name__}", omna_refused=True)
+        flow.response = http.Response.make(400, REFUSED_BODY, {"content-type": "application/json"})
+        try:
+            self._receipt(flow, 400, stream=False)
+        except Exception:  # noqa: BLE001 — the refusal must stand even if the receipt cannot be written
+            pass
+
+    async def _request(self, flow: http.HTTPFlow) -> None:
         app = await self._app_of(flow.client_conn)
         if app:
             self.seen_apps[app] = self.seen_apps.get(app, 0) + 1
@@ -352,7 +374,12 @@ class OmnaAddon:
         if not msg.is_text:
             return
         if msg.from_client:
-            masked, stats = self.pipeline.mask_text(msg.text, self._style_for(flow))
+            try:
+                masked, stats = self.pipeline.mask_text(msg.text, self._style_for(flow))
+            except Exception as e:  # noqa: BLE001 — same rule as `request`: never send it unmasked
+                log.error("omna: masking a WebSocket message failed (%s) — message dropped", type(e).__name__)
+                msg.drop()
+                return
             msg.content = masked.encode("utf-8")
             st: MaskStats = flow.metadata.setdefault("omna_stats", MaskStats())
             for k, v in stats.counts.items():

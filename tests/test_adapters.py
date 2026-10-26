@@ -126,9 +126,16 @@ def test_copilot_upload_in_pieces_with_something_to_mask_is_refused(tmp_path, mo
     # longer add up — so a text piece that needs masking is refused, never sent.
     out = for_host(_OD).mask(_p(tmp_path, monkeypatch), _od_put(_NOTES, rng=f"bytes 0-{len(_NOTES) - 1}/999999"))
     assert out.refused == "unmaskable-chunk"
-    clean = b"nothing private here\n"
-    ok = for_host(_OD).mask(_p(tmp_path, monkeypatch), _od_put(clean, rng=f"bytes 0-{len(clean) - 1}/999999"))
-    assert ok.refused is None
+    # A piece where nothing was found is refused too (architecture review,
+    # MASTER #177): the next piece may hold the rest of a value cut in two
+    # ("jane.doe@ex" | "ample.com"), and the middle of a .docx is unreadable.
+    clean = b"nothing private here, write to jane.doe@ex"
+    no = for_host(_OD).mask(_p(tmp_path, monkeypatch), _od_put(clean, rng=f"bytes 0-{len(clean) - 1}/999999"))
+    assert no.refused == "unmaskable-chunk"
+    # A picture is never masked anyway, so its pieces go as a whole one would.
+    png = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+    ok = for_host(_OD).mask(_p(tmp_path, monkeypatch), _od_put(png, rng=f"bytes 0-{len(png) - 1}/999999"))
+    assert ok.refused is None and ok.body is None and ok.stats.not_masked
 
 
 def test_onedrive_replies_are_never_restored():

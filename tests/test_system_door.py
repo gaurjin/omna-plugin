@@ -128,6 +128,23 @@ async def test_unparseable_prompt_is_refused_not_forwarded(door):
     assert up.last_body == b"UNTOUCHED"
 
 
+async def test_a_crash_while_masking_refuses_the_request_never_forwards_it(door):
+    # Disk full while saving the registry (or any engine error): mitmproxy would
+    # log it and forward the ORIGINAL request with the real email in it.
+    up, port, ctx, addon = door
+    up.last_body = b"UNTOUCHED"
+
+    def boom(*a, **k):
+        raise OSError(28, "No space left on device")
+
+    addon.pipeline.mask_bytes = boom
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        r = await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": f"for {EMAIL}"})
+    assert r.status_code == 400 and "omna_refused" in r.text
+    assert up.last_body == b"UNTOUCHED"
+    assert receipts.tail(1)[0]["note"] == "refused-error:OSError"
+
+
 async def test_bypassed_app_is_tunnelled_untouched(door):
     up, port, _ctx, addon = door
     addon.policy.set_app("TestApp", "bypass")

@@ -397,6 +397,14 @@ A request to an inference path (`/v1/messages`, `/v1/chat/completions`, `/v1/res
 parsed as JSON (compressed, malformed, wrong content type) is answered with `400 omna_refused` and never forwarded.
 Non-inference uploads (`/v1/files`, audio) pass through unmasked and are marked `passthrough` in the receipt.
 If the proxy is not running, the tool's requests fail to connect: nothing leaves unmasked.
+If masking itself fails at the system door (an engine error, a full disk), the request is refused
+(`refused-error:<kind>` in the receipt), never forwarded as it was.
+A file sent in pieces is refused when a piece cannot be checked on its own (a value can be cut across
+two pieces); pictures and PDFs, which are never masked anyway, go as a whole one would.
+
+The API door answers only requests addressed to `127.0.0.1` or `localhost` (a page that re-points its
+own domain at your machine is refused), and puts back only the real values that request itself carried:
+a caller who types `[EMAIL_1]` gets `[EMAIL_1]` back, never your email.
 
 ## Honest limits (v1)
 

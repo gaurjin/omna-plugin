@@ -159,3 +159,29 @@ def test_text_with_no_fakes_and_no_tokens_passes_through(session):
     r = StreamRestorer(session)
     out = r.feed(a_delta("nothing to see here")) + r.flush()
     assert "".join(texts(out)) == "nothing to see here"
+
+
+# Architecture review 2026-10-25 (MASTER #177).
+def test_responses_api_finished_tool_call_and_completed_response_are_restored(session):
+    # Codex takes the tool call from output_item.done: a token left there is
+    # written into the person's files.
+    tok = token_for(session, EMAIL)
+    r = StreamRestorer(session)
+    args = json.dumps({"path": "a.txt", "text": f"mail {tok}"})
+    item = {"type": "function_call", "name": "write_file", "call_id": "c1", "arguments": args}
+    frames = [
+        {"type": "response.output_item.done", "output_index": 0, "item": item},
+        {"type": "response.completed", "response": {"id": "r1", "output": [item]}},
+    ]
+    out = b"".join(r.feed(f"event: {f['type']}\ndata: {json.dumps(f)}\n\n".encode()) for f in frames) + r.flush()
+    assert tok not in out.decode() and out.decode().count(EMAIL) == 2
+    done = json.loads(out.split(b"data: ")[1].split(b"\n")[0])
+    assert json.loads(done["item"]["arguments"])["text"] == f"mail {EMAIL}"
+    assert done["item"]["name"] == "write_file"
+
+
+def test_a_stream_framed_with_crlf_is_restored(session):
+    tok = token_for(session, EMAIL)
+    r = StreamRestorer(session)
+    out = r.feed(a_delta("hi " + tok).replace(b"\n", b"\r\n")) + r.flush()
+    assert texts(out) == [f"hi {EMAIL}"]

@@ -249,15 +249,25 @@ class Pipeline:
         return MaskedBody(out[0] + (b"\r\n" + delim).join(out[1:]), total)
 
     # ------------------------------------------------------------ restoring
-    def restore_json(self, obj):
-        return restore_body(self.session, obj)
+    def restore_json(self, obj, sent: bytes | None = None, received: bytes | None = None):
+        """``sent`` / ``received``: the request as it left (masked) and as it
+        arrived. When given, only the stand-ins this request produced are put
+        back (``MaskingSession.scoped``)."""
+        return restore_body(self._restorer(sent, received), obj)
+
+    def _restorer(self, sent: bytes | None, received: bytes | None):
+        if sent is None:
+            return self.session
+        text = lambda b: (b or b"").decode("utf-8", errors="replace")  # noqa: E731
+        return self.session.scoped(text(sent), text(received))
 
     def restore_text(self, text: str, json_escape: bool = False) -> str:
         return self.session.restore_text(text, json_escape=json_escape)
 
-    def sse_restorer(self) -> StreamRestorer:
-        """For Anthropic / OpenAI shaped SSE (the API door's formats)."""
-        return StreamRestorer(self.session)
+    def sse_restorer(self, sent: bytes | None = None, received: bytes | None = None) -> StreamRestorer:
+        """For Anthropic / OpenAI shaped SSE (the API door's formats).
+        ``sent`` / ``received`` as in ``restore_json``."""
+        return StreamRestorer(self._restorer(sent, received))
 
     def text_restorer(self, json_escape: bool) -> TextRestorer:
         """Token-level restore over any text stream, with partial-token hold-back."""

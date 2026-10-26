@@ -18,15 +18,15 @@ from .style import TOKENS
 SKIP_KEYS = frozenset(
     {
         # identity / config
-        "id", "model", "type", "role", "name", "tool_use_id", "tool_call_id",
+        "id", "model", "type", "role", "tool_use_id", "tool_call_id",
         "call_id", "media_type", "stop_reason", "stop_sequence", "stop_sequences",
-        "url", "file_id", "service_tier", "anthropic_version", "stream",
+        "file_id", "service_tier", "anthropic_version", "stream",
         "tool_choice", "output_config", "context_management",
-        "mcp_servers", "container", "response_format", "modalities", "user",
+        "mcp_servers", "container", "response_format", "modalities",
         # must be byte-identical for the API to accept the request back
         "signature", "thinking", "redacted_thinking", "cache_control",
         # binary / opaque
-        "data", "image_url", "b64_json", "encrypted_content",
+        "image_url", "b64_json", "encrypted_content",
         # tool definitions are schemas, not prose
         "tools", "functions", "input_schema", "parameters",
     }
@@ -38,6 +38,29 @@ _BLOB_RE = re.compile(r"^[A-Za-z0-9+/=_\-]{256,}$")
 
 def _is_blob(s: str) -> bool:
     return len(s) >= 256 and _BLOB_RE.match(s) is not None
+
+
+def _skip_in(parent: dict, key: str, value) -> bool:
+    """Keys whose meaning depends on the object they sit in. They used to be
+    skipped everywhere, so text under them never got masked (architecture
+    review, MASTER #177): an Anthropic text document keeps its words in
+    ``data``, a link carries ``?token=ghp_…`` in ``url``, OpenAI's ``user`` is
+    often an email, and a chat message's ``name`` is the person speaking."""
+    if key == "data":
+        # Media and file bytes stay byte-identical; a text document, or an
+        # object a chat site wraps its message in, is prose to be masked.
+        if not isinstance(value, str) or parent.get("type") == "text":
+            return False
+        media = str(parent.get("media_type") or parent.get("mime_type") or "")
+        return parent.get("type") in ("base64", "image", "file", "input_image") or (
+            bool(media) and not media.startswith("text/"))
+    if key == "url":
+        return isinstance(value, str) and value.startswith("data:")
+    if key == "name":
+        # A message's speaker is masked; a tool's or a function's name is an
+        # identifier the API matches against the tool list.
+        return "role" not in parent
+    return False
 
 
 def _walk(obj, fn, counts: dict[str, int], key: str | None = None):
@@ -54,7 +77,7 @@ def _walk(obj, fn, counts: dict[str, int], key: str | None = None):
             return obj
         out = {}
         for k, v in obj.items():
-            out[k] = _walk(v, fn, counts, k)
+            out[k] = v if _skip_in(obj, k, v) else _walk(v, fn, counts, k)
         return out
     return obj
 

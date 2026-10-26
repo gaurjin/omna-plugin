@@ -71,6 +71,16 @@ _DROP_RESP = {"content-length", "content-encoding", "connection", "keep-alive",
 _LOCAL_ORIGIN_RE = __import__("re").compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", __import__("re").I)
 
 
+def _local_host(host: str) -> bool:
+    """True for a Host header naming this machine (any port)."""
+    h = host.strip().lower()
+    if h.startswith("["):
+        h = h[1:h.find("]")] if "]" in h else h
+    else:
+        h = h.rsplit(":", 1)[0]
+    return h in ("127.0.0.1", "localhost", "::1")
+
+
 def cors_origin_allowed(origin: str, extra: list[str] | None = None) -> bool:
     if not origin:
         return False
@@ -307,6 +317,12 @@ def create_app(
 
     async def relay(request: Request) -> Response:
         path = request.url.path
+        # Only this machine, by name: a page that re-points its own domain at
+        # 127.0.0.1 (DNS rebinding) arrives with ITS name in Host. Refused
+        # before anything is masked, forwarded or restored (MASTER #177).
+        if not _local_host(request.headers.get("host", "")):
+            return JSONResponse({"type": "error", "error": {"type": "omna_forbidden_host",
+                                 "message": "omna answers only requests addressed to 127.0.0.1 or localhost"}}, status_code=403)
         if request.method == "HEAD" and path == "/api/hello":
             return Response(status_code=200)
 
@@ -331,6 +347,7 @@ def create_app(
             url += "?" + request.url.query
 
         body = await request.body()
+        received = body   # as it arrived: tokens already in it are never restored (MASTER #177)
         mstats = MaskStats()
         passthrough = False
         ctype = request.headers.get("content-type", "")
@@ -400,7 +417,7 @@ def create_app(
 
         if is_sse:
             async def gen():
-                restorer = pipeline.sse_restorer()
+                restorer = pipeline.sse_restorer(sent=body, received=received)
                 try:
                     async for chunk in resp.aiter_bytes():
                         out = restorer.feed(chunk)
@@ -419,7 +436,7 @@ def create_app(
         await resp.aclose()
         if resp.status_code < 400 and "json" in resp.headers.get("content-type", ""):
             try:
-                data = json.dumps(pipeline.restore_json(json.loads(data)), ensure_ascii=False).encode("utf-8")
+                data = json.dumps(pipeline.restore_json(json.loads(data), sent=body, received=received), ensure_ascii=False).encode("utf-8")
             except ValueError:
                 pass
         _receipt(request, path, upstream_host, resp.status_code, mstats, len(body), t0, stream=False, note="passthrough" if passthrough else None)

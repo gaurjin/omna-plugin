@@ -23,7 +23,11 @@ from __future__ import annotations
 
 import json
 
+from .body import restore_body
 from .engine import MaskingSession
+
+# Responses API events that carry finished content but do not end in ".done".
+_RESPONSES_FINAL = frozenset({"response.completed", "response.incomplete", "response.output_item.added"})
 
 
 class TextRestorer:
@@ -72,7 +76,10 @@ class StreamRestorer:
         return hb
 
     def feed(self, chunk: bytes) -> bytes:
-        self._buf += chunk
+        # SSE allows CRLF line breaks; a stream framed with "\r\n\r\n" never
+        # split into events, so it was held to the end and sent unrestored
+        # (architecture review, MASTER #177). Plain "\n" is valid SSE too.
+        self._buf = (self._buf + chunk).replace(b"\r\n", b"\n")
         out = []
         while True:
             idx = self._buf.find(b"\n\n")
@@ -180,11 +187,22 @@ class StreamRestorer:
             hb = self._text.pop(key, None)
             if hb:
                 rest = hb.flush()
-                # the .done event carries the full final text; restore it whole
-                for fld in ("text", "arguments"):
-                    if isinstance(evt.get(fld), str):
-                        evt[fld] = hb._restore(evt[fld])
-                return True
+                if rest:
+                    # Held-back tail of the deltas: emit it before this frame,
+                    # or a client that joins the deltas loses the end.
+                    evt["__omna_prefix__"] = self._synth(key, rest)
+        if isinstance(t, str) and t.startswith("response.") and (t.endswith(".done") or t in _RESPONSES_FINAL):
+            # The finishing events carry the whole text, the whole tool-call
+            # arguments (`response.output_item.done` -> item.arguments) or the
+            # whole response (`response.completed`). Codex takes its tool calls
+            # from these, so a token left here is written into your files.
+            # Restore every string in them, not just a top-level text field.
+            prefix = evt.pop("__omna_prefix__", None)
+            for k in [k for k in evt if k not in ("type", "sequence_number")]:
+                evt[k] = restore_body(self.session, evt[k])
+            if prefix:
+                evt["__omna_prefix__"] = prefix
+            return True
         return False
 
     def _flush_block(self, stop_evt: dict, idx: str) -> bool:

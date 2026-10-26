@@ -103,3 +103,34 @@ def test_response_restore_puts_values_back(session):
     assert out["content"][0]["text"] == f"I emailed {EMAIL}."
     assert out["content"][1]["input"]["content"] == f"to: {EMAIL}"
     assert out["content"][2]["thinking"] == f"about {tok}"  # thinking stays as the model wrote it
+
+
+# Architecture review 2026-10-25 (MASTER #177): "data", "url", "name" and
+# "user" were skipped everywhere, so prose under them went out unmasked.
+def test_text_under_context_dependent_keys_is_masked_and_media_is_not(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin.body import mask_body
+    from omna_plugin.engine import MaskingSession
+
+    img = "iVBORw0KGgo" + "A" * 300
+    obj = {
+        "user": "jane.doe@example.com",
+        "messages": [
+            {"role": "user", "name": "jane.doe@example.com", "content": [
+                {"type": "document", "source": {"type": "text", "media_type": "text/plain",
+                                                "data": "key AKIAIOSFODNN7EXAMPLE for jane.doe@example.com"}},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": img}},
+                {"type": "text", "text": "see https://x.test/a?token=ghp_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"},
+            ]},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "read_file", "input": {}}]},
+        ],
+        "data": {"prompt": "write to jane.doe@example.com"},
+        "link": {"url": "https://x.test/?token=ghp_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY3zA5"},
+        "pic": {"url": "data:image/png;base64," + img},
+    }
+    out, _, _ = mask_body(MaskingSession(), obj)
+    flat = str(out)
+    assert "jane.doe@example.com" not in flat and "AKIAIOSFODNN7EXAMPLE" not in flat and "ghp_aB3d" not in flat
+    assert out["messages"][0]["content"][1]["source"]["data"] == img          # image bytes untouched
+    assert out["pic"]["url"] == "data:image/png;base64," + img                  # embedded image untouched
+    assert out["messages"][1]["content"][0]["name"] == "read_file"             # tool name untouched

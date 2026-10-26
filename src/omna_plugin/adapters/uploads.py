@@ -21,6 +21,19 @@ _COPILOT_APP = "M365Chat"                 # app_displayname "M365ChatClient" on 
 _RANGE_RE = re.compile(r"bytes (\d+)-(\d+)/(\d+)")
 
 
+def _piece(stats: MaskStats) -> MaskOutcome:
+    """A file sent in pieces, and this piece is not all of it. It cannot be
+    checked: a value can be cut across two pieces ("jane.doe@ex" | "ample.com")
+    and the middle of a Word or Excel file is not readable on its own. Such a
+    piece used to go out whenever masking it changed nothing (architecture
+    review, MASTER #177). Now it is refused — unless it is recognisably a kind
+    Omna never masks anyway (a picture, a PDF), which goes as a whole file of
+    that kind would, marked "file NOT masked" in the receipt."""
+    if stats.not_masked:
+        return MaskOutcome(None, stats)
+    return MaskOutcome(None, stats, refused="unmaskable-chunk")
+
+
 def _header(req: RequestView, name: str) -> str:
     return next((v for k, v in req.headers.items() if k.lower() == name.lower()), "")
 
@@ -63,12 +76,12 @@ class CopilotOneDriveAdapter:
         if not self.is_prompt(req) or not req.body:
             return MaskOutcome(None, MaskStats(), passthrough=True)
         masked, stats = pipeline.mask_file(req.body, req.content_type, style)
+        m = _RANGE_RE.fullmatch(_header(req, "Content-Range").strip())
+        whole = bool(m and int(m[1]) == 0 and int(m[2]) + 1 == int(m[3]) == len(req.body))
+        if not whole:
+            return _piece(stats)
         if masked == req.body:
             return MaskOutcome(None, stats)
-        m = _RANGE_RE.fullmatch(_header(req, "Content-Range").strip())
-        whole = m and int(m[1]) == 0 and int(m[2]) + 1 == int(m[3]) == len(req.body)
-        if not whole:
-            return MaskOutcome(None, stats, refused="unmaskable-chunk")
         return MaskOutcome(masked, stats, headers={"Content-Range": f"bytes 0-{len(masked) - 1}/{len(masked)}"})
 
     def response_mode(self, content_type: str) -> ResponseMode:
@@ -127,10 +140,10 @@ class GeminiUploadAdapter:
             return MaskOutcome(None, MaskStats(), passthrough=True)
         # The label says web form; it is the raw file. Never parse it as a form.
         masked, stats = pipeline.mask_file(req.body, "", style)
+        if "finalize" not in command or _header(req, "X-Goog-Upload-Offset").strip() not in ("", "0"):
+            return _piece(stats)
         if masked == req.body:
             return MaskOutcome(None, stats)
-        if "finalize" not in command or _header(req, "X-Goog-Upload-Offset").strip() not in ("", "0"):
-            return MaskOutcome(None, stats, refused="unmaskable-chunk")
         return MaskOutcome(masked, stats)
 
     def response_mode(self, content_type: str) -> ResponseMode:
@@ -154,11 +167,11 @@ class MetaAiUploadAdapter:
         if not self.is_prompt(req) or not req.body:
             return MaskOutcome(None, MaskStats(), passthrough=True)
         masked, stats = pipeline.mask_file(req.body, _header(req, "x-entity-type"), style)
-        if masked == req.body:
-            return MaskOutcome(None, stats)
         whole = _header(req, "Offset").strip() in ("", "0") and _header(req, "x-entity-length").strip() == str(len(req.body))
         if not whole:
-            return MaskOutcome(None, stats, refused="unmaskable-chunk")
+            return _piece(stats)
+        if masked == req.body:
+            return MaskOutcome(None, stats)
         return MaskOutcome(masked, stats, headers={"x-entity-length": str(len(masked))})
 
     def response_mode(self, content_type: str) -> ResponseMode:
