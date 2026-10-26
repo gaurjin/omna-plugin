@@ -45,6 +45,11 @@ from dataclasses import dataclass, field
 
 import omna_pii_mask
 
+try:
+    import fcntl
+except ImportError:  # Windows: no shared lock; one program at a time, as before
+    fcntl = None  # type: ignore[assignment]
+
 from . import config, fakes, vault
 from .style import REALISTIC, TOKENS
 
@@ -149,6 +154,8 @@ class MaskingSession:
         self._sites: dict[str, list[str]] = {}
         self._secret_sites: dict[str, set[str]] = {}
         self._fake_kind: dict[str, str] = {}       # fake -> KIND, to find its registry key
+        self._stamp: tuple[int, int] | None = None  # the file as we last read or wrote it
+        self._flock_depth = 0
         self._restore_re: re.Pattern | None = None
         # At-rest state (#131), surfaced by `omna status` and /omna/health.
         self._key: bytes | None = None
@@ -208,36 +215,135 @@ class MaskingSession:
             if not isinstance(data, dict):
                 self.encrypted = self._key is not None
                 return
-        self._token_to_value = dict(data.get("tokens", {}))
-        self._counters = dict(data.get("counters", {}))
-        for tok, val in self._token_to_value.items():
-            m = TOKEN_RE.fullmatch(tok)
-            if m:
-                self._value_to_token[f"{m.group(1)}\x00{val}"] = tok
-                self._real_values.add(val)
-        # Fakes are stored by their own registry key ("KIND\x00value") so both
-        # directions come back from one dict.
-        for key, fake in dict(data.get("fakes", {})).items():
-            kind, _, val = key.partition("\x00")
-            if val and fake:
-                self._remember_fake(fake, val, kind)
-        self._meta = dict(data.get("meta", {}))
-        # A file written before sites were recorded has no "sites" at all, and a
-        # row missing from it was written by an older version: both mean
-        # "everywhere", exactly as those values behaved when they were saved.
-        saved_sites = data.get("sites")
-        self._sites = dict(saved_sites) if isinstance(saved_sites, dict) else {}
-        for key in self._value_to_token:
-            self._sites.setdefault(key, [EVERYWHERE])
-        try:
-            self._fake_salt = bytes.fromhex(str(data.get("fake_salt", "")))
-        except ValueError:
-            self._fake_salt = b""
+        self._merge(data)
+        self._stamp = self._stamp_now()
         self.encrypted = self._key is not None
         if self.encrypted and not was_sealed:
             # Upgrade path: a registry written before #131 is sealed on the
             # first run that has a key, without waiting for the next mask.
             self._save_registry()
+
+    def _merge(self, data: dict) -> None:
+        """Add what a registry file holds to what is in memory. Memory wins on a
+        clash; nothing in memory is ever dropped. Used for the first load and
+        whenever another program changed the file (``_refresh_from_disk``)."""
+        for tok, val in dict(data.get("tokens", {})).items():
+            m = TOKEN_RE.fullmatch(tok)
+            if not m or tok in self._token_to_value:
+                continue
+            key = f"{m.group(1)}\x00{val}"
+            if key in self._value_to_token:
+                continue   # the same value under another token: keep ours
+            self._token_to_value[tok] = val
+            self._value_to_token[key] = tok
+            self._real_values.add(val)
+        for kind, n in dict(data.get("counters", {})).items():
+            if isinstance(n, int) and n > self._counters.get(kind, 0):
+                self._counters[kind] = n
+        # Fakes are stored by their own registry key ("KIND\x00value") so both
+        # directions come back from one dict.
+        for key, fake in dict(data.get("fakes", {})).items():
+            kind, _, val = key.partition("\x00")
+            if val and fake and key not in self._value_to_fake and fake not in self._fake_to_value:
+                self._remember_fake(fake, val, kind)
+        for key, meta in dict(data.get("meta", {})).items():
+            self._meta.setdefault(key, meta)
+        # A file written before sites were recorded has no "sites" at all, and a
+        # row missing from it was written by an older version: both mean
+        # "everywhere", exactly as those values behaved when they were saved.
+        saved_sites = data.get("sites")
+        saved_sites = saved_sites if isinstance(saved_sites, dict) else {}
+        for tok, val in dict(data.get("tokens", {})).items():
+            m = TOKEN_RE.fullmatch(tok)
+            if not m:
+                continue
+            key = f"{m.group(1)}\x00{val}"
+            have = self._sites.setdefault(key, [])
+            for site in saved_sites.get(key, [EVERYWHERE]):
+                if site not in have:
+                    have.append(site)
+        if not self._fake_salt:
+            try:
+                self._fake_salt = bytes.fromhex(str(data.get("fake_salt", "")))
+            except ValueError:
+                self._fake_salt = b""
+
+    # ------------------------------------------------------------ sharing
+    # The running curl command and a one-off `omna mask` / `omna forget` in a
+    # terminal share registry.json. Each used to save only what IT knew, so
+    # the other's new tokens were wiped and the same [EMAIL_n] could go to two
+    # different people (architecture review, MASTER #178). Now every change
+    # happens under a lock on the file, after reading back whatever the other
+    # program wrote since.
+    def _stamp_now(self) -> tuple[int, int] | None:
+        try:
+            st = self._registry_file.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
+    @contextlib.contextmanager
+    def _file_lock(self):
+        """Exclusive lock shared with other programs (re-entrant in-process;
+        the caller holds ``self._lock``)."""
+        if self._flock_depth or fcntl is None:
+            self._flock_depth += 1
+            try:
+                yield
+            finally:
+                self._flock_depth -= 1
+            return
+        lock = self._registry_file.with_name(self._registry_file.name + ".lock")
+        fd = os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            self._flock_depth += 1
+            try:
+                yield
+            finally:
+                self._flock_depth -= 1
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+    def _refresh_from_disk(self) -> None:
+        """Take in what another program wrote since we last read or saved.
+        Caller holds ``self._lock`` and ``_file_lock``."""
+        if self.locked:
+            return
+        stamp = self._stamp_now()
+        if stamp == self._stamp:
+            return
+        if stamp is None:
+            # The file we had is gone: `omna forget` ran elsewhere. Forget too,
+            # or our next save would bring every forgotten value back.
+            self._clear_memory()
+            self._key = vault.load_key(create=True)
+            self.encrypted = self._key is not None
+            self._stamp = None
+            return
+        try:
+            text = self._registry_file.read_text()
+        except OSError:
+            return
+        if vault.is_sealed(text):
+            try:
+                data = vault.open_sealed(text, self._key)
+            except vault.RegistryLocked:
+                # Re-keyed elsewhere (forget, then new tokens): fetch the new key.
+                self._key = vault.load_key(create=False) or self._key
+                try:
+                    data = vault.open_sealed(text, self._key)
+                except vault.RegistryLocked:
+                    return
+        else:
+            try:
+                data = json.loads(text)
+            except ValueError:
+                return
+        if isinstance(data, dict):
+            self._merge(data)
+        self._stamp = stamp
 
     def _retire_unreadable_registry(self) -> None:
         """Move a permanently-unreadable registry aside so a fresh one can start.
@@ -261,6 +367,11 @@ class MaskingSession:
     def _save_registry(self) -> None:
         if self.locked:
             return
+        with self._file_lock():
+            self._refresh_from_disk()
+            self._write_registry()
+
+    def _write_registry(self) -> None:
         payload = {"tokens": self._token_to_value, "counters": self._counters,
                    "fakes": self._value_to_fake, "fake_salt": self._fake_salt.hex(),
                    "meta": self._meta, "sites": self._sites}
@@ -270,6 +381,7 @@ class MaskingSession:
         with os.fdopen(fd, "w") as f:
             f.write(body)
         os.replace(tmp, self._registry_file)
+        self._stamp = self._stamp_now()
 
     def _stable_token(self, kind: str, value: str) -> str:
         key = f"{kind}\x00{value}"
@@ -353,30 +465,33 @@ class MaskingSession:
         gone is litter, and this is also the only way out of a locked registry.
         """
         with self._lock:
-            self._value_to_token.clear()
-            self._token_to_value.clear()
-            self._counters.clear()
-            self._secret_value_to_token.clear()
-            self._secret_token_to_value.clear()
-            self._secret_counters.clear()
-            self._value_to_fake.clear()
-            self._fake_to_value.clear()
-            self._fake_prefixes.clear()
-            self._real_values.clear()
-            self._meta.clear()
-            self._sites.clear()
-            self._secret_sites.clear()
-            self._fake_kind.clear()
-            self._max_fake_len = 0
-            self._fake_salt = b""
-            self._restore_re = None
-            self._cache.clear()
+            self._clear_memory()
             if self._registry_file.exists():
                 self._registry_file.unlink()
             vault.delete_key()
             self._key = None
             self.locked = False
             self.encrypted = False
+
+    def _clear_memory(self) -> None:
+        self._value_to_token.clear()
+        self._token_to_value.clear()
+        self._counters.clear()
+        self._secret_value_to_token.clear()
+        self._secret_token_to_value.clear()
+        self._secret_counters.clear()
+        self._value_to_fake.clear()
+        self._fake_to_value.clear()
+        self._fake_prefixes.clear()
+        self._real_values.clear()
+        self._meta.clear()
+        self._sites.clear()
+        self._secret_sites.clear()
+        self._fake_kind.clear()
+        self._max_fake_len = 0
+        self._fake_salt = b""
+        self._restore_re = None
+        self._cache.clear()
 
     @property
     def registry_size(self) -> int:
@@ -569,6 +684,11 @@ class MaskingSession:
         # a realistic fake value to a door that refused it.
         key = style + "\x00" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
         with self._lock:
+            if self._stamp_now() != self._stamp:
+                # Another program changed the file (a forget clears the cache):
+                # take that in before answering from the cache.
+                with self._file_lock():
+                    self._refresh_from_disk()
             hit = self._cache.get(key)
             if hit is not None:
                 self._cache.move_to_end(key)
@@ -591,7 +711,9 @@ class MaskingSession:
             else:
                 n_pii += 1
         spans = _spans_in_chars(text, raw["spans"])
-        with self._lock:
+        with self._lock, (self._file_lock() if spans else contextlib.nullcontext()):
+            if spans:
+                self._refresh_from_disk()   # never mint a token another program already gave out
             masked, labels, changed = (self._rebuild(text, spans, style)
                                        if spans else (text, [], False))
             if self._note_site(labels):

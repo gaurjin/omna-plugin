@@ -439,7 +439,7 @@ def cmd_forget(a) -> int:
     from .engine import MaskingSession
 
     MaskingSession().forget()
-    print("omna: token registry wiped, and its key removed from your Keychain. Restart the proxy to apply.")
+    print("omna: token registry wiped, and its key removed from your Keychain. The running curl command forgets too, on its next request.")
     return 0
 
 
