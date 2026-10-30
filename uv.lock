@@ -739,7 +739,7 @@ wheels = [
 
 [[package]]
 name = "mitmproxy"
-version = "12.3.0"
+version = "12.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aioquic" },
@@ -770,7 +770,7 @@ dependencies = [
     { name = "wsproto" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e8/aa/a1ef423def5e405455cca69e938b0961c36091f5ac69bc4d15809b93df29/mitmproxy-12.3.0-py3-none-any.whl", hash = "sha256:29fd9e934bad86a321ff345ec141f894dbcc1ec9e3bf5deffba9ac2ea9db3c61", size = 1122932, upload-time = "2026-10-22T02:28:10.552Z" },
+    { url = "https://files.pythonhosted.org/packages/a7/b2/886992a28a7bf86e47691d7a33e26eba370ee71d89b77d3128412910a33e/mitmproxy-12.3.1-py3-none-any.whl", hash = "sha256:87afb808ac8d55383dbe6aa30eadeb0fedaeffd26210e7e23c25c9cd43bdb36a", size = 1123686, upload-time = "2026-10-25T23:32:31.97Z" },
 ]
 
 [[package]]
@@ -854,7 +854,7 @@ requires-dist = [
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4" },
     { name = "cryptography", specifier = ">=42" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "mitmproxy", specifier = ">=12.2,<13" },
+    { name = "mitmproxy", specifier = ">=12.3.1,<13" },
     { name = "omna-pii-mask", specifier = ">=0.2.12,<0.3" },
     { name = "pillow", specifier = ">=10" },
     { name = "pystray", specifier = ">=0.19,<1" },
