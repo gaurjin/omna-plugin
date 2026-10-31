@@ -1,7 +1,12 @@
-# Omna — mask secrets and PII before your prompt leaves the machine
+# Omna — Mask it. Prove it.
 
-A small local proxy for AI coding tools. Point Claude Code, aider, Codex CLI or any
-Anthropic/OpenAI SDK app at `http://127.0.0.1:7788` and every request is masked on
+**The privacy and proof layer for AI — for people and agents.**
+
+Omna hides secrets and personal data on your device before any AI or AI agent sees them —
+and gives you the report that proves it to auditors, regulators and clients.
+
+A small local proxy for AI agents and AI coding tools. Point Claude Code, aider, Codex CLI or any
+Anthropic/OpenAI SDK app or agent at `http://127.0.0.1:7788` and every request is masked on
 the way out, sent to the provider with **your own key or login**, and un-masked on
 the way back. The tool never notices. The model never sees the real values.
 
