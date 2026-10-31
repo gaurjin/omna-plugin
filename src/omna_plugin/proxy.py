@@ -30,11 +30,19 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from . import config, crashlog, mappings, receipts
+import omna_pii_mask
+
+from . import config, crashlog, ext_l3, mappings, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
 from .style import style_for_door, style_for_extension
+from .system_door import EXT_HEADER
+
+
+def _engine_detect(text: str, model: bool = False, ruleset: str | None = None) -> list[dict]:
+    """The engine's detect(), behind a name the tests can replace (no model in tests)."""
+    return omna_pii_mask.detect(text, model=model, ruleset=ruleset)
 
 try:
     # Read from the installed package's own metadata (pyproject.toml's `version`)
@@ -222,6 +230,32 @@ def create_app(
         version = body.get("version")
         stats["extension_version"] = version if isinstance(version, str) else None
         return JSONResponse({"ok": True})
+
+    async def detect_l3(request: Request) -> Response:
+        """Smart masking for Omna for Chrome (ext_l3.py): the model's finds in a
+        short text, in the same shape the Mac app answers with.
+
+        Only the extension may ask: it sends EXT_HEADER, which a web page
+        cannot add to a cross-site request without a CORS preflight this
+        server never approves — so a page can't make this machine run the
+        model. Untrusted body, same soft handling as extension_checkin."""
+        if not request.headers.get(EXT_HEADER):
+            return JSONResponse({"error": "extension only"}, status_code=403)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        text = body.get("text") if isinstance(body, dict) else None
+        if not isinstance(text, str):
+            return JSONResponse({"error": "expected {\"text\": string}"}, status_code=400)
+        if not session.smart:
+            return JSONResponse({"smart": False, "spans": []})
+        if len(text) > ext_l3.MAX_CHARS:
+            return JSONResponse({"smart": True, "spans": [], "too_long": True})
+        spans = await run_in_threadpool(
+            ext_l3.model_spans, text, _engine_detect, session._ruleset_arg(),
+        )
+        return JSONResponse({"smart": True, "spans": spans})
 
     def _dashboard_ok(request: Request) -> bool:
         """The dashboard needs the token from ~/.omna/dashboard.token (#134).
@@ -502,6 +536,7 @@ def create_app(
             Route("/omna/health", health, methods=["GET"]),
             Route("/omna/proxy.pac", pac, methods=["GET"]),
             Route("/omna/extension-checkin", extension_checkin, methods=["POST"]),
+            Route("/omna/detect-l3", detect_l3, methods=["POST"]),
             Route("/omna/dashboard", dashboard, methods=["GET"]),
             Route("/omna/dashboard.json", dashboard_json, methods=["GET"]),
             Route("/omna/mappings", mappings_page, methods=["GET"]),
