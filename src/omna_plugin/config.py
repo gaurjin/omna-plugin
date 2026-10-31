@@ -7,6 +7,7 @@ Everything lives under one directory (default ``~/.omna``; override with the
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 DEFAULT_PORT = 7788
@@ -112,3 +113,14 @@ def dashboard_token(create: bool = True) -> str:
 
 def base_url(port: int = DEFAULT_PORT) -> str:
     return f"http://{DEFAULT_HOST}:{port}"
+
+
+def self_command() -> list[str]:
+    """How to run this program again (background start, Claude Code's hook).
+
+    The Homebrew build is one packaged program (PyInstaller, ``sys.frozen``):
+    it IS the CLI and has no ``-m``. Before 0.6.10 it was handed
+    ``-m omna_plugin.cli`` and every background start failed there."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable]
+    return [sys.executable, "-m", "omna_plugin.cli"]

@@ -61,7 +61,7 @@ def _health(port: int) -> dict | None:
 def _spawn(port: int, smart: bool, no_restore_secrets: bool = False) -> int:
     config.ensure_home()
     log = open(config.log_path(), "ab")
-    cmd = [sys.executable, "-m", "omna_plugin.cli", "start", "--port", str(port)] + (["--smart"] if smart else []) + (["--no-restore-secrets"] if no_restore_secrets else [])
+    cmd = config.self_command() + ["start", "--port", str(port)] + (["--smart"] if smart else []) + (["--no-restore-secrets"] if no_restore_secrets else [])
     p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, close_fds=True)
     config.pid_path().write_text(str(p.pid))
     return p.pid

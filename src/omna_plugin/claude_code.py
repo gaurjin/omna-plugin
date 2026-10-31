@@ -39,7 +39,7 @@ def _omna_command() -> str:
     exe = shutil.which("omna")
     if exe:
         return f'"{exe}" ensure' if " " in exe else f"{exe} ensure"
-    return f'"{sys.executable}" -m omna_plugin.cli ensure'
+    return " ".join(f'"{p}"' if " " in p else p for p in config.self_command()) + " ensure"
 
 
 def _is_ours(hook: dict) -> bool:

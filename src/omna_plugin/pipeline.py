@@ -9,7 +9,9 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, urlencode
 
-from . import office, receipts
+import omna_pii_mask
+
+from . import office, picture, receipts
 from .body import ONLY_IN_IDS, is_id_key, mask_body, restore_body
 from .engine import MaskingSession
 from .policy import Policy
@@ -75,6 +77,12 @@ class Pipeline:
             tokens=labels,
         )
         return masked, stats
+
+    def _detect(self, text: str) -> list[dict]:
+        """Where the values are, with this session's settings (fast/smart,
+        ruleset) — without minting stand-ins: a picture's values are blacked
+        out, never sent as tokens, so they must not appear as "sent"."""
+        return omna_pii_mask.detect(text, model=self.session.smart, ruleset=self.session._ruleset_arg())
 
     def mask_text(self, text: str, style: str = TOKENS, only: frozenset[str] | None = None) -> tuple[str, MaskStats]:
         t0 = time.time()
@@ -197,6 +205,15 @@ class Pipeline:
 
     def _mask_plain_file(self, data: bytes, content_type: str, style: str) -> tuple[bytes, MaskStats]:
         kind = office.unmaskable_kind(data)
+        if kind == "image":
+            # On a Mac: read it and black out the lines holding a value
+            # (picture.py). Elsewhere, or when that can't be done safely, the
+            # picture goes as it is and the receipt says so, as before.
+            done = picture.redact(data, self._detect)
+            if done is not None:
+                out, st = done
+                return out, MaskStats(counts=st["counts"], secrets=st["secrets"], pii=st["pii"],
+                                      validated=st["validated"], by_layer=st["by_layer"])
         if kind:
             return data, MaskStats(not_masked=kind)
         ct = (content_type or "").lower()
