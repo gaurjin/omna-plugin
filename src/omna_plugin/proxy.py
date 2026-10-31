@@ -32,7 +32,7 @@ from starlette.routing import Route
 
 import omna_pii_mask
 
-from . import config, crashlog, ext_l3, mappings, receipts
+from . import config, crashlog, ext_l3, mappings, ocr, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy
@@ -185,6 +185,9 @@ def create_app(
                 "plugin": __version__,
                 "engine": engine_version(),
                 "smart": session.smart,
+                # Can this machine read text in pictures (Apple Vision, macOS)?
+                # Omna for Chrome sends screenshots to /omna/ocr only when true.
+                "ocr": ocr.available(),
                 "restore_secrets": session.restore_secrets,
                 "secrets_held_in_memory": session.secrets_held,
                 "requests_this_run": stats["requests"],
@@ -256,6 +259,35 @@ def create_app(
             ext_l3.model_spans, text, _engine_detect, session._ruleset_arg(),
         )
         return JSONResponse({"smart": True, "spans": spans})
+
+    async def read_picture(request: Request) -> Response:
+        """Read the text in a picture for Omna for Chrome (ocr.py): lines and
+        their boxes, NOT masked — the extension masks with its own stand-ins so
+        one conversation never has two lists. Extension only (EXT_HEADER),
+        untrusted body handled softly, like detect_l3."""
+        if not request.headers.get(EXT_HEADER):
+            return JSONResponse({"error": "extension only"}, status_code=403)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        b64 = body.get("content_b64") if isinstance(body, dict) else None
+        if not isinstance(b64, str):
+            return JSONResponse({"error": "expected {\"content_b64\": string}"}, status_code=400)
+        if not ocr.available():
+            return JSONResponse({"available": False})
+        import base64 as _b64
+        import binascii
+
+        try:
+            data = _b64.b64decode(b64, validate=True)
+        except (binascii.Error, ValueError):
+            return JSONResponse({"error": "content_b64 is not base64"}, status_code=400)
+        try:
+            result = await run_in_threadpool(ocr.recognize, data)
+        except (ValueError, RuntimeError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        return JSONResponse({"available": True, **result})
 
     def _dashboard_ok(request: Request) -> bool:
         """The dashboard needs the token from ~/.omna/dashboard.token (#134).
@@ -537,6 +569,7 @@ def create_app(
             Route("/omna/proxy.pac", pac, methods=["GET"]),
             Route("/omna/extension-checkin", extension_checkin, methods=["POST"]),
             Route("/omna/detect-l3", detect_l3, methods=["POST"]),
+            Route("/omna/ocr", read_picture, methods=["POST"]),
             Route("/omna/dashboard", dashboard, methods=["GET"]),
             Route("/omna/dashboard.json", dashboard_json, methods=["GET"]),
             Route("/omna/mappings", mappings_page, methods=["GET"]),
