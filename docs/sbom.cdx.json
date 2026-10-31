@@ -3,12 +3,12 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-30T22:09:22+00:00",
+    "timestamp": "2026-10-31T00:01:18+00:00",
     "component": {
       "type": "application",
       "name": "omna-plugin",
-      "version": "0.6.5",
-      "purl": "pkg:pypi/omna-plugin@0.6.5",
+      "version": "0.6.6",
+      "purl": "pkg:pypi/omna-plugin@0.6.6",
       "description": "Omna \u2014 local privacy proxy for AI coding tools. Masks secrets and PII before a prompt leaves your machine, restores them in the reply.",
       "licenses": [
         {
