@@ -713,3 +713,25 @@ def test_log_says_when_a_file_was_not_masked(capsys):
                      "masked": {}, "ms": 5, "note": "file-not-masked:pdf"})
     assert main(["log"]) == 0
     assert "file NOT masked (pdf)" in capsys.readouterr()[0]
+
+
+def test_status_says_what_files_are_masked_and_how_to_turn_on_smart(capsys, monkeypatch):
+    now = 1_000_000.0
+    monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {**_fake_health(None, None), "ocr": True})
+    monkeypatch.setattr("omna_plugin.pdf.available", lambda: True)
+    assert main(["status"]) == 0
+    out, _ = capsys.readouterr()
+    assert "smart:        off  → `omna stop && omna start -d --smart`" in out
+    assert "files:" in out and "pictures and PDFs: values blacked out" in out
+
+
+def test_status_is_honest_where_pictures_cannot_be_read(capsys, monkeypatch):
+    now = 1_000_000.0
+    monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {**_fake_health(None, None), "smart": True, "ocr": False})
+    monkeypatch.setattr("omna_plugin.pdf.available", lambda: False)
+    assert main(["status"]) == 0
+    out, _ = capsys.readouterr()
+    assert "smart:" not in out, "no smart hint when smart is already on"
+    assert "pictures and PDFs: go as they are (needs macOS)" in out

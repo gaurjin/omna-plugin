@@ -17,7 +17,7 @@
 #   every release; a test fails if it does not match pyproject.toml) and a
 #   fixed version of uv's own installer.
 set -eu
-OMNA_VERSION="0.6.11"
+OMNA_VERSION="0.6.12"
 UV_VERSION="0.11.7"
 
 main() {
@@ -58,6 +58,9 @@ main() {
   omna status
   echo
   echo "omna: done. Open a new terminal (so PATH includes ~/.local/bin) and run Claude Code as usual."
+  echo "      Using AI chat websites too? Add Omna for Chrome — it masks inside the chat box, before you press Send,"
+  echo "      and with Omna running it masks screenshots and catches names too:"
+  echo "      https://chromewebstore.google.com/detail/omna/nnkjconloimokalfdghmhifcangdbmnc"
 }
 
 main "$@"

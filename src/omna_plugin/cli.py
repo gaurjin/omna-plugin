@@ -261,6 +261,16 @@ def cmd_status(a) -> int:
         print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {'on' if h['smart'] else 'off'}, secrets {'restored locally, never on disk' if h.get('restore_secrets', True) else 'redacted for good'}, {h['requests_this_run']} requests this run{speed})")
     else:
         print(f"proxy:        NOT running  → `omna start -d`")
+    if h and not h.get("smart"):
+        print("smart:        off  → `omna stop && omna start -d --smart` also catches names written in sentences"
+              " (one-time ~809 MB download, ~0.25 s per KB)")
+    if h:
+        from . import pdf as _pdf
+
+        both = h.get("ocr") and _pdf.available()
+        print("files:        text, code, Word, Excel, RTF, ODT masked; pictures and PDFs: "
+              + ("values blacked out" if both else "go as they are (needs macOS)")
+              + "; the receipt says which")
     cc = claude_code.status(claude_code.settings_file("user"))
     wired = cc["base_url"] == config.base_url(a.port)
     print(f"claude code:  {'wired' if wired else 'not wired'} ({cc['file']}){'  hook ok' if cc['hook'] else ''}{'' if wired else '  → `omna init`'}")
