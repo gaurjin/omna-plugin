@@ -11,7 +11,7 @@ from urllib.parse import parse_qsl, urlencode
 
 import omna_pii_mask
 
-from . import office, picture, receipts
+from . import office, pdf, picture, receipts
 from .body import ONLY_IN_IDS, is_id_key, mask_body, restore_body
 from .engine import MaskingSession
 from .policy import Policy
@@ -212,6 +212,15 @@ class Pipeline:
             done = picture.redact(data, self._detect)
             if done is not None:
                 out, st = done
+                return out, MaskStats(counts=st["counts"], secrets=st["secrets"], pii=st["pii"],
+                                      validated=st["validated"], by_layer=st["by_layer"])
+        if kind == "pdf":
+            # On a Mac: paint over each value inside the PDF (pdf.py). Pages
+            # without a value stay as they were. Otherwise: as before.
+            done = pdf.redact(data, self._detect)
+            if done is not None:
+                out, spans = done
+                st = picture.stats_of(spans)
                 return out, MaskStats(counts=st["counts"], secrets=st["secrets"], pii=st["pii"],
                                       validated=st["validated"], by_layer=st["by_layer"])
         if kind:
