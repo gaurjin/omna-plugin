@@ -193,7 +193,7 @@ Measured on a MacBook Air M5 with Claude Code 2.1.274, a 4-request task (read a 
 
 Fast masking (rules + checksums, the default) is the 16 ms. Smart masking (`--smart`) adds two
 on-device models and is off by default — a deliberate choice you make, not a surprise you discover.
-Measured on the same Mac (4 cores, real text): a typed message ~0.5 s, 8 KB ~1.5 s, 64 KB ~2.5 s
+Measured on the same Mac (4 cores, real text): a typed message ~0.5 s, 8 KB ~1.5 s, 64 KB ~14 s
 (see [Smart masking](#smart-masking-two-models-chosen-for-you)).
 
 `omna status` reports the real average for **your** machine and your traffic
@@ -423,10 +423,10 @@ a caller who types `[EMAIL_1]` gets `[EMAIL_1]` back, never your email.
 
 ## Smart masking: two models, chosen for you
 
-`--smart` adds two on-device AI models on top of the rules. You never pick one — Omna does, by length:
-
-- **Up to 8 KB** (a typed message, a short paste): **both** models read it and their finds are merged.
-- **Longer** (a file, a long paste, an agent's tool output): **Kiji's model** alone, so it stays fast.
+`--smart` adds two on-device AI models on top of the rules. You never pick one: **both read every
+text** and their finds are merged — on a 1,030-text sample in six languages, both together hid 95% of
+sensitive characters, against 77% and 87% for each model alone. One exception keeps the browser quick:
+when Omna for Chrome asks for a message **over 8 KB**, Kiji's faster model reads it alone.
 
 | Model | Download | Best at |
 |---|---|---|
