@@ -57,7 +57,9 @@ the owner's real e-mail into a plan file; caught before commit. Same trick as th
   boundary — do not "simplify" either back to open.
 - Never log or persist a real value except in `registry.json` (0600, AES-256-GCM via `vault.py`, key in
   the macOS Keychain; plaintext fallback with a loud `omna status` line where there is no Keychain).
-  Receipts are counts only. Tests must never touch the real Keychain — `tests/conftest.py` forces
+  Receipts hold no values: record format 1 (receipts.py docstring) — the masking engine's L6 finds
+  (kind, layer, action, count) + keyed value fingerprints, shared with Omna for Chrome
+  (`tests/fixtures/record_vectors.json` must match the extension's copy). Tests must never touch the real Keychain — `tests/conftest.py` forces
   `OMNA_REGISTRY_ENCRYPTION=off` for the whole suite; opt in with the in-memory fake in `test_vault.py`.
 - Keep the gateway contract: forward `anthropic-beta`/`anthropic-version` verbatim, never reshape the
   `system` array, never buffer SSE, forward upstream error bodies unmodified, never touch `thinking`,
