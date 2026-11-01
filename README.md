@@ -24,7 +24,7 @@ you get back: "…set SUPPORT_EMAIL to jane.doe@example.com…"   ← restored, 
   cards, IBANs, IPs, names) becomes stable tokens: `[EMAIL_1]` is the same address in every request, so
   prompt caching keeps working.
 - **Nothing is sent to Omna.** The only network destination is the provider you were already using.
-  A local receipt log (counts only, hash-chained) shows what was caught.
+  A local receipt log (no values, hash-chained) shows what was caught — Omna for Chrome's too.
 - **16 ms** to mask a 68 KB request — measured, not estimated, on an M5 MacBook Air, and it is on top of a
   call that already takes seconds. You will not feel it. ([How it was measured](#speed).)
 
@@ -217,7 +217,8 @@ The proxy relays the stream as it arrives (pings included), forwards `anthropic-
 | File (`~/.omna/`) | Contents | Permissions |
 |---|---|---|
 | `registry.json` | token → real value for reversible PII (needed to restore replies). Secrets are never in it; they live in the running proxy's memory only. | 0600 + **encrypted** |
-| `receipts.jsonl` | one hash-chained line per request: route, status, ms, counts per entity. No values. | 0600 |
+| `receipts.jsonl` | one hash-chained record per request: route, status, ms, and what was found (kind, layer, what was done, a keyed fingerprint of each value). No values. Omna for Chrome's records join the same chain while the curl command runs, so `omna report` covers both. | 0600 + **encrypted** |
+| `fingerprint.key` | only on a machine without a Keychain: the secret that keys the value fingerprints (on a Mac it comes from the Keychain). | 0600 |
 | `ruleset.json` | your allowlist and custom patterns (`{"allowlist": [...], "custom_rules": [{"label": "CUSTOMER_ID", "pattern": "ACME-\\d{6}"}]}`). Created with loopback addresses (`127.0.0.1`, `0.0.0.0`, `::1`, `localhost`) allowlisted. | |
 | `proxy.log`, `omna.pid` | background-process housekeeping | |
 | `policy.json` | which tools/apps/hosts are covered, and — only if you ran `omna enroll` — an organisation name, a department name, and a random device id. | 0600 |
