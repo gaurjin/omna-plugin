@@ -8,21 +8,28 @@ a model. They only turn smart masking on or off.
 - Kiji's model (Dataiku, DistilBERT, Apache-2.0, ~64 MB): ~30–45× faster and
   strong on ID numbers, addresses and links, weaker on names.
 
-The rule (measured 2026-11-01, see MASTER #141): a text up to
-``BOTH_UP_TO_CHARS`` — a typed message, a short paste — is read by BOTH models
-(their finds are merged by the masking engine's fusion layer, L4); a longer
-text — a file, a long paste, an agent's tool output — by Kiji's model alone,
-so it stays fast. The masking engine (omna-pii-mask) does the work; this
-module only names the model.
+The rule (measured 2026-11-01, see MASTER #141):
+
+- **The curl command's own doors** (AI tools, agents, files, chat sites):
+  BOTH models at every size, merged by the masking engine's fusion layer (L4).
+  On Kiji's test set both together hid 95% of sensitive characters and fully
+  leaked 6% of values (privacy filter alone 77% / 26%, Kiji alone 87% / 14%).
+  Kiji's model alone was tried for long texts and dropped the same night: on
+  a 19 KB live test it missed a first name the privacy filter catches, and
+  0.6.13 already read every text with the privacy filter — never worse than
+  yesterday. Speed (4 cores): 8 KB ~1.5 s, 19 KB ~2.6 s.
+- **Omna for Chrome** (``/omna/detect-l3``, it waits at send): both up to
+  ``BOTH_UP_TO_CHARS``, Kiji's model alone above (64 KB ~2.5 s). Before
+  2026-11-01 Chrome got no smart masking above 8 KB at all, so this is gain.
 """
 
 from __future__ import annotations
 
 import omna_pii_mask
 
-# Texts up to this many characters are read by both models. Set from the
-# 2026-11-01 speed measurements (4 cores, real text): 8 KB = ~1.5 s with both
-# models; longer text with Kiji's model alone: 64 KB = ~2.5 s.
+# Omna for Chrome only: texts up to this many characters are read by both
+# models, longer ones by Kiji's model alone. Measured 2026-11-01 (4 cores, real
+# text): 8 KB = ~1.5 s with both; 64 KB = ~2.5 s with Kiji's model.
 BOTH_UP_TO_CHARS = 8 * 1024
 
 BOTH = "both"
@@ -30,28 +37,30 @@ KIJI = "kiji"
 PRIVACY_FILTER = "privacy-filter"
 
 
-def model_for(text: str) -> str:
-    """The smart model(s) for ``text``: both for a short text, Kiji's for a long one."""
+def model_for_chrome(text: str) -> str:
+    """Omna for Chrome: both models for a short text, Kiji's for a long one."""
     return BOTH if len(text) <= BOTH_UP_TO_CHARS else KIJI
 
 
 def mask(text: str, smart: bool, ruleset: str | None = None) -> dict:
-    """omna_pii_mask.mask with the automatic model choice when smart is on."""
+    """omna_pii_mask.mask for the curl command's doors: both models when smart is on."""
     if not smart:
         return omna_pii_mask.mask(text, model=False, ruleset=ruleset)
-    return omna_pii_mask.mask(text, model=True, ruleset=ruleset, smart_model=model_for(text))
+    return omna_pii_mask.mask(text, model=True, ruleset=ruleset, smart_model=BOTH)
 
 
-def detect(text: str, smart: bool, ruleset: str | None = None) -> list[dict]:
-    """omna_pii_mask.detect with the automatic model choice when smart is on."""
+def detect(text: str, smart: bool, ruleset: str | None = None, for_chrome: bool = False) -> list[dict]:
+    """omna_pii_mask.detect: both models when smart is on; ``for_chrome`` uses
+    the size rule (Kiji's model alone above BOTH_UP_TO_CHARS)."""
     if not smart:
         return omna_pii_mask.detect(text, model=False, ruleset=ruleset)
-    return omna_pii_mask.detect(text, model=True, ruleset=ruleset, smart_model=model_for(text))
+    which = model_for_chrome(text) if for_chrome else BOTH
+    return omna_pii_mask.detect(text, model=True, ruleset=ruleset, smart_model=which)
 
 
 def download_models() -> None:
-    """Fetch both smart models (Kiji's first: it is small, so short texts gain
-    its finds sooner). Each file is checked against its pinned fingerprint."""
+    """Fetch both smart models (Kiji's first: it is small). Each file is
+    checked against its pinned fingerprint."""
     omna_pii_mask.download_model(smart_model=KIJI)
     omna_pii_mask.download_model(smart_model=PRIVACY_FILTER)
 

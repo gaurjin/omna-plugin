@@ -40,10 +40,11 @@ from .system_door import EXT_HEADER
 
 def _engine_detect(text: str, model: bool = False, ruleset: str | None = None) -> list[dict]:
     """The engine's detect(), behind a name the tests can replace (no model in tests).
-    Smart: the model(s) are chosen automatically by text size (smart.py)."""
+    Only Omna for Chrome's /omna/detect-l3 uses it: the Chrome size rule
+    applies (smart.py — both models up to 8 KB, Kiji's model alone above)."""
     from . import smart as smart_models
 
-    return smart_models.detect(text, model, ruleset)
+    return smart_models.detect(text, model, ruleset, for_chrome=True)
 
 try:
     # Read from the installed package's own metadata (pyproject.toml's `version`)

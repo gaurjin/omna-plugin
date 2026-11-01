@@ -28,19 +28,22 @@ def calls(monkeypatch):
     return seen
 
 
-def test_a_typed_message_is_read_by_both_models():
-    assert smart.model_for("Priya Raman, 42 Elm Road") == smart.BOTH
-    assert smart.model_for("x" * smart.BOTH_UP_TO_CHARS) == smart.BOTH
-
-
-def test_a_long_text_is_read_by_kijis_model_alone():
-    assert smart.model_for("x" * (smart.BOTH_UP_TO_CHARS + 1)) == smart.KIJI
-
-
-def test_smart_on_passes_the_chosen_model(calls):
+def test_the_curl_commands_own_doors_use_both_models_at_every_size(calls):
+    # Kiji's model alone missed a first name on a 19 KB live test (2026-11-01),
+    # and 0.6.13 read every text with the privacy filter: never worse than that.
     smart.mask("short", True)
-    smart.detect("y" * (smart.BOTH_UP_TO_CHARS + 1), True)
-    assert calls == [("mask", True, smart.BOTH), ("detect", True, smart.KIJI)]
+    smart.mask("x" * 200_000, True)
+    smart.detect("y" * 200_000, True)
+    assert calls == [("mask", True, smart.BOTH), ("mask", True, smart.BOTH), ("detect", True, smart.BOTH)]
+
+
+def test_chrome_gets_both_for_short_text_and_kijis_model_for_long(calls):
+    assert smart.model_for_chrome("Priya Raman, 42 Elm Road") == smart.BOTH
+    assert smart.model_for_chrome("x" * smart.BOTH_UP_TO_CHARS) == smart.BOTH
+    assert smart.model_for_chrome("x" * (smart.BOTH_UP_TO_CHARS + 1)) == smart.KIJI
+    smart.detect("short", True, for_chrome=True)
+    smart.detect("y" * (smart.BOTH_UP_TO_CHARS + 1), True, for_chrome=True)
+    assert calls == [("detect", True, smart.BOTH), ("detect", True, smart.KIJI)]
 
 
 def test_smart_off_never_names_a_model(calls):
