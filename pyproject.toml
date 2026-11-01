@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Security",
 ]
 dependencies = [
-    "omna-pii-mask>=0.2.12,<0.3",
+    "omna-pii-mask>=0.2.15,<0.3",
     # Reading text in pictures with Apple Vision (ocr.py) — macOS only; Linux skips it.
     "pyobjc-framework-Vision>=11; sys_platform == 'darwin'",
     "cryptography>=42",   # AES-256-GCM for registry.json at rest (vault.py)
