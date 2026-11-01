@@ -17,7 +17,7 @@
 #   every release; a test fails if it does not match pyproject.toml) and a
 #   fixed version of uv's own installer.
 set -eu
-OMNA_VERSION="0.6.12"
+OMNA_VERSION="0.6.13"
 UV_VERSION="0.11.7"
 
 main() {
