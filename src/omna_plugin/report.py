@@ -106,6 +106,12 @@ def build(days: int = 7) -> dict:
             mask_ms.append(r["mask_ms"])
         for tok in r.get("tokens") or []:
             (distinct_secret if str(tok).startswith("SECRET_") else distinct_pii).add(tok)
+        if not r.get("tokens"):
+            # A record with no stand-in names (Omna for Chrome's, #184): the
+            # keyed value fingerprints say how many DIFFERENT values it held.
+            for f in r.get("finds") or []:
+                for fp in f.get("fp") or []:
+                    (distinct_secret if f.get("layer") == "L2" else distinct_pii).add("fp:" + str(fp))
     chain_ok, chain_n, chain_msg = receipts.verify()
     # If the receipts carry no per-layer totals (older lines), fall back to a name hint.
     if n_secret == 0 and n_pii == 0 and by_kind:

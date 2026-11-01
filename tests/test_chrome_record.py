@@ -70,3 +70,16 @@ async def test_reports_off_keeps_nothing(c, monkeypatch):
     monkeypatch.setattr(proxy.Policy, "load", classmethod(lambda cls: Off()))
     r = await c.post("/omna/record", headers=HDR, json={"kind": "typed", "site": "claude.ai", "finds": FINDS})
     assert r.json() == {"ok": True, "kept": False} and receipts.count() == 0
+
+
+@pytest.mark.anyio
+async def test_the_report_counts_chrome_records_and_their_distinct_values(c):
+    from omna_plugin import report
+    secret = {"entity": "AWS_KEY", "layer": "L2", "risk": "secret", "action": "redacted", "n": 1, "fp": ["aaaaaaaaaaaaaaaa"]}
+    for _ in range(2):   # the same key and email, twice
+        r = await c.post("/omna/record", headers=HDR, json={"kind": "typed", "site": "claude.ai", "finds": FINDS + [secret]})
+        assert r.status_code == 200
+    rep = report.build(days=7)
+    assert rep["requests"] == 2
+    assert "chrome" in str(rep)
+    assert rep["distinct_secrets"] == 1 and rep["distinct_pii"] == 1, rep
