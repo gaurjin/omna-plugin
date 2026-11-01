@@ -9,9 +9,8 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, urlencode
 
-import omna_pii_mask
-
 from . import office, pdf, picture, receipts
+from . import smart as smart_models
 from .body import ONLY_IN_IDS, is_id_key, mask_body, restore_body
 from .engine import MaskingSession
 from .policy import Policy
@@ -82,7 +81,7 @@ class Pipeline:
         """Where the values are, with this session's settings (fast/smart,
         ruleset) — without minting stand-ins: a picture's values are blacked
         out, never sent as tokens, so they must not appear as "sent"."""
-        return omna_pii_mask.detect(text, model=self.session.smart, ruleset=self.session._ruleset_arg())
+        return smart_models.detect(text, self.session.smart, self.session._ruleset_arg())
 
     def mask_text(self, text: str, style: str = TOKENS, only: frozenset[str] | None = None) -> tuple[str, MaskStats]:
         t0 = time.time()

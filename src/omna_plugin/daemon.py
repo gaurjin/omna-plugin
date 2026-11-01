@@ -33,10 +33,10 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
     policy = Policy.load()
     session = MaskingSession(smart=smart, restore_secrets=restore_secrets)
     if smart:
-        import omna_pii_mask
+        from . import smart as smart_models
 
-        print("omna: preparing the on-device Contextual model (first run downloads ~809 MB)...", flush=True)
-        omna_pii_mask.download_model()
+        print("omna: preparing the two on-device smart models (first run downloads ~64 MB + ~809 MB)...", flush=True)
+        smart_models.download_models()
     pipeline = Pipeline(session)
     stop = stop or asyncio.Event()
 

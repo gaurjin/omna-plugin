@@ -27,8 +27,14 @@ try:  # pyobjc: installed on macOS only (pyproject marker)
 except Exception:  # noqa: BLE001 - any import problem means "no OCR here"
     _HAVE_VISION = False
 
-# Largest picture read in one go. Same bound as the extension's OCR_MAX_BYTES.
-MAX_BYTES = 25 * 1024 * 1024
+# Largest picture read in one go. Was 25 MB, a number copied from the Mac
+# app's chunked transfer. Measured 2026-11-01 (M5 MacBook Air, noisy PNGs that
+# don't compress): 35 MB 1.2 s, 88 MB 2.5 s, 8000x8000 / 161 MB 4.4 s, all
+# blacked out correctly. 100 MB = the extension's file limit; above it the
+# picture goes as it is, logged "not masked" (lesson #34: a lifted cap keeps a
+# bound). Omna for Chrome sends at most 40 MB here (Chrome's 64 MB message
+# limit on the base64 copy — extension PLUGIN_OCR_MAX_BYTES).
+MAX_BYTES = 100 * 1024 * 1024
 
 
 def available() -> bool:

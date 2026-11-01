@@ -67,3 +67,15 @@ def test_same_size_upload_keeps_the_announced_size(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNA_HOME", str(tmp_path))
     out, st = Pipeline(MaskingSession()).mask_file_same_size(TICKET, "image/png")
     assert out is None or len(out) == len(TICKET), "same size, or refused — never a different size"
+
+
+def test_picture_limit_is_100_mb_and_bigger_is_refused_not_misread():
+    # Was 25 MB (copied from the Mac app's chunked path); measured 2026-11-01:
+    # an 8000x8000 / 161 MB picture is blacked out in 4.4 s on an M5 Air.
+    from omna_plugin import ocr
+
+    assert ocr.MAX_BYTES == 100 * 1024 * 1024
+    if not ocr.available():
+        pytest.skip("reading pictures needs macOS")
+    with pytest.raises(ValueError, match="too large"):
+        ocr.recognize(b"\x89PNG" + b"\0" * ocr.MAX_BYTES)

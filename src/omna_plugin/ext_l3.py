@@ -16,10 +16,12 @@ The reply copies the Mac app's `Reply::L3Spans` contract to the letter
   * only spans the MODEL produced (layer L3) — the extension already runs the
     rules (L1/L2) on its side.
 
-Measured 2026-10-31 (M5 MacBook Air, model warm): ~0.25 s per KB of text —
-1 KB 0.8 s, 16 KB 4.4 s, 64 KB 16 s, 256 KB 65 s. So the extension asks only
-for short texts (a typed message), and this refuses anything over
-`MAX_CHARS` so a stuck caller can't tie the model up for minutes.
+Which model reads the text is chosen by size (smart.py): up to 8 KB both
+smart models, longer Kiji's model alone. Measured 2026-11-01 (M5 MacBook Air,
+4 cores, models warm, real text): 1 KB ~0.5 s, 8 KB ~1.5 s with both; 64 KB ~2.5 s
+with Kiji's model (the OpenAI privacy filter alone would take ~20 s). This
+still refuses anything over `MAX_CHARS` so a stuck caller can't tie the
+models up for long.
 """
 
 from __future__ import annotations
@@ -46,7 +48,8 @@ ENTITY_TO_LABEL = {
     "DRIVER_LICENSE": "DRIVERLICENSENUM",
 }
 
-# Hard stop per request: 64 KB of text is ~16 s of model time.
+# Hard stop per request: 64 KB of text is ~2.5 s of Kiji's model (measured
+# 2026-11-01); a bound kept on purpose (lesson #34), not a speed workaround.
 MAX_CHARS = 64 * 1024
 
 

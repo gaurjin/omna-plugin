@@ -30,8 +30,6 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-import omna_pii_mask
-
 from . import config, crashlog, ext_l3, mappings, ocr, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
@@ -41,8 +39,11 @@ from .system_door import EXT_HEADER
 
 
 def _engine_detect(text: str, model: bool = False, ruleset: str | None = None) -> list[dict]:
-    """The engine's detect(), behind a name the tests can replace (no model in tests)."""
-    return omna_pii_mask.detect(text, model=model, ruleset=ruleset)
+    """The engine's detect(), behind a name the tests can replace (no model in tests).
+    Smart: the model(s) are chosen automatically by text size (smart.py)."""
+    from . import smart as smart_models
+
+    return smart_models.detect(text, model, ruleset)
 
 try:
     # Read from the installed package's own metadata (pyproject.toml's `version`)

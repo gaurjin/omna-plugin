@@ -263,7 +263,7 @@ def cmd_status(a) -> int:
         print(f"proxy:        NOT running  → `omna start -d`")
     if h and not h.get("smart"):
         print("smart:        off  → `omna stop && omna start -d --smart` also catches names written in sentences"
-              " (one-time ~809 MB download, ~0.25 s per KB)")
+              " (one-time ~870 MB download; ~0.5 s for a typed message)")
     if h:
         from . import pdf as _pdf
 
@@ -864,18 +864,23 @@ def cmd_verify_model(a) -> int:
         print("omna: this engine build has no model verification "
               f"(engine {omna_pii_mask.version()}). Upgrade the engine wheel to use it.", file=sys.stderr)
         return 1
-    rows = omna_pii_mask.verify_model()
+    try:
+        from . import smart as smart_models
+
+        rows = smart_models.verify_models()
+    except TypeError:  # an engine wheel older than the two-model one (< 0.2.17)
+        rows = [{**r, "model": "privacy-filter"} for r in omna_pii_mask.verify_model()]
     missing = [r for r in rows if r["detail"] == "not downloaded"]
     bad = [r for r in rows if not r["ok"] and r not in missing]
     for r in rows:
         mark = "ok  " if r["ok"] else "FAIL"
-        print(f"{mark}  {r['file']:<24} {r['detail']}")
+        print(f"{mark}  {r['model']:<15} {r['file']:<24} {r['detail']}")
     if len(missing) == len(rows):
-        print("\nomna: the model isn't downloaded yet — nothing to verify. It arrives on the first\n"
+        print("\nomna: the smart models aren't downloaded yet — nothing to verify. They arrive on the first\n"
               "      `--smart` run, and every file is checked against its pinned hash as it streams in.")
         return 0
     if bad:
-        print(f"\nomna: {len(bad)} file(s) FAILED. That means the model on this machine is not the one\n"
+        print(f"\nomna: {len(bad)} file(s) FAILED. That means a model on this machine is not the one\n"
               "      Omna was built against. Delete the model cache and let it download again.")
         return 1
     print("\nomna: every model file matches the hash this engine was built against.")
@@ -979,7 +984,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("start", help="run the masking proxy"); add_port(s)
     s.add_argument("-d", "--daemon", action="store_true", help="run in the background")
-    s.add_argument("--smart", action="store_true", help="also run the on-device Contextual model (L3); slower, catches prose names")
+    s.add_argument("--smart", action="store_true", help="also run the on-device smart models (L3), chosen automatically; catches names written in sentences")
     s.add_argument("--no-restore-secrets", action="store_true", help="redact secrets for good (engine default) instead of numbered tokens restored locally; breaks edits to lines that contain a key")
     s.set_defaults(fn=cmd_start)
     s = sub.add_parser("stop", help="stop the background proxy"); add_port(s); s.set_defaults(fn=cmd_stop)

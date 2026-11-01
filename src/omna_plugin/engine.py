@@ -51,6 +51,7 @@ except ImportError:  # Windows: no shared lock; one program at a time, as before
     fcntl = None  # type: ignore[assignment]
 
 from . import config, fakes, vault
+from . import smart as smart_models
 from .style import REALISTIC, TOKENS
 
 # Reversible tokens: [PERSON_1], [EMAIL_12], [GOV_ID_3], [SECRET_AWS_KEY_2] ...
@@ -698,7 +699,7 @@ class MaskingSession:
                 if self._note_site(hit.labels):
                     self._save_registry()
                 return hit
-        raw = omna_pii_mask.mask(text, model=self.smart, ruleset=self._ruleset_arg())
+        raw = smart_models.mask(text, self.smart, self._ruleset_arg())
         if only is not None:
             raw = {**raw, "spans": [sp for sp in raw["spans"]
                                     if sp.get("layer") == "L2" or sp.get("entity") in only]}
