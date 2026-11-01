@@ -564,7 +564,9 @@ def test_forget_wipes_the_key_too(monkeypatch, capsys):
     MaskingSession().mask_text("mail a@example.com")
     assert store
     main(["forget"])
-    assert store == {}
+    # The registry key is gone; the receipts key stays on purpose (forget
+    # never makes the evidence trail unreadable, receipts.py).
+    assert "registry-key" not in store and set(store) <= {"receipts-key"}
     assert "Keychain" in capsys.readouterr()[0]
 
 

@@ -169,3 +169,75 @@ def test_a_receipt_written_by_another_program_still_chains(home):
         f.write(json.dumps(rec, sort_keys=True, separators=(",", ":")) + "\n")
     receipts.append({"route": "c"})
     assert receipts.verify() == (True, 3, "chain intact")
+
+
+# ---------------------------------------------------------------- format 1 (#184)
+
+def test_shared_vectors_hash_the_same_in_every_product():
+    """The same file is in Omna for Chrome's tests: both products must write
+    these exact bytes and seals, or one report could not check the other."""
+    from pathlib import Path
+    doc = json.loads((Path(__file__).parent / "fixtures" / "record_vectors.json").read_text())
+    prev = doc["genesis"]
+    for item in doc["chain"]:
+        rec = item["record"]
+        assert rec["prev"] == prev
+        assert receipts._canonical(rec) == item["canonical"]
+        assert receipts._hash(prev, rec) == item["hash"]
+        prev = item["hash"]
+
+
+def test_finds_group_l6_events_and_never_carry_a_value():
+    events = [
+        {"entity": "EMAIL", "layer": "L1", "risk": "direct_identifier", "action": "tokenized",
+         "confidence": 0.6, "span_hash": "aaaaaaaaaaaaaaaa"},
+        {"entity": "EMAIL", "layer": "L1", "risk": "direct_identifier", "action": "tokenized",
+         "confidence": 0.6, "span_hash": "aaaaaaaaaaaaaaaa"},
+        {"entity": "AWS_KEY", "layer": "L2", "risk": "secret", "action": "redacted",
+         "confidence": 0.9, "span_hash": "bbbbbbbbbbbbbbbb"},
+    ]
+    finds = receipts.finds_of(events)
+    assert finds == [
+        {"entity": "AWS_KEY", "layer": "L2", "risk": "secret", "action": "redacted", "n": 1, "fp": ["bbbbbbbbbbbbbbbb"]},
+        {"entity": "EMAIL", "layer": "L1", "risk": "direct_identifier", "action": "tokenized", "n": 2, "fp": ["aaaaaaaaaaaaaaaa"]},
+    ]
+    assert receipts.totals_of(finds) == {"masked": {"AWS_KEY": 1, "EMAIL": 2}, "secrets": 1, "pii": 2,
+                                         "by_layer": {"L2": 1, "L1": 2}}
+    # Merging two requests' finds adds the counts and keeps fingerprints distinct.
+    both = receipts.merge_finds(finds, finds)
+    assert [f["n"] for f in both] == [2, 4] and both[1]["fp"] == ["aaaaaaaaaaaaaaaa"]
+    # A picture's values are blacked out, whatever the engine would do with text.
+    assert {f["action"] for f in receipts.finds_of(events, action="redacted")} == {"redacted"}
+
+
+def test_fingerprint_key_is_stable_per_computer_and_never_shared(home, tmp_path_factory, monkeypatch):
+    a = receipts.fingerprint_key()
+    assert len(a) == 32 and receipts.fingerprint_key() == a
+    other = tmp_path_factory.mktemp("other-computer")
+    monkeypatch.setenv("OMNA_HOME", str(other))
+    assert receipts.fingerprint_key() != a
+
+
+def test_real_masking_fingerprints_are_keyed(home):
+    """End to end through the masking engine (omna-pii-mask): the receipt's
+    fingerprint is the keyed one, not a plain hash anyone could recompute."""
+    import hashlib
+    from omna_plugin.engine import MaskingSession
+    r = MaskingSession().mask_text("my ssn is 123-45-6789 and mail bob@acme.com")
+    fps = [fp for f in r.finds for fp in f["fp"]]
+    assert fps and all(len(fp) == 16 for fp in fps)
+    for value in ("123-45-6789", "bob@acme.com"):
+        assert hashlib.sha256(value.encode()).hexdigest()[:16] not in fps
+        assert value not in json.dumps(r.finds)
+
+
+@pytest.mark.parametrize("bad", [
+    None, "x", [{}],
+    [{"entity": "EMAIL", "layer": "L1", "risk": "r", "action": "a", "n": 1, "fp": ["notHEX!notHEX!no"]}],
+    [{"entity": "EMAIL", "layer": "L1", "risk": "r", "action": "a", "n": 0, "fp": []}],
+    [{"entity": "EMAIL", "layer": "L1", "risk": "r", "action": "a", "n": True, "fp": []}],
+    [{"entity": "EMAIL", "layer": "L1", "risk": "r", "action": "a", "n": 1, "fp": [], "value": "bob@acme.com"}],
+    [{"entity": "", "layer": "L1", "risk": "r", "action": "a", "n": 1, "fp": []}],
+])
+def test_untrusted_finds_are_refused_unless_exact(bad):
+    assert receipts.valid_finds(bad) is None

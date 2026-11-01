@@ -27,6 +27,7 @@ from . import config, hands_off, sites, while_typing
 from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
+from .pipeline import _merge as merge_stats
 from .policy import Policy
 from .style import TOKENS, style_for_door
 
@@ -419,10 +420,10 @@ class OmnaAddon:
                 return
             msg.content = masked.encode("utf-8")
             st: MaskStats = flow.metadata.setdefault("omna_stats", MaskStats())
-            for k, v in stats.counts.items():
-                st.counts[k] = st.counts.get(k, 0) + v
-            st.secrets += stats.secrets
-            st.pii += stats.pii
+            # The one merge every door uses (pipeline._merge): the record is
+            # built from the L6 finds it carries (#184); a hand-made copy here
+            # dropped the finds, layers and stand-in names.
+            merge_stats(st, stats)
         elif not self._skip_restore(flow):
             # Same rules as an HTTP reply: the restore switch and the
             # extension's tag are honoured, only this site's values come back,

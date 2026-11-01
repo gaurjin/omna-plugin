@@ -17,11 +17,33 @@ much. That is worth the same protection as the dashboard (#134).
 
 The chain is computed over the DECRYPTED record, so ``verify()`` is unchanged
 and an old plaintext file keeps verifying — ``_iter`` reads both forms.
+
+**One record format for both products (MASTER #184, format 1).** The curl
+command and Omna for Chrome write the same record, built from the masking
+engine's (omna-pii-mask) L6 events — never from counters of their own:
+
+* ``v`` 1, ``ts``, ``product`` ("curl" | "chrome"), ``engine`` (the masking
+  engine's build fingerprint);
+* ``finds``: the L6 events grouped — one item per (entity, layer, risk,
+  action) with ``n`` (how many) and ``fp`` (the distinct value fingerprints,
+  keyed per computer, sorted; see ``fingerprint_key``). Never a value;
+* the totals a report shows (``masked`` per kind, ``secrets``, ``pii``,
+  ``by_layer``) are WORKED OUT from ``finds`` (``totals_of``), so they cannot
+  drift from what was found;
+* ``prev`` / ``hash``: SHA-256 over ``prev`` + the canonical JSON (sorted
+  keys, no spaces, non-ASCII escaped as backslash-u + 4 hex — Python's ``json.dumps``
+  default) of the record without ``hash``. No floats anywhere in a record, so
+  every language writes the same bytes. ``tests/fixtures/record_vectors.json``
+  is shared with Omna for Chrome's tests: both must produce these hashes.
+
+Omna for Chrome hands its records to ``POST /omna/record`` while the curl
+command runs; they join this chain as ``product: "chrome"``, door "chrome".
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import threading
@@ -46,6 +68,106 @@ _LOCK = threading.Lock()
 _HEAD: dict[str, tuple[tuple[int, int], str]] = {}   # path -> (stamp, last hash)
 _KEYS: dict[str, bytes | None] = {}
 _TAIL_BYTES = 64 * 1024
+
+
+FORMAT = 1
+
+# The secret behind every L6 value fingerprint on this computer (#184). An
+# unkeyed hash of a short value (a 9-digit ID) can be reversed by hashing every
+# possible value; keyed, it cannot without this key. Derived from the receipts
+# key (Keychain) so there is nothing new to store; without a Keychain, a
+# random key file next to the receipts (0600).
+_FP_KEYS: dict[str, bytes] = {}
+
+
+def fingerprint_key() -> bytes:
+    home = str(config.home())
+    if home in _FP_KEYS:
+        return _FP_KEYS[home]
+    base = _key(cached=True)
+    if base:
+        key = hmac.new(base, b"omna-l6-fingerprint-v1", hashlib.sha256).digest()
+    else:
+        config.ensure_home()
+        path = config.home() / "fingerprint.key"
+        try:
+            key = path.read_bytes()
+        except OSError:
+            key = b""
+        if len(key) != 32:
+            key = os.urandom(32)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(key)
+    _FP_KEYS[home] = key
+    return key
+
+
+_FIND_KEYS = ("entity", "layer", "risk", "action")
+
+
+def finds_of(events: list[dict], action: str | None = None) -> list[dict]:
+    """Group L6 events (the masking engine's ``mask()["audit"]`` items, or
+    ``detect()`` spans, which carry the same fields) into a record's ``finds``.
+    ``action`` overrides the engine's (a picture's values are blacked out)."""
+    groups: dict[tuple, dict] = {}
+    for e in events:
+        k = (str(e.get("entity", "")), str(e.get("layer", "")), str(e.get("risk", "")),
+             action or str(e.get("action", "")))
+        g = groups.setdefault(k, {"n": 0, "fp": set()})
+        g["n"] += 1
+        if e.get("span_hash"):
+            g["fp"].add(str(e["span_hash"]))
+    return [dict(zip(_FIND_KEYS, k), n=g["n"], fp=sorted(g["fp"])) for k, g in sorted(groups.items())]
+
+
+def merge_finds(*lists: list[dict]) -> list[dict]:
+    groups: dict[tuple, dict] = {}
+    for items in lists:
+        for f in items:
+            k = tuple(f[x] for x in _FIND_KEYS)
+            g = groups.setdefault(k, {"n": 0, "fp": set()})
+            g["n"] += int(f["n"])
+            g["fp"].update(f.get("fp") or ())
+    return [dict(zip(_FIND_KEYS, k), n=g["n"], fp=sorted(g["fp"])) for k, g in sorted(groups.items())]
+
+
+def totals_of(finds: list[dict]) -> dict:
+    """The totals a record shows, worked out from its finds. A secret is what
+    the secrets layer (L2) caught — the rule the curl command always used."""
+    masked: dict[str, int] = {}
+    by_layer: dict[str, int] = {}
+    secrets = pii = 0
+    for f in finds:
+        n = int(f["n"])
+        masked[f["entity"]] = masked.get(f["entity"], 0) + n
+        by_layer[f["layer"]] = by_layer.get(f["layer"], 0) + n
+        if f["layer"] == "L2":
+            secrets += n
+        else:
+            pii += n
+    return {"masked": masked, "secrets": secrets, "pii": pii, "by_layer": by_layer}
+
+
+def valid_finds(value) -> list[dict] | None:
+    """``finds`` from an untrusted sender (Omna for Chrome over a local port),
+    or None when the shape is anything but exact."""
+    if not isinstance(value, list) or len(value) > 500:
+        return None
+    out = []
+    for f in value:
+        if not isinstance(f, dict) or set(f) != {*_FIND_KEYS, "n", "fp"}:
+            return None
+        if not all(isinstance(f[k], str) and 0 < len(f[k]) <= 64 for k in _FIND_KEYS):
+            return None
+        if not isinstance(f["n"], int) or isinstance(f["n"], bool) or not 0 < f["n"] <= 1_000_000:
+            return None
+        fp = f["fp"]
+        if (not isinstance(fp, list) or len(fp) > 1000
+                or not all(isinstance(x, str) and len(x) == 16 and all(c in "0123456789abcdef" for c in x) for x in fp)):
+            return None
+        out.append({**{k: f[k] for k in _FIND_KEYS}, "n": f["n"], "fp": sorted(set(fp))})
+    return merge_finds(out)
 
 
 def _canonical(rec: dict) -> str:

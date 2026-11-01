@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 
+from . import receipts
 from .engine import MaskingSession
 from .style import TOKENS
 
@@ -103,7 +104,8 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
 
     ``counts`` maps entity name -> occurrences and carries reserved keys that
     the receipt writer pops off: ``_secrets`` / ``_pii`` (totals by layer),
-    ``_validated`` (catches a checksum actually proved) and ``_layer_L1`` etc.
+    ``_validated`` (catches a checksum actually proved), ``_layer_L1`` etc.
+    and ``_finds`` (the masking engine's L6 events, grouped — #184).
 
     ``labels`` are the numbered token names minted for this body ("EMAIL_1"),
     whatever the style. Receipts count those, so the audit trail is the same
@@ -114,10 +116,13 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
     """
     counts: dict[str, int] = {}
     labels: list[str] = []
+    finds: list[list[dict]] = []
 
     def fn(s: str, c: dict[str, int], key: str | None = None) -> str:
         r = session.mask_text(s, style=style, only=ONLY_IN_IDS if careful and is_id_key(key) else None)
         labels.extend(r.labels)
+        if r.finds:
+            finds.append(r.finds)
         for k, n in r.counts.items():
             c[k] = c.get(k, 0) + n
         if r.secrets:
@@ -131,7 +136,10 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
             c[k] = c.get(k, 0) + n
         return r.masked
 
-    return _walk(obj, fn, counts), counts, sorted(set(labels))
+    masked = _walk(obj, fn, counts)
+    if finds:
+        counts["_finds"] = receipts.merge_finds(*finds)  # type: ignore[assignment]
+    return masked, counts, sorted(set(labels))
 
 
 def restore_body(session: MaskingSession, obj):

@@ -34,6 +34,9 @@ class MaskStats:
     # binary Word/Excel, an image, PowerPoint): it went through as it is, and
     # the receipt says so (MASTER #160 step 3, owner decision "A").
     not_masked: str = ""
+    # The masking engine's (omna-pii-mask) L6 events, grouped
+    # (receipts.finds_of): the record's totals are worked out from these (#184).
+    finds: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -54,6 +57,8 @@ def _merge(total: MaskStats, st: MaskStats) -> None:
         total.by_layer[k] = total.by_layer.get(k, 0) + v
     total.tokens = sorted(set(total.tokens) | set(st.tokens))
     total.not_masked = total.not_masked or st.not_masked
+    if st.finds:
+        total.finds = receipts.merge_finds(total.finds, st.finds)
 
 
 class Pipeline:
@@ -70,6 +75,7 @@ class Pipeline:
             secrets=c.pop("_secrets", 0),
             pii=c.pop("_pii", 0),
             validated=c.pop("_validated", 0),
+            finds=c.pop("_finds", []),
             by_layer=by_layer,
             counts=c,
             mask_ms=int((time.time() - t0) * 1000),
@@ -88,7 +94,8 @@ class Pipeline:
         r = self.session.mask_text(text, style=style, only=only)
         return r.masked, MaskStats(counts=dict(r.counts), secrets=r.secrets, pii=r.pii,
                                     validated=r.validated, by_layer=dict(r.by_layer),
-                                    mask_ms=int((time.time() - t0) * 1000), tokens=list(r.labels))
+                                    mask_ms=int((time.time() - t0) * 1000), tokens=list(r.labels),
+                                    finds=list(r.finds))
 
     def mask_bytes(self, body: bytes, content_type: str, style: str = TOKENS, careful: bool = False) -> MaskedBody:
         """Mask a request body by content type. Never forwarded unmasked.
@@ -212,7 +219,8 @@ class Pipeline:
             if done is not None:
                 out, st = done
                 return out, MaskStats(counts=st["counts"], secrets=st["secrets"], pii=st["pii"],
-                                      validated=st["validated"], by_layer=st["by_layer"])
+                                      validated=st["validated"], by_layer=st["by_layer"],
+                                      finds=st["finds"])
         if kind == "pdf":
             # On a Mac: paint over each value inside the PDF (pdf.py). Pages
             # without a value stay as they were. Otherwise: as before.
@@ -221,7 +229,8 @@ class Pipeline:
                 out, spans = done
                 st = picture.stats_of(spans)
                 return out, MaskStats(counts=st["counts"], secrets=st["secrets"], pii=st["pii"],
-                                      validated=st["validated"], by_layer=st["by_layer"])
+                                      validated=st["validated"], by_layer=st["by_layer"],
+                                      finds=st["finds"])
         if kind:
             return data, MaskStats(not_masked=kind)
         ct = (content_type or "").lower()
@@ -315,10 +324,13 @@ class Pipeline:
         # tracking, and the person still needs to see it to fix a pinned app.
         if note != "tls-refused" and not Policy.load().reports_enabled:
             return
+        # One record format for both products (#184, receipts.py): built from
+        # the masking engine's L6 finds; the totals are worked out from them.
         rec = {
+            "v": receipts.FORMAT, "product": "curl", "engine": smart_models.engine_fingerprint(),
             "door": door, "route": route, "host": host, "upstream": host, "status": status,
-            "stream": stream, "masked": stats.counts, "secrets": stats.secrets, "pii": stats.pii,
-            "validated": stats.validated, "by_layer": stats.by_layer,
+            "stream": stream, "finds": stats.finds, **receipts.totals_of(stats.finds),
+            "validated": stats.validated,
             "mask_ms": stats.mask_ms, "tokens": stats.tokens, "bytes_in": nbytes, "ms": ms,
             "app": app, "style": style,
         }

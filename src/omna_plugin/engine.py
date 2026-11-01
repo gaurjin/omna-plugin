@@ -50,7 +50,7 @@ try:
 except ImportError:  # Windows: no shared lock; one program at a time, as before
     fcntl = None  # type: ignore[assignment]
 
-from . import config, fakes, vault
+from . import config, fakes, receipts, vault
 from . import smart as smart_models
 from .style import REALISTIC, TOKENS
 
@@ -111,6 +111,9 @@ class MaskResult:
     # was used. Receipts count these, so the audit trail stays identical when
     # the masked text carries realistic fake values and no brackets at all.
     labels: list[str] = field(default_factory=list)
+    # The masking engine's (omna-pii-mask) L6 events for this text, grouped
+    # (receipts.finds_of) — what the record is built from (#184).
+    finds: list[dict] = field(default_factory=list)
 
 
 class MaskingSession:
@@ -700,9 +703,14 @@ class MaskingSession:
                     self._save_registry()
                 return hit
         raw = smart_models.mask(text, self.smart, self._ruleset_arg())
+        audit = raw.get("audit") or []
         if only is not None:
-            raw = {**raw, "spans": [sp for sp in raw["spans"]
-                                    if sp.get("layer") == "L2" or sp.get("entity") in only]}
+            # L6 events line up with spans one to one: keep the same ones.
+            keep = [i for i, sp in enumerate(raw["spans"])
+                    if sp.get("layer") == "L2" or sp.get("entity") in only]
+            audit = [audit[i] for i in keep if i < len(audit)]
+            raw = {**raw, "spans": [raw["spans"][i] for i in keep]}
+        finds = receipts.finds_of(audit)
         counts: dict[str, int] = {}
         by_layer: dict[str, int] = {}
         n_secret = n_pii = n_validated = 0
@@ -726,7 +734,7 @@ class MaskingSession:
                 changed = True
             if changed:
                 self._save_registry()
-            result = MaskResult(masked, counts, n_secret, n_pii, by_layer, n_validated, labels)
+            result = MaskResult(masked, counts, n_secret, n_pii, by_layer, n_validated, labels, finds)
             self._cache[key] = result
             if len(self._cache) > _CACHE_SIZE:
                 self._cache.popitem(last=False)

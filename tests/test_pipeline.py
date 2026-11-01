@@ -81,6 +81,10 @@ def test_receipt_carries_door_host_and_app(tmp_path, monkeypatch):
     assert rec["door"] == "system" and rec["host"] == "chatgpt.com" and rec["app"] == "Google Chrome"
     assert rec["masked"] == {"EMAIL": 1} and rec["pii"] == 1 and rec["tokens"] == ["EMAIL_1"]
     assert "jane" not in json.dumps(rec)
+    # Format 1 (#184): built from the masking engine's L6 finds; the totals
+    # are worked out from them, so they always agree.
+    assert rec["v"] == 1 and rec["product"] == "curl" and rec["engine"]
+    assert rec["finds"] and receipts.totals_of(rec["finds"])["masked"] == rec["masked"]
 
 
 def test_receipt_writes_nothing_when_reports_are_turned_off(tmp_path, monkeypatch):

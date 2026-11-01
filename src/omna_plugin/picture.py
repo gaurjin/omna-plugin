@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from . import ocr
+from . import ocr, receipts
 
 PAD = 3  # pixels of margin around each box, so letter edges don't show
 
@@ -75,7 +75,10 @@ def stats_of(spans: list[dict]) -> dict:
             secrets += 1
         else:
             pii += 1
-    return {"counts": counts, "by_layer": by_layer, "secrets": secrets, "pii": pii, "validated": validated}
+    # Every value found in a picture or PDF is blacked out, whatever the
+    # engine would have done with it as text.
+    return {"counts": counts, "by_layer": by_layer, "secrets": secrets, "pii": pii, "validated": validated,
+            "finds": receipts.finds_of(spans, action="redacted")}
 
 
 def _rotated(data: bytes) -> bool:

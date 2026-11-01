@@ -17,6 +17,7 @@ buffering (pings included), forward error bodies unmodified, answer
 from __future__ import annotations
 
 import json
+import re
 import os
 import time
 from importlib.metadata import PackageNotFoundError
@@ -36,6 +37,11 @@ from .pipeline import MaskStats, Pipeline
 from .policy import Policy
 from .style import style_for_door, style_for_extension
 from .system_door import EXT_HEADER
+
+# What Omna for Chrome may record (#184): text it hid in a box, a file it
+# masked, a picture it blacked out.
+CHROME_RECORD_KINDS = ("typed", "file", "picture")
+_SITE_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")
 
 
 def _engine_detect(text: str, model: bool = False, ruleset: str | None = None) -> list[dict]:
@@ -269,6 +275,45 @@ def create_app(
             ext_l3.model_spans, text, _engine_detect, session._ruleset_arg(),
         )
         return JSONResponse({"smart": True, "spans": spans})
+
+    async def chrome_record(request: Request) -> Response:
+        """One record from Omna for Chrome (#184): it joins this computer's
+        chain as product "chrome", door "chrome", so `omna report` covers
+        both products. Same format as every receipt (receipts.py), built from
+        the masking engine's L6 finds — never a value. Extension only
+        (EXT_HEADER); the body is untrusted, so every field is checked
+        exactly and anything else is refused, never half-written."""
+        if not request.headers.get(EXT_HEADER):
+            return JSONResponse({"error": "extension only"}, status_code=403)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "expected a record"}, status_code=400)
+        kind, site, engine = body.get("kind"), body.get("site"), body.get("engine", "")
+        finds = receipts.valid_finds(body.get("finds"))
+        unlisted = body.get("unlisted", 0)
+        if (kind not in CHROME_RECORD_KINDS or finds is None
+                or not isinstance(site, str) or not _SITE_RE.fullmatch(site)
+                or not isinstance(engine, str) or len(engine) > 64
+                or not isinstance(unlisted, int) or isinstance(unlisted, bool) or not 0 <= unlisted <= 1_000_000):
+            return JSONResponse({"error": "not a valid record"}, status_code=400)
+        if not Policy.load().reports_enabled:
+            return JSONResponse({"ok": True, "kept": False})
+        rec = {
+            "v": receipts.FORMAT, "product": "chrome", "engine": engine, "kind": kind,
+            "door": "chrome", "route": kind, "host": site, "upstream": site, "status": 200,
+            "finds": finds, **receipts.totals_of(finds),
+        }
+        if unlisted:
+            # Found by the Mac app, which reports a count but no L6 list.
+            rec["unlisted"] = unlisted
+        try:
+            await run_in_threadpool(receipts.append, rec)
+        except OSError:
+            return JSONResponse({"error": "could not write"}, status_code=500)
+        return JSONResponse({"ok": True, "kept": True})
 
     async def read_picture(request: Request) -> Response:
         """Read the text in a picture for Omna for Chrome (ocr.py): lines and
@@ -580,6 +625,7 @@ def create_app(
             Route("/omna/extension-checkin", extension_checkin, methods=["POST"]),
             Route("/omna/detect-l3", detect_l3, methods=["POST"]),
             Route("/omna/ocr", read_picture, methods=["POST"]),
+            Route("/omna/record", chrome_record, methods=["POST"]),
             Route("/omna/dashboard", dashboard, methods=["GET"]),
             Route("/omna/dashboard.json", dashboard_json, methods=["GET"]),
             Route("/omna/mappings", mappings_page, methods=["GET"]),

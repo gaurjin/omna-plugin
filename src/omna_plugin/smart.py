@@ -32,6 +32,8 @@ import threading
 
 import omna_pii_mask
 
+from . import receipts
+
 # Omna for Chrome only: texts up to this many characters are read by both
 # models, longer ones by the compact model alone. Measured 2026-11-01 (4 cores, real
 # text): 8 KB = ~1.5 s with both; 64 KB = ~2.5 s with the compact model.
@@ -94,6 +96,19 @@ def _choice(chrome_text: str | None = None) -> str | None:
     return BOTH
 
 
+_FINGERPRINT: list[str] = []
+
+
+def engine_fingerprint() -> str:
+    """The masking engine's (omna-pii-mask) build fingerprint, for records."""
+    if not _FINGERPRINT:
+        try:
+            _FINGERPRINT.append(str(omna_pii_mask.mask("omna")["engine_fingerprint"]))
+        except (KeyError, TypeError, RuntimeError):
+            _FINGERPRINT.append(omna_pii_mask.version())
+    return _FINGERPRINT[0]
+
+
 def model_for_chrome(text: str) -> str | None:
     """Omna for Chrome: both models for a short text, the compact model for a long one."""
     return _choice(text)
@@ -102,18 +117,20 @@ def model_for_chrome(text: str) -> str | None:
 def mask(text: str, smart: bool, ruleset: str | None = None) -> dict:
     """omna_pii_mask.mask for the curl command's doors, with this machine's models."""
     which = _choice() if smart else None
+    key = receipts.fingerprint_key()
     if which is None:
-        return omna_pii_mask.mask(text, model=False, ruleset=ruleset)
-    return omna_pii_mask.mask(text, model=True, ruleset=ruleset, smart_model=which)
+        return omna_pii_mask.mask(text, model=False, ruleset=ruleset, audit_key=key)
+    return omna_pii_mask.mask(text, model=True, ruleset=ruleset, smart_model=which, audit_key=key)
 
 
 def detect(text: str, smart: bool, ruleset: str | None = None, for_chrome: bool = False) -> list[dict]:
     """omna_pii_mask.detect with this machine's models; ``for_chrome`` uses
     the size rule (the compact model alone above BOTH_UP_TO_CHARS)."""
     which = (_choice(text) if for_chrome else _choice()) if smart else None
+    key = receipts.fingerprint_key()
     if which is None:
-        return omna_pii_mask.detect(text, model=False, ruleset=ruleset)
-    return omna_pii_mask.detect(text, model=True, ruleset=ruleset, smart_model=which)
+        return omna_pii_mask.detect(text, model=False, ruleset=ruleset, audit_key=key)
+    return omna_pii_mask.detect(text, model=True, ruleset=ruleset, smart_model=which, audit_key=key)
 
 
 def download_models() -> None:

@@ -1,0 +1,111 @@
+{
+  "about": "Omna record format 1 (MASTER #184). Shared by the curl command and Omna for Chrome: both must produce exactly these canonical strings and hashes. Change only together, in both repos.",
+  "genesis": "0000000000000000000000000000000000000000000000000000000000000000",
+  "chain": [
+    {
+      "record": {
+        "v": 1,
+        "ts": "2026-11-01T10:00:00.000Z",
+        "product": "chrome",
+        "engine": "0.2.19+abc",
+        "kind": "typed",
+        "door": "chrome",
+        "route": "typed",
+        "host": "claude.ai",
+        "upstream": "claude.ai",
+        "status": 200,
+        "finds": [
+          {
+            "entity": "EMAIL",
+            "layer": "L1",
+            "risk": "direct_identifier",
+            "action": "tokenized",
+            "n": 2,
+            "fp": [
+              "0123456789abcdef"
+            ]
+          }
+        ],
+        "masked": {
+          "EMAIL": 2
+        },
+        "secrets": 0,
+        "pii": 2,
+        "by_layer": {
+          "L1": 2
+        },
+        "prev": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "canonical": "{\"by_layer\":{\"L1\":2},\"door\":\"chrome\",\"engine\":\"0.2.19+abc\",\"finds\":[{\"action\":\"tokenized\",\"entity\":\"EMAIL\",\"fp\":[\"0123456789abcdef\"],\"layer\":\"L1\",\"n\":2,\"risk\":\"direct_identifier\"}],\"host\":\"claude.ai\",\"kind\":\"typed\",\"masked\":{\"EMAIL\":2},\"pii\":2,\"prev\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"product\":\"chrome\",\"route\":\"typed\",\"secrets\":0,\"status\":200,\"ts\":\"2026-11-01T10:00:00.000Z\",\"upstream\":\"claude.ai\",\"v\":1}",
+      "hash": "fb6bc9787450af21421444105cd319548a9e08d77cfd5296eb19c4ad0a34f883"
+    },
+    {
+      "record": {
+        "v": 1,
+        "ts": "2026-11-01T10:01:00-0400",
+        "product": "curl",
+        "engine": "0.2.19+abc",
+        "door": "api",
+        "route": "/v1/messages",
+        "host": "api.anthropic.com",
+        "status": 200,
+        "stream": true,
+        "app": null,
+        "finds": [
+          {
+            "entity": "AWS_KEY",
+            "layer": "L2",
+            "risk": "secret",
+            "action": "redacted",
+            "n": 1,
+            "fp": [
+              "fedcba9876543210"
+            ]
+          },
+          {
+            "entity": "PERSON",
+            "layer": "L3",
+            "risk": "direct_identifier",
+            "action": "tokenized",
+            "n": 3,
+            "fp": [
+              "1111111111111111",
+              "2222222222222222"
+            ]
+          }
+        ],
+        "masked": {
+          "AWS_KEY": 1,
+          "PERSON": 3
+        },
+        "secrets": 1,
+        "pii": 3,
+        "by_layer": {
+          "L2": 1,
+          "L3": 3
+        },
+        "prev": "fb6bc9787450af21421444105cd319548a9e08d77cfd5296eb19c4ad0a34f883"
+      },
+      "canonical": "{\"app\":null,\"by_layer\":{\"L2\":1,\"L3\":3},\"door\":\"api\",\"engine\":\"0.2.19+abc\",\"finds\":[{\"action\":\"redacted\",\"entity\":\"AWS_KEY\",\"fp\":[\"fedcba9876543210\"],\"layer\":\"L2\",\"n\":1,\"risk\":\"secret\"},{\"action\":\"tokenized\",\"entity\":\"PERSON\",\"fp\":[\"1111111111111111\",\"2222222222222222\"],\"layer\":\"L3\",\"n\":3,\"risk\":\"direct_identifier\"}],\"host\":\"api.anthropic.com\",\"masked\":{\"AWS_KEY\":1,\"PERSON\":3},\"pii\":3,\"prev\":\"fb6bc9787450af21421444105cd319548a9e08d77cfd5296eb19c4ad0a34f883\",\"product\":\"curl\",\"route\":\"/v1/messages\",\"secrets\":1,\"status\":200,\"stream\":true,\"ts\":\"2026-11-01T10:01:00-0400\",\"v\":1}",
+      "hash": "3b456937636588f1aa9fdaf16e8fee5311e837e8ee5a497f1107afd9ce18a779"
+    },
+    {
+      "record": {
+        "v": 1,
+        "ts": "2026-11-01T10:02:00.000Z",
+        "product": "chrome",
+        "engine": "",
+        "kind": "cleared",
+        "note": "Clear pressed — café, 東京, 😀",
+        "carried": {
+          "masked": 5,
+          "files": 1
+        },
+        "finds": [],
+        "prev": "3b456937636588f1aa9fdaf16e8fee5311e837e8ee5a497f1107afd9ce18a779"
+      },
+      "canonical": "{\"carried\":{\"files\":1,\"masked\":5},\"engine\":\"\",\"finds\":[],\"kind\":\"cleared\",\"note\":\"Clear pressed \\u2014 caf\\u00e9, \\u6771\\u4eac, \\ud83d\\ude00\",\"prev\":\"3b456937636588f1aa9fdaf16e8fee5311e837e8ee5a497f1107afd9ce18a779\",\"product\":\"chrome\",\"ts\":\"2026-11-01T10:02:00.000Z\",\"v\":1}",
+      "hash": "f5e4ca54a7a4bc79b8242b67f52a08f8d697be906147a3e28f0fabb8afab7ba3"
+    }
+  ]
+}

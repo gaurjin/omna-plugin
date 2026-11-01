@@ -86,7 +86,12 @@ def test_openai_request_masked(session):
     assert masked["messages"][0]["content"] == "You are helpful."
     # Reserved keys (leading underscore) are popped off by the receipt writer;
     # `_layer_*` records which detection layer found each catch.
+    finds = counts.pop("_finds")
     assert counts == {"EMAIL": 2, "_pii": 2, "_layer_L1": 2}
+    # The masking engine's L6 events, grouped (#184): the same email twice is
+    # one group of two with ONE keyed fingerprint, never the value.
+    assert [(f["entity"], f["layer"], f["n"], len(f["fp"])) for f in finds] == [("EMAIL", "L1", 2, 1)]
+    assert EMAIL not in str(finds)
 
 
 def test_response_restore_puts_values_back(session):

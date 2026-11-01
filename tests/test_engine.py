@@ -198,7 +198,8 @@ def test_forget_deletes_both_the_file_and_the_key(home, keychain):
     assert keychain and (home / "registry.json").exists()
     s.forget()
     assert not (home / "registry.json").exists()
-    assert keychain == {}
+    # The receipts key (which the L6 fingerprint key comes from) stays on purpose.
+    assert "registry-key" not in keychain and set(keychain) <= {"receipts-key"}
 
 
 def test_forget_recovers_a_locked_registry(home, keychain, monkeypatch):
