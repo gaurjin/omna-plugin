@@ -47,6 +47,25 @@ def test_model_spans_keeps_only_model_finds_and_uses_model_labels():
     assert spans[0]["score"] == pytest.approx(0.99)
 
 
+def test_kiji_model_id_finds_reach_the_extension_with_kiji_labels():
+    # Kiji's model (DistilBERT) finds ID kinds the privacy filter has no label
+    # for; the extension's merge step accepts Kiji's labels, so they must be
+    # passed through, not dropped (core/src/detection/l3.rs kiji_label_to_entity).
+    text = "SSN 123-45-6789, passport X1234567, licence D123-456-789, ID 87654321."
+    b = text.encode()
+
+    def at(v: bytes, entity: str) -> dict:
+        i = b.index(v)
+        return {"start": i, "end": i + len(v), "entity": entity, "layer": "L3", "confidence": 0.9}
+
+    def fake_detect(t, model=False, ruleset=None):
+        return [at(b"123-45-6789", "SSN"), at(b"X1234567", "PASSPORT"),
+                at(b"D123-456-789", "DRIVER_LICENSE"), at(b"87654321", "NATIONAL_ID")]
+
+    labels = [s["label"] for s in ext_l3.model_spans(text, fake_detect)]
+    assert labels == ["SSN", "PASSPORTID", "DRIVERLICENSENUM", "NATIONALID"]
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNA_HOME", str(tmp_path))

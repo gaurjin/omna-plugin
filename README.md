@@ -130,9 +130,12 @@ reports are forwarded byte-for-byte and receipted as `passthrough-security-check
 
 **Attached files** are masked inside and stay the same kind of file: text, `.env` and code files,
 Word `.docx`, Excel `.xlsx`, LibreOffice `.odt` / `.ods` and `.rtf` (only the text changes;
-formatting, styles and images are kept). PDFs, old `.doc` / `.xls`, PowerPoint and images cannot be
-masked in place by a network proxy, so they go as they are and `omna log` says
-`file NOT masked (pdf)`. (Omna's Chrome extension masks PDFs and screenshots on the AI websites.)
+formatting, styles and images are kept). **On a Mac**, pictures and screenshots have each line
+holding a value blacked out, and PDFs have each page holding a value turned into a picture with
+black boxes (the text layer under it is removed; clean pages and clean PDFs are left untouched).
+Old `.doc` / `.xls`, PowerPoint, and — on Linux — pictures and PDFs go as they are, and
+`omna log` says `file NOT masked (...)`. Every size limit, and what happens above it, is listed in
+[Where masking stops](#where-masking-stops).
 
 It makes no difference how a file or text gets into the chat box — the + button, drag and drop,
 or a paste (some sites turn a long paste into a file) — and Perplexity's uploads to its own Amazon

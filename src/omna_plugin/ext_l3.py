@@ -27,7 +27,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 # The engine's entity name -> the model label the extension's merge step
-# expects (core/src/detection/l3.rs, privacy_filter_label_to_entity, reversed).
+# expects (core/src/detection/l3.rs, privacy_filter_label_to_entity and
+# kiji_label_to_entity, reversed — the merge step accepts both label sets).
+# The last four only come from Kiji's model (DistilBERT): without them its ID
+# finds would be dropped on the way to Omna for Chrome.
 ENTITY_TO_LABEL = {
     "PERSON": "private_person",
     "EMAIL": "private_email",
@@ -37,6 +40,10 @@ ENTITY_TO_LABEL = {
     "PERSONAL_URL": "private_url",
     "BANK_ACCOUNT": "account_number",
     "GENERIC_SECRET": "secret",
+    "SSN": "SSN",
+    "NATIONAL_ID": "NATIONALID",
+    "PASSPORT": "PASSPORTID",
+    "DRIVER_LICENSE": "DRIVERLICENSENUM",
 }
 
 # Hard stop per request: 64 KB of text is ~16 s of model time.
