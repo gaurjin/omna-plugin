@@ -424,9 +424,9 @@ a caller who types `[EMAIL_1]` gets `[EMAIL_1]` back, never your email.
 ## Smart masking: two models, chosen for you
 
 `--smart` adds two on-device AI models on top of the rules. You never pick one: **both read every
-text** and their finds are merged — on a 1,030-text sample in six languages, both together hid 95% of
-sensitive characters, against 77% and 87% for each model alone. One exception keeps the browser quick:
-when Omna for Chrome asks for a message **over 8 KB**, Kiji's faster model reads it alone.
+text** and their finds are merged, because each catches things the other misses. One exception keeps
+the browser quick: when Omna for Chrome asks for a message **over 8 KB**, Kiji's faster model reads it
+alone.
 
 | Model | Download | Best at |
 |---|---|---|

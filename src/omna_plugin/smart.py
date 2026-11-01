@@ -11,13 +11,12 @@ a model. They only turn smart masking on or off.
 The rule (measured 2026-11-01, see MASTER #141):
 
 - **The curl command's own doors** (AI tools, agents, files, chat sites):
-  BOTH models at every size, merged by the masking engine's fusion layer (L4).
-  On Kiji's test set both together hid 95% of sensitive characters and fully
-  leaked 6% of values (privacy filter alone 77% / 26%, Kiji alone 87% / 14%).
-  Kiji's model alone was tried for long texts and dropped the same night: on
-  a 19 KB live test it missed a first name the privacy filter catches, and
-  0.6.13 already read every text with the privacy filter — never worse than
-  yesterday. Speed (4 cores, real text): 8 KB ~1.5 s, 32 KB ~7 s, 64 KB ~14 s.
+  BOTH models at every size, merged by the masking engine's fusion layer (L4)
+  — together they leak far less than either alone (measured; numbers kept
+  private until published). Kiji's model alone was tried for long texts and
+  dropped: on a 19 KB live test it missed a first name the privacy filter
+  catches, and 0.6.13 already read every text with the privacy filter —
+  never worse than before. Speed (4 cores, real text): 8 KB ~1.5 s, 32 KB ~7 s, 64 KB ~14 s.
 - **Omna for Chrome** (``/omna/detect-l3``, it waits at send): both up to
   ``BOTH_UP_TO_CHARS``, Kiji's model alone above (64 KB ~2.5 s). Before
   2026-11-01 Chrome got no smart masking above 8 KB at all, so this is gain.
