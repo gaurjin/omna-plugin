@@ -159,7 +159,7 @@ omna log --verify
 
 | Command | What it does |
 |---|---|
-| `omna start [-d] [--smart] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). `--smart` adds the on-device Contextual model for prose names (809 MB download once, slower). |
+| `omna start [-d] [--smart] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). `--smart` adds two on-device smart models for names and addresses written in sentences, chosen automatically (~870 MB download once; ~0.5 s for a typed message). |
 | `omna stop` / `omna ensure` | Stop the background proxy / start it if it is not running (the Claude Code hook calls this). |
 | `omna status` | Running? Claude Code wired? Receipts today. |
 | `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login, Keep Local Reports, **Restore Real Values in Browser** or **Use Realistic Fake Values in Browser**, or uninstall. Both take effect on the next request — no restart. |
@@ -173,7 +173,7 @@ omna log --verify
 | `omna allow VALUE` | Never mask this exact value again (false positive). |
 | `omna forget` | Wipe the token registry and its encryption key (tokens renumber). |
 | `omna crash [--show N] [--send] [--clear]` | What broke on this machine. Masked by Omna's own engine before it is written to disk, and **never sent anywhere** — `--send` opens a GitHub issue pre-filled with the report you just read, and you submit it or close the tab. |
-| `omna verify-model` | Re-hash the on-device Contextual model and compare it to the hash this engine was built against. Does the full check every time, never a cached answer. |
+| `omna verify-model` | Re-hash both on-device smart models and compare every file to the hash this engine was built against. Does the full check every time, never a cached answer. |
 | `omna dashboard` | Open the live dashboard. It is protected by a local token (`~/.omna/dashboard.token`, owner-only), so another program on your machine cannot read your numbers over HTTP. |
 | `omna mappings` | Open the Mappings Review screen — every value Omna has masked, real values hidden until you click Reveal. Same token as the dashboard. |
 | `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, aider, Codex CLI, VS Code and Continue (each only if already installed), and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up every settings file it touches first and removes only its own keys on uninstall. |
@@ -191,9 +191,10 @@ Measured on a MacBook Air M5 with Claude Code 2.1.274, a 4-request task (read a 
 | wall time | 8.8 s | 9.8 s |
 | fast masking, 68 KB request body | | **16 ms** |
 
-Fast masking (rules + checksums, the default) is the 16 ms. Smart masking (`--smart`, which adds the
-on-device Contextual model for prose names) is slower and off by default — it is a deliberate choice you
-make, not a surprise you discover.
+Fast masking (rules + checksums, the default) is the 16 ms. Smart masking (`--smart`) adds two
+on-device models and is off by default — a deliberate choice you make, not a surprise you discover.
+Measured on the same Mac (4 cores, real text): a typed message ~0.5 s, 8 KB ~1.5 s, 64 KB ~2.5 s
+(see [Smart masking](#smart-masking-two-models-chosen-for-you)).
 
 `omna status` reports the real average for **your** machine and your traffic
 (`avg_mask_ms_this_run`), so you never have to take this table's word for it.
@@ -420,6 +421,43 @@ The API door answers only requests addressed to `127.0.0.1` or `localhost` (a pa
 own domain at your machine is refused), and puts back only the real values that request itself carried:
 a caller who types `[EMAIL_1]` gets `[EMAIL_1]` back, never your email.
 
+## Smart masking: two models, chosen for you
+
+`--smart` adds two on-device AI models on top of the rules. You never pick one — Omna does, by length:
+
+- **Up to 8 KB** (a typed message, a short paste): **both** models read it and their finds are merged.
+- **Longer** (a file, a long paste, an agent's tool output): **Kiji's model** alone, so it stays fast.
+
+| Model | Download | Best at |
+|---|---|---|
+| OpenAI privacy filter (Apache-2.0) | ~809 MB | names and anything written as a sentence |
+| Kiji PII model by Dataiku (DistilBERT, Apache-2.0) | ~64 MB | ID numbers, addresses, links — about 30× faster |
+
+Both download once, from their publishers, and every file is checked against a pinned SHA-256 before it
+is used (`omna verify-model` re-checks them). Nothing is sent anywhere: the models run on your machine.
+Smart masking uses up to 4 cores, and steps down to 3 after 10 minutes and 2 after 30 minutes of
+non-stop work so a long job does not overheat a fanless Mac; a 2-minute rest brings it back to 4.
+
+## Where masking stops
+
+Every limit, and what happens past it. Omna never pretends a file was masked: anything it could not
+mask goes as it is and `omna log` says `file NOT masked (...)`.
+
+| What you send | Masked? | Limit | Past the limit |
+|---|---|---|---|
+| Messages from AI tools, chat sites and agents | Yes | none | — |
+| Text, `.env`, code files | Yes, same format | none | — |
+| Word `.docx`, Excel `.xlsx`, LibreOffice `.odt` / `.ods`, `.rtf` | Yes, inside the file — formatting kept | 200 MB unzipped | goes as it is, logged |
+| Pictures, screenshots | **Mac only** — each line holding a value is blacked out | 100 MB per picture; a rotated photo is not masked | goes as it is, logged |
+| PDF | **Mac only** — a page holding a value becomes a picture with black boxes (the text under it is removed); clean pages untouched | 2,000 pages; locked PDFs are not masked | goes as it is, logged |
+| Old `.doc` / `.xls`, PowerPoint | Not yet | — | goes as it is, logged |
+| Linux: pictures and PDFs | Not yet | — | goes as it is, logged |
+| Smart masking through Omna for Chrome | Yes, when smart masking is on | 64 KB of text per message | longer text gets fast masking |
+
+ChatGPT checks that an uploaded file is exactly the size it announced. Omna keeps the masked file at
+exactly that size when it can (a shorter one is padded); when the masked file would be larger, the
+upload is refused — it fails, it never goes unmasked.
+
 ## Honest limits (v1)
 
 - A pinned app (one that rejects our certificate on purpose, e.g. it checks the cert fingerprint itself) is
@@ -435,8 +473,8 @@ a caller who types `[EMAIL_1]` gets `[EMAIL_1]` back, never your email.
   [docs/certificate-trust.md](docs/certificate-trust.md). (Firefox: `about:config` →
   `security.enterprise_roots.enabled` = `true`. Node: `NODE_EXTRA_CA_CERTS`, which `omna init`
   already sets for VS Code.) Safari, Chrome, Edge, Brave, curl and Go need nothing.
-- Fast masking (rules + checksums) runs by default. Prose names in free text need `--smart`, which loads a
-  local model and slows each request; it is off by default.
+- Fast masking (rules + checksums) runs by default. Names and addresses written in sentences need
+  `--smart`, which loads two local models and adds ~0.5 s to a typed message; it is off by default.
 - Windows: no engine wheel yet (WSL works).
 - A tool's own cloud features (for example Cursor tab-completion) never pass through a local proxy.
 - Model thinking blocks are passed through untouched in both directions (the API requires it), so a name the
