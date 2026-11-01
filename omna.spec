@@ -6,9 +6,8 @@ distributions, and our masking engine ships as an architecture-specific binary
 wheel with no sdist. That is deliberate — the kernel is closed — so the formula
 route fights the product's own architecture.
 
-Kiji solves the same problem by shipping a prebuilt notarized binary that
-Homebrew merely downloads and hash-checks (`brew install --cask`). This is our
-version of that: one directory containing Python, every dependency, and the
+The usual answer is a prebuilt notarized binary that Homebrew merely
+downloads and hash-checks (`brew install --cask`). This is ours: one directory containing Python, every dependency, and the
 compiled engine, signed with our Developer ID and notarized by Apple.
 
 Built with: .venv/bin/pyinstaller omna.spec --noconfirm

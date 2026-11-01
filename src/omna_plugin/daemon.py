@@ -14,6 +14,9 @@ wait live on the outer event loop, the one returned by ``asyncio.run``.
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
+import sys
 import signal
 import threading
 
@@ -28,6 +31,24 @@ from .proxy import create_app
 from .system_door import OmnaAddon, build_master
 
 
+def _first_run_notice(smart: bool) -> None:
+    """Once per machine: a Mac notification saying what smart masking does —
+    on or off, the benefit is stated both ways (owner 2026-11-01)."""
+    from .cli import SMART_OFF_TEXT, SMART_ON_TEXT
+
+    marker = config.home() / "smart_notice_shown"
+    if marker.exists() or sys.platform != "darwin" or os.environ.get("OMNA_NO_NOTIFY"):
+        return
+    text = (SMART_ON_TEXT if smart else SMART_OFF_TEXT).replace('"', "'").replace("`", "")
+    try:
+        subprocess.run(["osascript", "-e", f'display notification "{text}" with title "Omna"'],
+                       capture_output=True, timeout=10)
+        config.ensure_home()
+        marker.write_text("1")
+    except Exception:
+        pass
+
+
 async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.SYSTEM_PORT, *,
                 smart: bool = False, restore_secrets: bool = True, stop: asyncio.Event | None = None) -> None:
     policy = Policy.load()
@@ -35,8 +56,11 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
     if smart:
         from . import smart as smart_models
 
-        print("omna: preparing the two on-device smart models (first run downloads ~64 MB + ~809 MB)...", flush=True)
-        smart_models.download_models()
+        names = " + ".join(smart_models.SHOWN_AS[m] for m in smart_models.models_here())
+        print(f"omna: smart masking on ({names}); models load in the background — "
+              "fast masking covers every message until they are ready", flush=True)
+        smart_models.start_downloads()
+    _first_run_notice(smart)
     pipeline = Pipeline(session)
     stop = stop or asyncio.Event()
 

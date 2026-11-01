@@ -4,7 +4,7 @@
 # Why a prebuilt binary rather than a Homebrew formula: our masking engine is an
 # architecture-specific binary wheel with no source distribution (the kernel is
 # closed, deliberately), and Homebrew's Python formula model builds from source.
-# Kiji ships a notarized binary and lets Homebrew just download it; this is ours.
+# So we ship a notarized binary and let Homebrew just download it.
 #
 # Requires: the `omna-notarize` keychain profile (already set up on this Mac —
 # see native/install/build-pkg.sh in omna-workspace for how it was created).

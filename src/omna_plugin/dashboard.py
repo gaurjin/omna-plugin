@@ -2,8 +2,8 @@
 
 Why a served page rather than a desktop app: the plugin is already an HTTP
 server, so a dashboard costs one route and opens in the browser you already
-have. A competitor (Kiji) ships a whole Electron window to show the same
-numbers — that is a second process and ~100 MB of runtime for a page.
+have. A desktop window (Electron) to show the same numbers would be a second
+process and ~100 MB of runtime for a page.
 
 Everything here is inline: no CDN, no framework, no webfont, no external
 request of any kind. That is not stinginess, it is the product's own claim —

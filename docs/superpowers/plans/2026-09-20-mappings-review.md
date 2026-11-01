@@ -23,8 +23,8 @@ scheme), plus a nav link from the dashboard and a `omna mappings` CLI command fo
 
 ## Context already gathered (do not re-derive)
 
-- `~/Developer/omna-workspace/docs/competitive/kiji-comparison.md` rows 46/62/79: Kiji's "Mapping
-  Review" keeps real values in a reviewable UI; Omna's differentiator has always been that real
+- The private competitive notes (omna-workspace): a "Mapping
+  Review" elsewhere keeps real values in a reviewable UI; Omna's differentiator has always been that real
   values live in exactly ONE place (the encrypted registry) and are never duplicated into a log.
   This screen does NOT change that claim — it is a view onto the one place, not a second copy.
 - `src/omna_plugin/engine.py` — `MaskingSession`: `_token_to_value` (bracketed token → real value,
@@ -448,7 +448,7 @@ Create `src/omna_plugin/mappings.py`:
 """The Mappings Review screen: every value Omna has masked, on 127.0.0.1
 only, behind the dashboard token (#134 — never a second auth scheme, #144).
 
-Kiji's "Mapping Review" is four columns (Entity Type / Original / Masked /
+A mapping review is four columns (Entity Type / Original / Masked /
 Date) plus delete-one and clear-all. This joins the registry (what a value
 IS — kind, detection layer, whether a checksum validated it, which style it
 was last written in) against the receipts (what HAPPENED to it — how many
@@ -1257,7 +1257,7 @@ existing `#143` row (checked live 2026-09-20 — `#144` is the next free number)
 ```
 | 144 | _(opened and shipped 2026-09-20)_ **Mappings Review screen in the plugin** — `omna
 mappings` / `/omna/mappings`, behind the existing dashboard token (#134, no second auth scheme).
-Matches Kiji's four columns (Entity Type / Original / Masked / Date) plus delete-one and
+Four columns (Entity Type / Original / Masked / Date) plus delete-one and
 clear-all, then goes past them: joins the registry against the receipts so each row also shows
 which layer caught it, whether a checksum validated it, which masking style it was written in (a
 pre-#142 row says so honestly instead of guessing "tokens"), how many times it was sent, when

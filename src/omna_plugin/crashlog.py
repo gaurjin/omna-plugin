@@ -1,8 +1,8 @@
 """Crash reports a privacy buyer can actually audit (#132).
 
 We were blind to failures in the field: when the plugin broke on someone's
-Mac, we never learned. Kiji ships an opt-in Sentry that *promises* never to
-send prompts. We do the same job while making the promise checkable:
+Mac, we never learned. An opt-in crash reporter that merely *promises* never
+to send prompts is not enough; we make the promise checkable:
 
 1. **This module cannot send anything.** There is no network code here, and a
    test reads this file's own source and fails the build if any appears. The

@@ -142,7 +142,7 @@ def test_issue_url_is_prefilled_and_carries_no_values(home):
 
 # ------------------------------------------------- asking once, off by default (#132)
 def test_sending_is_off_until_the_person_says_yes(home):
-    """Off by default, same posture as Kiji. Nothing is sent on the strength of
+    """Off by default. Nothing is sent on the strength of
     a default — the difference is that we ASK, once, at the moment it matters."""
     from omna_plugin.policy import Policy
 

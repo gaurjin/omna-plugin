@@ -123,6 +123,13 @@ export OPENAI_BASE_URL=http://127.0.0.1:7788/v1   # OpenAI SDK, Cursor BYOK
 | Desktop apps that ignore the system proxy | `omna capture app NAME` (Stage 3, per app, its own signed network extension) | `omna bypass app NAME` (stops masking; there's no command yet to release the app from capture itself) |
 | Any specific app, at any layer | `omna bypass app NAME` — tunnelled through untouched, still receipted | `omna mask app NAME` |
 
+**What fast masking finds, on every message:** 240 kinds of secrets (API keys, tokens, passwords),
+emails, phone numbers, card and bank numbers (checksums checked), government IDs from many countries
+— including India: Aadhaar, PAN, GSTIN, Voter ID, passport, driving licence, UPI IDs, vehicle
+numbers, ABHA, UAN and PIN codes — and a first name with a surname written together, from public
+name lists (US and Indian names). Smart masking adds names and addresses written as ordinary
+sentences. Any category except secrets can be switched off with `omna categories`.
+
 On a chat website, Omna masks what **you** send (your messages, pastes and files). The site's own
 security checks (Cloudflare's robot check, ChatGPT's anti-abuse check) and its own usage and error
 reports are forwarded byte-for-byte and receipted as `passthrough-security-check` /
@@ -159,7 +166,9 @@ omna log --verify
 
 | Command | What it does |
 |---|---|
-| `omna start [-d] [--smart] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). `--smart` adds two on-device smart models for names and addresses written in sentences, chosen automatically (~870 MB download once; ~0.5 s for a typed message). |
+| `omna start [-d] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). Smart masking follows `omna smart` (on by default). |
+| `omna smart [on\|off]` | Smart masking: on-device models that also catch names and addresses written in sentences. **On by default.** Code only, no personal data? `omna smart off` saves a little memory and speed. With no argument, says which it is. |
+| `omna categories [on\|off NAME...]` | What Omna masks. `omna categories off PHONE` lets phone numbers through; `on` undoes it. Categories: `PERSON EMAIL PHONE ADDRESS GOV_ID FINANCIAL HEALTH EMPLOYMENT DIGITAL BIRTH`. **Secrets (API keys, passwords, tokens) are always masked and cannot be switched off.** |
 | `omna stop` / `omna ensure` | Stop the background proxy / start it if it is not running (the Claude Code hook calls this). |
 | `omna status` | Running? Claude Code wired? Receipts today. |
 | `omna menubar` | Mac status icon (starts automatically): click the top line to pause/resume, see live counts (secrets kept off the wire, personal values tokenised, requests masked, coverage, masking overhead), toggle Launch at Login, Keep Local Reports, **Restore Real Values in Browser** or **Use Realistic Fake Values in Browser**, or uninstall. Both take effect on the next request — no restart. |
@@ -191,10 +200,10 @@ Measured on a MacBook Air M5 with Claude Code 2.1.274, a 4-request task (read a 
 | wall time | 8.8 s | 9.8 s |
 | fast masking, 68 KB request body | | **16 ms** |
 
-Fast masking (rules + checksums, the default) is the 16 ms. Smart masking (`--smart`) adds two
-on-device models and is off by default — a deliberate choice you make, not a surprise you discover.
-Measured on the same Mac (4 cores, real text): a typed message ~0.5 s, 8 KB ~1.5 s, 64 KB ~14 s
-(see [Smart masking](#smart-masking-two-models-chosen-for-you)).
+Fast masking (rules + checksums) is the 16 ms. Smart masking (on by default) adds on-device models:
+the compact model alone is ~15 ms a message; with the OpenAI privacy filter too (16 GB machines) a
+typed message is ~0.5 s, 8 KB ~1.5 s, 64 KB ~14 s, measured on the same Mac with 4 cores
+(see [Smart masking](#smart-masking-on-by-default-models-chosen-for-you)).
 
 `omna status` reports the real average for **your** machine and your traffic
 (`avg_mask_ms_this_run`), so you never have to take this table's word for it.
@@ -421,19 +430,24 @@ The API door answers only requests addressed to `127.0.0.1` or `localhost` (a pa
 own domain at your machine is refused), and puts back only the real values that request itself carried:
 a caller who types `[EMAIL_1]` gets `[EMAIL_1]` back, never your email.
 
-## Smart masking: two models, chosen for you
+## Smart masking: on by default, models chosen for you
 
-`--smart` adds two on-device AI models on top of the rules. You never pick one: **both read every
-text** and their finds are merged, because each catches things the other misses. One exception keeps
-the browser quick: when Omna for Chrome asks for a message **over 8 KB**, Kiji's faster model reads it
-alone.
+Smart masking adds on-device AI models on top of the rules, to catch names and addresses written as
+ordinary sentences. It is **on by default**; `omna smart off` turns it off, `omna smart on` back on.
+You never pick a model — Omna picks by the machine:
 
-| Model | Download | Best at |
-|---|---|---|
-| OpenAI privacy filter (Apache-2.0) | ~809 MB | names and anything written as a sentence |
-| Kiji PII model by Dataiku (DistilBERT, Apache-2.0) | ~64 MB | ID numbers, addresses, links — about 30× faster |
+| Model | Download | Memory while running | Runs on |
+|---|---|---|---|
+| Compact model (open source, Apache-2.0) | ~64 MB | ~300 MB | every machine with smart masking on |
+| OpenAI privacy filter (Apache-2.0) | ~809 MB | ~2 GB | machines with 16 GB of memory or more |
 
-Both download once, from their publishers, and every file is checked against a pinned SHA-256 before it
+Where both run, **both read every text** and their finds are merged, because each catches things the
+other misses. One exception keeps the browser quick: when Omna for Chrome asks for a message
+**over 8 KB**, the compact model reads it alone.
+
+The models download **in the background**: starting Omna never waits on a download, and until a model
+has arrived and passed its check, every message still gets fast masking. `omna status` says which
+models are ready. Each downloads once, from its publisher, and every file is checked against a pinned SHA-256 before it
 is used (`omna verify-model` re-checks them). Nothing is sent anywhere: the models run on your machine.
 Smart masking uses up to 4 cores, and steps down to 3 after 10 minutes and 2 after 30 minutes of
 non-stop work so a long job does not overheat a fanless Mac; a 2-minute rest brings it back to 4.
@@ -473,8 +487,9 @@ upload is refused — it fails, it never goes unmasked.
   [docs/certificate-trust.md](docs/certificate-trust.md). (Firefox: `about:config` →
   `security.enterprise_roots.enabled` = `true`. Node: `NODE_EXTRA_CA_CERTS`, which `omna init`
   already sets for VS Code.) Safari, Chrome, Edge, Brave, curl and Go need nothing.
-- Fast masking (rules + checksums) runs by default. Names and addresses written in sentences need
-  `--smart`, which loads two local models and adds ~0.5 s to a typed message; it is off by default.
+- Fast masking (rules + checksums) always runs. It finds a first name and surname written together
+  ("Emma Clarke", "Rahul Sharma") from public name lists, but a name alone ("marcus") or an address
+  in a sentence needs smart masking, which is on by default (`omna smart`).
 - Windows: no engine wheel yet (WSL works).
 - A tool's own cloud features (for example Cursor tab-completion) never pass through a local proxy.
 - Model thinking blocks are passed through untouched in both directions (the API requires it), so a name the

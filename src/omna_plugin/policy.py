@@ -55,8 +55,11 @@ class Policy:
     # deliberate widening — a page from that origin can then use this machine's
     # proxy — so it stays empty unless someone sets it.
     cors_origins: list[str] = field(default_factory=list)
+    # Smart masking (on-device models): "on" | "off". ON by default since
+    # 0.6.15 (owner 2026-11-01: "on with the compact model"); `omna smart off`.
+    smart: str = "on"
     # Crash reports: "unset" | "on" | "off". OFF until the person says yes —
-    # same posture as Kiji, and the only posture consistent with "nothing is
+    # the only posture consistent with "nothing is
     # sent to Omna". The difference from a hidden opt-in is that we ASK, once,
     # the first time it actually matters. "off" is final and never re-asked.
     crash_reports: str = "unset"
@@ -102,6 +105,8 @@ class Policy:
             st = str(data.get("style", TOKENS))
             pol.style = st if st in STYLES else TOKENS
             pol.cors_origins = [str(o) for o in data.get("cors_origins", [])]
+            sm = str(data.get("smart", "on"))
+            pol.smart = sm if sm in ("on", "off") else "on"
             cr = str(data.get("crash_reports", "unset"))
             pol.crash_reports = cr if cr in ("unset", "on", "off") else "unset"
             pol.tls_strict = bool(data.get("tls_strict", False))
@@ -130,6 +135,7 @@ class Policy:
             "restore_browser": self.restore_browser,
             "style": self.style,
             "cors_origins": self.cors_origins,
+            "smart": self.smart,
             "crash_reports": self.crash_reports,
             "tls_strict": self.tls_strict,
             "tls_pins": self.tls_pins,

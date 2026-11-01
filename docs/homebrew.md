@@ -26,18 +26,11 @@ before you have read it. Homebrew is not just convenience here — it is credibi
 security-minded buyer. See "Installing without piping to a shell" in the README for what we ship
 *today* to address that directly; Homebrew is the nicer version of the same goal.
 
-## What Kiji does, and why we cannot copy it yet
+## Cask or formula
 
-Kiji ships:
-
-```sh
-brew install --cask dataiku/tap/kiji-privacy-proxy
-```
-
-Note **`--cask`**, and the tap `dataiku/tap` (the GitHub repo `dataiku/homebrew-tap`).
-
-A *cask* installs a **prebuilt binary** — Homebrew just downloads their DMG and checks its hash.
-It never builds anything. Kiji can do this because they ship a compiled, signed, notarized app.
+A *cask* (`brew install --cask <tap>/<name>`) installs a **prebuilt binary** — Homebrew just
+downloads it and checks its hash. It never builds anything, so it needs a compiled, signed,
+notarized app.
 
 A *formula* builds from source. That is the right shape for a Python CLI like ours, but it means
 Homebrew must be able to resolve every dependency offline from declared `resource` blocks.
@@ -69,7 +62,7 @@ Homebrew must be able to resolve every dependency offline from declared `resourc
 (generate with `brew update-python-resources`), so the formula will be long but mechanical. The
 binary-wheel question has to be answered first.
 
-**Path B — cask (prebuilt, the Kiji shape).** Build a single self-contained binary (PyInstaller or
+**Path B — cask (prebuilt).** Build a single self-contained binary (PyInstaller or
 `uv`-based), sign and notarize it with the Apple Developer ID we already use for the Mac app, and
 ship a cask that downloads it and checks the hash. This side-steps blocker 2 entirely because the
 engine wheel is baked into the artifact, and it matches what our closest competitor actually does.

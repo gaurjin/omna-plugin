@@ -139,7 +139,7 @@ Two styles exist:
   token. A token that is ever left behind is *visibly* wrong, so somebody
   notices.
 - **realistic**: every masked value becomes a realistic-looking fake value, the
-  way Kiji does it. The model reads ordinary-looking prose, which it handles
+  way some tools do it. The model reads ordinary-looking prose, which it handles
   better — but a fake value that is ever left behind looks exactly like real
   data, so nobody notices, and it gets committed to a repository forever.
 

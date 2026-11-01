@@ -17,9 +17,9 @@ The reply copies the Mac app's `Reply::L3Spans` contract to the letter
     rules (L1/L2) on its side.
 
 Which model reads the text is chosen by size (smart.py): up to 8 KB both
-smart models, longer Kiji's model alone. Measured 2026-11-01 (M5 MacBook Air,
+smart models, longer the compact model alone. Measured 2026-11-01 (M5 MacBook Air,
 4 cores, models warm, real text): 1 KB ~0.5 s, 8 KB ~1.5 s with both; 64 KB ~2.5 s
-with Kiji's model (the OpenAI privacy filter alone would take ~20 s). This
+with the compact model (the OpenAI privacy filter alone would take ~20 s). This
 still refuses anything over `MAX_CHARS` so a stuck caller can't tie the
 models up for long.
 """
@@ -29,9 +29,9 @@ from __future__ import annotations
 from collections.abc import Callable
 
 # The engine's entity name -> the model label the extension's merge step
-# expects (core/src/detection/l3.rs, privacy_filter_label_to_entity and
-# kiji_label_to_entity, reversed — the merge step accepts both label sets).
-# The last four only come from Kiji's model (DistilBERT): without them its ID
+# expects (core/src/detection/l3.rs, both models' label maps reversed — the
+# merge step accepts both label sets).
+# The last four only come from the compact model: without them its ID
 # finds would be dropped on the way to Omna for Chrome.
 ENTITY_TO_LABEL = {
     "PERSON": "private_person",
@@ -48,7 +48,7 @@ ENTITY_TO_LABEL = {
     "DRIVER_LICENSE": "DRIVERLICENSENUM",
 }
 
-# Hard stop per request: 64 KB of text is ~2.5 s of Kiji's model (measured
+# Hard stop per request: 64 KB of text is ~2.5 s of the compact model (measured
 # 2026-11-01); a bound kept on purpose (lesson #34), not a speed workaround.
 MAX_CHARS = 64 * 1024
 

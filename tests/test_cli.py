@@ -16,7 +16,7 @@ def no_restart(monkeypatch):
     """Every policy-changing command calls _restart_daemon; never let it touch
     launchd/subprocess for real during a test — see the safety rule in the task."""
     calls = []
-    monkeypatch.setattr("omna_plugin.cli._restart_daemon", lambda a=None: calls.append(a))
+    monkeypatch.setattr("omna_plugin.cli._restart_daemon", lambda a=None, **kw: calls.append((a, kw)))
     return calls
 
 
@@ -722,16 +722,79 @@ def test_status_says_what_files_are_masked_and_how_to_turn_on_smart(capsys, monk
     monkeypatch.setattr("omna_plugin.pdf.available", lambda: True)
     assert main(["status"]) == 0
     out, _ = capsys.readouterr()
-    assert "smart:        off  → `omna stop && omna start -d --smart`" in out
+    assert "smart:        OFF" in out
+    assert "go to the AI as they are. Turn it on: `omna smart on`" in out
     assert "files:" in out and "pictures and PDFs: values blacked out" in out
 
 
 def test_status_is_honest_where_pictures_cannot_be_read(capsys, monkeypatch):
     now = 1_000_000.0
     monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
-    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {**_fake_health(None, None), "smart": True, "ocr": False})
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {**_fake_health(None, None), "smart": True, "ocr": False,
+                                                                 "smart_models": ["compact"]})
     monkeypatch.setattr("omna_plugin.pdf.available", lambda: False)
     assert main(["status"]) == 0
     out, _ = capsys.readouterr()
-    assert "smart:" not in out, "no smart hint when smart is already on"
+    # On: say so, say what it buys, and how to turn it off (owner: the benefit, both ways).
+    assert "smart:        on (compact)" in out
+    assert "catches names and addresses written in sentences" in out and "`omna smart off`" in out
     assert "pictures and PDFs: go as they are (needs macOS)" in out
+
+
+# ── Smart masking on/off and category switch-off (owner 2026-11-01) ──
+
+def test_smart_masking_is_on_by_default_and_omna_smart_flips_it(home, capsys, no_restart):
+    from omna_plugin.policy import Policy
+
+    assert Policy.load().smart == "on"            # a fresh install: on
+    assert main(["smart"]) == 0
+    assert "Smart masking is on" in capsys.readouterr().out
+    assert main(["smart", "off"]) == 0
+    out = capsys.readouterr().out
+    assert "go to the AI as they are" in out and "`omna smart on`" in out
+    assert Policy.load().smart == "off"
+    assert no_restart[-1][1] == {"smart": False}   # the running proxy restarts with smart off
+    assert main(["smart", "on"]) == 0
+    assert Policy.load().smart == "on" and no_restart[-1][1] == {"smart": True}
+
+
+def test_start_follows_the_saved_setting_unless_smart_is_forced(home):
+    import argparse
+
+    from omna_plugin.cli import _smart_wanted
+    from omna_plugin.policy import Policy
+
+    assert _smart_wanted(argparse.Namespace(smart=False)) is True      # default on
+    pol = Policy.load(); pol.smart = "off"; pol.save()
+    assert _smart_wanted(argparse.Namespace(smart=False)) is False
+    assert _smart_wanted(argparse.Namespace(smart=True)) is True       # --smart forces it for one run
+
+
+def test_categories_switch_off_and_on_and_reach_the_engine(home, capsys):
+    import json
+
+    import omna_pii_mask
+
+    from omna_plugin import config
+
+    assert main(["categories", "off", "phone", "names"]) == 0
+    data = json.loads(config.ruleset_path().read_text())
+    assert data["mask_off"] == ["PERSON", "PHONE"]
+    assert "127\\.0\\.0\\.1" in data["allowlist"]                # the default allowlist is kept
+    out = capsys.readouterr().out
+    assert "OFF  PHONE" in out and "OFF  PERSON" in out and "always masked" in out
+    text = "Call Emma Clarke on 415-555-0134 or mail bob@corp.com"
+    r = omna_pii_mask.mask(text, ruleset=str(config.ruleset_path()))
+    assert "415-555-0134" in r["masked"] and "Emma Clarke" in r["masked"]
+    assert "bob@corp.com" not in r["masked"]
+    assert main(["categories", "on", "PHONE"]) == 0
+    assert json.loads(config.ruleset_path().read_text())["mask_off"] == ["PERSON"]
+
+
+def test_secrets_can_never_be_switched_off(home, capsys):
+    from omna_plugin import config
+
+    assert main(["categories", "off", "secrets"]) == 2
+    assert "cannot be switched off" in capsys.readouterr().err
+    assert not config.ruleset_path().exists()
+    assert main(["categories", "off", "bogus"]) == 2

@@ -41,7 +41,7 @@ from .system_door import EXT_HEADER
 def _engine_detect(text: str, model: bool = False, ruleset: str | None = None) -> list[dict]:
     """The engine's detect(), behind a name the tests can replace (no model in tests).
     Only Omna for Chrome's /omna/detect-l3 uses it: the Chrome size rule
-    applies (smart.py — both models up to 8 KB, Kiji's model alone above)."""
+    applies (smart.py — both models up to 8 KB, the compact model alone above)."""
     from . import smart as smart_models
 
     return smart_models.detect(text, model, ruleset, for_chrome=True)
@@ -111,6 +111,12 @@ def pick_upstream(request: Request, anthropic: str, openai: str) -> str:
     if "anthropic-version" in h or "x-api-key" in h or p.startswith("/v1/messages") or p.startswith("/api/") or p.startswith("/v1/complete"):
         return anthropic
     return openai
+
+
+def _smart_models_ready() -> list[str]:
+    from . import smart as smart_models
+
+    return [smart_models.SHOWN_AS[m] for m in smart_models.ready_models()]
 
 
 def create_app(
@@ -187,6 +193,8 @@ def create_app(
                 "plugin": __version__,
                 "engine": engine_version(),
                 "smart": session.smart,
+                # Which smart models have arrived and passed their hash check.
+                "smart_models": _smart_models_ready() if session.smart else [],
                 # Can this machine read text in pictures (Apple Vision, macOS)?
                 # Omna for Chrome sends screenshots to /omna/ocr only when true.
                 "ocr": ocr.available(),

@@ -47,10 +47,10 @@ def test_model_spans_keeps_only_model_finds_and_uses_model_labels():
     assert spans[0]["score"] == pytest.approx(0.99)
 
 
-def test_kiji_model_id_finds_reach_the_extension_with_kiji_labels():
-    # Kiji's model (DistilBERT) finds ID kinds the privacy filter has no label
-    # for; the extension's merge step accepts Kiji's labels, so they must be
-    # passed through, not dropped (core/src/detection/l3.rs kiji_label_to_entity).
+def test_compact_model_id_finds_reach_the_extension_with_their_labels():
+    # The compact model finds ID kinds the privacy filter has no label for; the
+    # extension's merge step accepts its labels, so they must be passed
+    # through, not dropped (core/src/detection/l3.rs).
     text = "SSN 123-45-6789, passport X1234567, licence D123-456-789, ID 87654321."
     b = text.encode()
 

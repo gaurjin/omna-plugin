@@ -1,8 +1,8 @@
 """The Mappings Review screen: every value Omna has masked, on 127.0.0.1
 only, behind the dashboard token (#134 — never a second auth scheme, #144).
 
-Kiji's "Mapping Review" is four columns (Entity Type / Original / Masked /
-Date) plus delete-one and clear-all. This joins the registry (what a value
+The review shows four columns (Entity Type / Original / Masked / Date) plus
+delete-one and clear-all. It joins the registry (what a value
 IS — kind, detection layer, whether a checksum validated it, which style it
 was last written in) against the receipts (what HAPPENED to it — how many
 times it was sent, when last, which provider, which app), because "what

@@ -9,6 +9,8 @@
     omna style [tokens|realistic]          how a masked value is WRITTEN: a numbered token
                                             (the default, everywhere) or a realistic fake value
                                             (your browser only — see `omna style`)
+    omna smart [on|off]                    smart masking (names and addresses written in sentences); on by default
+    omna categories [on|off NAME...]       what Omna masks; switch a category off or back on (secrets: always masked)
     omna allow VALUE                       never mask this exact value again (false positive)
     omna forget                            wipe the token registry (tokens will renumber)
     omna crash [--show N|--send|--always|--never]  what broke here; masked on disk, sent only if you said yes
@@ -77,7 +79,7 @@ def _wait_healthy(port: int, seconds: float) -> dict | None:
     return None
 
 
-def _restart_daemon(a=None) -> None:
+def _restart_daemon(a=None, smart: bool | None = None) -> None:
     """Called after every policy save. Real behavior (never exercised by a test,
     which always monkeypatches this by name — see the safety rule): if the Mac
     launchd job is installed, kick it; else if a background (`-d`) proxy is
@@ -97,7 +99,8 @@ def _restart_daemon(a=None) -> None:
             print(f"omna: a proxy is running in the foreground on {config.base_url(port)}; restart it yourself to apply the new policy")
         return
     h = _health(port) or {}
-    smart = bool(h.get("smart", False))
+    if smart is None:
+        smart = bool(h.get("smart", False))
     no_restore_secrets = not h.get("restore_secrets", True)
     try:
         os.kill(int(p.read_text().strip() or 0), signal.SIGTERM)
@@ -115,7 +118,13 @@ def _save_policy(pol: Policy, a=None) -> None:
     print("omna: policy saved; restarting → omna restart")
 
 
+def _smart_wanted(a) -> bool:
+    """`--smart` forces it on for this run; otherwise the saved setting decides."""
+    return bool(getattr(a, "smart", False)) or Policy.load().smart == "on"
+
+
 def cmd_start(a) -> int:
+    a.smart = _smart_wanted(a)
     if _health(a.port):
         print(f"omna: already running on {config.base_url(a.port)}")
         return 0
@@ -138,7 +147,7 @@ def cmd_ensure(a) -> int:
     # (anything printed becomes context for the model).
     if _health(a.port):
         return 0
-    _spawn(a.port, a.smart)
+    _spawn(a.port, _smart_wanted(a))
     return 0 if _wait_healthy(a.port, 10) else 1
 
 
@@ -250,6 +259,98 @@ def _style_line(pol: Policy) -> str:
             f"(they write files, where a fake value would look real)")
 
 
+SMART_ON_TEXT = ("Smart masking is on: Omna also catches names and addresses written in sentences. "
+                 "Code only, no personal data? `omna smart off` saves a little memory and speed.")
+SMART_OFF_TEXT = ("Smart masking is off: names, home addresses and birth dates written in sentences "
+                  "go to the AI as they are. Turn it on: `omna smart on`.")
+
+
+def smart_message(on: bool, ready: list[str]) -> list[str]:
+    """The two lines `omna status` shows about smart masking — the benefit, both ways."""
+    if not on:
+        return ["smart:        OFF", "              " + SMART_OFF_TEXT]
+    models = ", ".join(ready) if ready else "loading in the background (fast masking meanwhile)"
+    return [f"smart:        on ({models})", "              " + SMART_ON_TEXT]
+
+
+def cmd_smart(a) -> int:
+    """`omna smart [on|off]` — the saved smart-masking setting."""
+    pol = Policy.load()
+    if a.state is None:
+        print(SMART_ON_TEXT if pol.smart == "on" else SMART_OFF_TEXT)
+        return 0
+    pol.smart = a.state
+    pol.save()
+    print(SMART_ON_TEXT if a.state == "on" else SMART_OFF_TEXT)
+    if a.state == "on":
+        from . import smart as smart_models
+
+        names = " + ".join(smart_models.SHOWN_AS[m] for m in smart_models.models_here())
+        print(f"omna: models for this machine: {names} (downloaded once, in the background)")
+    _restart_daemon(a, smart=a.state == "on")
+    return 0
+
+
+# What a client may switch off. Secrets never: a leaked key is the worst case.
+CATEGORIES = {
+    "PERSON": "names", "EMAIL": "email addresses", "PHONE": "phone numbers",
+    "ADDRESS": "home and street addresses, PIN/ZIP codes", "GOV_ID": "government IDs (SSN, Aadhaar, PAN, passport, licence, plates)",
+    "FINANCIAL": "card, bank account, IBAN and UPI numbers", "HEALTH": "health IDs and codes",
+    "EMPLOYMENT": "employee IDs, salaries", "DIGITAL": "IP and MAC addresses, device IDs, profile links",
+    "BIRTH": "dates of birth",
+}
+ALIASES = {"NAME": "PERSON", "NAMES": "PERSON", "PEOPLE": "PERSON", "EMAILS": "EMAIL", "PHONES": "PHONE",
+           "ADDRESSES": "ADDRESS", "IDS": "GOV_ID", "ID": "GOV_ID", "MONEY": "FINANCIAL", "BANK": "FINANCIAL",
+           "WORK": "EMPLOYMENT", "DOB": "BIRTH", "IP": "DIGITAL"}
+
+
+def _ruleset_data() -> dict:
+    p = config.ruleset_path()
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except ValueError:
+            pass
+    from .engine import DEFAULT_ALLOWLIST
+
+    return {"allowlist": list(DEFAULT_ALLOWLIST), "custom_rules": []}
+
+
+def cmd_categories(a) -> int:
+    """`omna categories` — list; `omna categories off PHONE …` / `on PHONE …`."""
+    data = _ruleset_data()
+    off = [c for c in data.get("mask_off", []) if c in CATEGORIES]
+    if a.action:
+        wanted = []
+        for raw in a.names:
+            key = raw.strip().upper()
+            key = ALIASES.get(key, key)
+            if key in ("SECRET", "SECRETS", "CREDENTIAL", "CREDENTIALS", "PASSWORD", "PASSWORDS", "KEYS", "API_KEY"):
+                print("omna: secrets (API keys, passwords, tokens) are always masked — they cannot be switched off.",
+                      file=sys.stderr)
+                return 2
+            if key not in CATEGORIES:
+                print(f"omna: unknown category {raw!r}. Categories: {', '.join(CATEGORIES)}", file=sys.stderr)
+                return 2
+            wanted.append(key)
+        if not wanted:
+            print("omna: name at least one category, e.g. `omna categories off PHONE`", file=sys.stderr)
+            return 2
+        off = sorted(set(off) | set(wanted)) if a.action == "off" else [c for c in off if c not in wanted]
+        data["mask_off"] = off
+        config.ensure_home()
+        p = config.ruleset_path()
+        p.write_text(json.dumps(data, indent=2) + "\n")
+        os.chmod(p, 0o600)
+        _restart_daemon(a)
+    for key, what in CATEGORIES.items():
+        print(f"{'OFF' if key in off else 'on ':<4} {key:<11} {what}")
+    print("on   SECRETS     API keys, passwords, tokens — always masked")
+    if off:
+        print("\nomna: switched-off categories go to the AI as they are. `omna categories on NAME` to undo.")
+    return 0
+
+
 def cmd_status(a) -> int:
     from .engine import engine_version
     from .proxy import __version__
@@ -261,9 +362,9 @@ def cmd_status(a) -> int:
         print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {'on' if h['smart'] else 'off'}, secrets {'restored locally, never on disk' if h.get('restore_secrets', True) else 'redacted for good'}, {h['requests_this_run']} requests this run{speed})")
     else:
         print(f"proxy:        NOT running  → `omna start -d`")
-    if h and not h.get("smart"):
-        print("smart:        off  → `omna stop && omna start -d --smart` also catches names written in sentences"
-              " (one-time ~870 MB download; ~0.5 s for a typed message)")
+    if h:
+        for line in smart_message(bool(h.get("smart")), h.get("smart_models") or []):
+            print(line)
     if h:
         from . import pdf as _pdf
 
@@ -869,7 +970,7 @@ def cmd_verify_model(a) -> int:
 
         rows = smart_models.verify_models()
     except TypeError:  # an engine wheel older than the two-model one (< 0.2.17)
-        rows = [{**r, "model": "privacy-filter"} for r in omna_pii_mask.verify_model()]
+        rows = [{**r, "model": "openai-privacy-filter"} for r in omna_pii_mask.verify_model()]
     missing = [r for r in rows if r["detail"] == "not downloaded"]
     bad = [r for r in rows if not r["ok"] and r not in missing]
     for r in rows:
@@ -1003,6 +1104,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("value", nargs="?", choices=list(STYLES),
                    help="tokens (default, every door) or realistic (browser only)")
     add_port(s); s.set_defaults(fn=cmd_style)
+    s = sub.add_parser("smart", help="smart masking on/off (catches names and addresses written in sentences)")
+    s.add_argument("state", nargs="?", choices=["on", "off"]); add_port(s); s.set_defaults(fn=cmd_smart)
+    s = sub.add_parser("categories", help="what Omna masks; `categories off PHONE` lets a category through (never secrets)")
+    s.add_argument("action", nargs="?", choices=["on", "off"]); s.add_argument("names", nargs="*"); add_port(s)
+    s.set_defaults(fn=cmd_categories)
     s = sub.add_parser("allow", help="never mask this value again"); s.add_argument("value"); s.set_defaults(fn=cmd_allow)
     s = sub.add_parser("forget", help="wipe the token registry"); s.set_defaults(fn=cmd_forget)
     s = sub.add_parser("init", help="wire Claude Code (and, on a Mac, the system proxy + certificate)"); add_port(s)
