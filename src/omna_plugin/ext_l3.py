@@ -8,7 +8,7 @@ where the MODEL found something, and merges that with its own rules exactly
 as it merges the Mac app's answer (`wasm_fuse_spans_rs`).
 
 The reply copies the Mac app's `Reply::L3Spans` contract to the letter
-(native/src/handlers.rs in omna-workspace):
+(in the Mac app's native helper):
   * offsets are UTF-16 code units (what JavaScript strings count), not the
     engine's UTF-8 bytes;
   * labels are the model's own names (`private_person`, …), which the
@@ -57,8 +57,7 @@ def byte_to_utf16(text: str, byte_offset: int) -> int:
     """UTF-8 byte offset into `text` -> UTF-16 code-unit offset.
 
     The engine reports byte offsets; JavaScript counts UTF-16 units. A dash,
-    accent or emoji before a value moves them apart (memory:
-    feedback_engine_spans_are_byte_offsets)."""
+    accent or emoji before a value moves them apart."""
     prefix = text.encode("utf-8")[:byte_offset].decode("utf-8", errors="ignore")
     return len(prefix.encode("utf-16-le")) // 2
 

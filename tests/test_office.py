@@ -1,8 +1,7 @@
 """Word and Excel files are masked inside and stay Word and Excel files (MASTER #160).
 
 The files are built here by hand so every byte is known. All values are fake.
-Stand-ins are matched by pattern, never typed whole (see CLAUDE.md, "Token
-literals: two pieces").
+Stand-ins are matched by pattern, never typed whole.
 """
 
 from __future__ import annotations

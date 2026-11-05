@@ -7,3 +7,6 @@ dist/
 # PyInstaller work directory (dist/ is already ignored above).
 build/
 .DS_Store
+
+# Claude Code instructions for the maintainer only (kept off GitHub; backup in the private omna-workspace repo)
+CLAUDE.local.md
