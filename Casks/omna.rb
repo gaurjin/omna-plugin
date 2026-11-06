@@ -1,6 +1,6 @@
 cask "omna" do
-  version "0.6.16"
-  sha256 "f3fdfaf8a667f16c5b5ae3603575708c60ef04120644271af440b7b0602cbbe2"
+  version "0.6.17"
+  sha256 "54b7080e69eaa0f177ded85631e1be5bc7bcf5356f10d25aeb88caf77b449af4"
 
   url "https://github.com/gaurjin/omna-plugin/releases/download/v#{version}/omna-#{version}-macos-arm64.zip",
       verified: "github.com/gaurjin/omna-plugin/"
