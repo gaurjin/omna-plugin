@@ -214,3 +214,44 @@ def test_mask_bytes_multipart_without_a_boundary_is_unparseable(tmp_path, monkey
     p = _pipe(tmp_path, monkeypatch)
     assert p.mask_bytes(b"whatever", "multipart/form-data").refused == "unparseable"
     assert p.mask_bytes(b"no delimiter here", "multipart/form-data; boundary=abc").refused == "unparseable"
+
+
+# The masking engine reports its own crash as pyo3's PanicException, which is a
+# BaseException — `except Exception` misses it. Security review 2026-11-06: a
+# non-Latin-digit input crashed masking engine builds before 0.2.20.
+PanicException = type("PanicException", (BaseException,), {})
+
+
+def _engine_crashes(monkeypatch):
+    from omna_plugin import smart
+
+    def boom(*a, **k):
+        raise PanicException("end byte index 3 is not a char boundary")
+
+    monkeypatch.setattr(smart.omna_pii_mask, "mask", boom)
+    monkeypatch.setattr(smart.omna_pii_mask, "detect", boom)
+
+
+def test_an_engine_crash_refuses_the_body_never_sends_it(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    _engine_crashes(monkeypatch)
+    for body, ct in [(json.dumps({"prompt": f"for {EMAIL}"}).encode(), "application/json"),
+                     (f"for {EMAIL}".encode(), "text/plain"),
+                     (f"q=for {EMAIL}".encode(), "application/x-www-form-urlencoded")]:
+        out = p.mask_bytes(body, ct)
+        assert out.refused == "mask-failed" and out.body is None, ct
+
+
+def test_an_engine_crash_never_carries_the_users_text(monkeypatch):
+    from omna_plugin import smart
+
+    def boom(*a, **k):
+        raise PanicException("byte index 9 is out of bounds of `sk_live_" "abc123`")
+
+    monkeypatch.setattr(smart.omna_pii_mask, "mask", boom)
+    try:
+        smart.mask("x", smart=False)
+    except smart.EngineCrashed as e:
+        assert "sk_live" not in str(e) and e.__cause__ is None and e.__suppress_context__
+    else:
+        raise AssertionError("expected EngineCrashed")

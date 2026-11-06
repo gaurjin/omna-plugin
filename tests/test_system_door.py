@@ -781,3 +781,22 @@ async def test_what_a_websocket_masked_is_receipted_when_it_closes(tmp_path, mon
     addon.websocket_end(flow)
     rec = receipts.tail(1)[0]
     assert rec["route"] == "websocket" and rec["masked"].get("EMAIL") == 1
+
+
+async def test_an_engine_crash_refuses_the_request_never_forwards_it(door, monkeypatch):
+    # The masking engine's own crash arrives as PanicException (a BaseException):
+    # the add-on's `except Exception` missed it and mitmproxy forwarded the
+    # ORIGINAL request (security review 2026-11-06).
+    from omna_plugin import smart
+    up, port, ctx, _ = door
+    up.last_body = b"UNTOUCHED"
+    panic = type("PanicException", (BaseException,), {})
+
+    def boom(*a, **k):
+        raise panic("end byte index 3 is not a char boundary")
+
+    monkeypatch.setattr(smart.omna_pii_mask, "mask", boom)
+    async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
+        r = await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": f"for {EMAIL}"})
+    assert r.status_code == 400 and "omna_refused" in r.text
+    assert up.last_body == b"UNTOUCHED"

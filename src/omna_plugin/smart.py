@@ -96,6 +96,26 @@ def _choice(chrome_text: str | None = None) -> str | None:
     return BOTH
 
 
+class EngineCrashed(ValueError):
+    """The masking engine itself crashed. Its crash arrives as pyo3's
+    ``PanicException`` — a ``BaseException``, so ``except Exception`` misses
+    it and mitmproxy forwarded the ORIGINAL request (security review
+    2026-11-06). Raised as a ``ValueError`` so every refusal path catches it:
+    refused, never sent unmasked."""
+
+
+def _guard(call):
+    try:
+        return call()
+    except BaseException as e:  # noqa: BLE001 — only the engine's own crash is converted
+        if type(e).__name__ == "PanicException":
+            # No message and no chained cause: a Rust panic message can quote
+            # the text being masked ("…out of bounds of `<text>`"), and the
+            # refusal path logs the error — never put user text in a log.
+            raise EngineCrashed("masking engine crashed") from None
+        raise
+
+
 _FINGERPRINT: list[str] = []
 
 
@@ -103,8 +123,8 @@ def engine_fingerprint() -> str:
     """The masking engine's (omna-pii-mask) build fingerprint, for records."""
     if not _FINGERPRINT:
         try:
-            _FINGERPRINT.append(str(omna_pii_mask.mask("omna")["engine_fingerprint"]))
-        except (KeyError, TypeError, RuntimeError):
+            _FINGERPRINT.append(str(_guard(lambda: omna_pii_mask.mask("omna"))["engine_fingerprint"]))
+        except (KeyError, TypeError, RuntimeError, ValueError):
             _FINGERPRINT.append(omna_pii_mask.version())
     return _FINGERPRINT[0]
 
@@ -119,8 +139,8 @@ def mask(text: str, smart: bool, ruleset: str | None = None) -> dict:
     which = _choice() if smart else None
     key = receipts.fingerprint_key()
     if which is None:
-        return omna_pii_mask.mask(text, model=False, ruleset=ruleset, audit_key=key)
-    return omna_pii_mask.mask(text, model=True, ruleset=ruleset, smart_model=which, audit_key=key)
+        return _guard(lambda: omna_pii_mask.mask(text, model=False, ruleset=ruleset, audit_key=key))
+    return _guard(lambda: omna_pii_mask.mask(text, model=True, ruleset=ruleset, smart_model=which, audit_key=key))
 
 
 def detect(text: str, smart: bool, ruleset: str | None = None, for_chrome: bool = False) -> list[dict]:
@@ -129,8 +149,8 @@ def detect(text: str, smart: bool, ruleset: str | None = None, for_chrome: bool 
     which = (_choice(text) if for_chrome else _choice()) if smart else None
     key = receipts.fingerprint_key()
     if which is None:
-        return omna_pii_mask.detect(text, model=False, ruleset=ruleset, audit_key=key)
-    return omna_pii_mask.detect(text, model=True, ruleset=ruleset, smart_model=which, audit_key=key)
+        return _guard(lambda: omna_pii_mask.detect(text, model=False, ruleset=ruleset, audit_key=key))
+    return _guard(lambda: omna_pii_mask.detect(text, model=True, ruleset=ruleset, smart_model=which, audit_key=key))
 
 
 def download_models() -> None:
