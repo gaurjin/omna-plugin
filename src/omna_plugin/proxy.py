@@ -474,7 +474,6 @@ def create_app(
             url += "?" + request.url.query
 
         body = await request.body()
-        received = body   # as it arrived: tokens already in it are never restored (MASTER #177)
         mstats = MaskStats()
         passthrough = False
         ctype = request.headers.get("content-type", "")
@@ -560,7 +559,7 @@ def create_app(
 
         if is_sse:
             async def gen():
-                restorer = pipeline.sse_restorer(sent=body, received=received)
+                restorer = pipeline.sse_restorer(minted=mstats.tokens)
                 try:
                     async for chunk in resp.aiter_bytes():
                         out = restorer.feed(chunk)
@@ -579,7 +578,7 @@ def create_app(
         await resp.aclose()
         if resp.status_code < 400 and "json" in resp.headers.get("content-type", ""):
             try:
-                data = json.dumps(pipeline.restore_json(json.loads(data), sent=body, received=received), ensure_ascii=False).encode("utf-8")
+                data = json.dumps(pipeline.restore_json(json.loads(data), minted=mstats.tokens), ensure_ascii=False).encode("utf-8")
             except ValueError:
                 pass
         _receipt(request, path, upstream_host, resp.status_code, mstats, len(body), t0, stream=False, note=_note(passthrough, mstats))

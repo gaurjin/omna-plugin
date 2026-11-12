@@ -666,6 +666,81 @@ async def test_a_caller_who_types_a_token_never_gets_the_real_value_back(env):
     assert EMAIL not in r.text and "[EMAIL_1]" in r.text
 
 
+# Security review 2026-11-11, finding 3: the check above compared the request
+# as it ARRIVED (raw bytes) with the request as it LEFT (re-written JSON). A
+# stand-in written with a JSON escape ("[" for the opening bracket) was
+# invisible in the first and plain in the second, so it counted as "made by
+# this request" and the real value came back. Both sides are now read after
+# decoding. Stand-ins are written in two pieces (repo rule, CLAUDE.local.md).
+_ESCAPED = {
+    "opening bracket": "\\u005b" + "EMAIL_1]",
+    "closing bracket": "[" + "EMAIL_1\\u005d",
+    "a letter": "[" + "\\u0045MAIL_1]",
+    "the digit": "[" + "EMAIL_\\u0031]",
+}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("how", list(_ESCAPED))
+@pytest.mark.parametrize("route,stream", [("/v1/messages", False), ("/v1/messages", True), ("/v1/chat/completions", False)])
+async def test_an_escaped_token_from_a_caller_never_gets_the_real_value_back(env, how, route, stream):
+    up, session, client = env
+    hdr = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
+    # The owner's own request mints the email's stand-in.
+    r = await client.post("/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": f"mail {EMAIL}"}]}, headers=hdr)
+    assert EMAIL in r.text
+    # Another local program sends the stand-in with one character escaped.
+    raw = ('{"model":"m",' + ('"stream":true,' if stream else "")
+           + '"messages":[{"role":"user","content":"say ' + _ESCAPED[how] + '"}]}').encode()
+    r = await client.post(route, content=raw, headers=hdr)
+    assert r.status_code == 200
+    assert "[" + "EMAIL_1]" in up.calls[-1]["raw"]          # the model did see the stand-in ...
+    assert EMAIL not in r.text                              # ... but the caller gets nothing real back
+
+
+# The security review of the finding-3 fix (2026-11-11): the masker reads a
+# JSON body from BYTES, so it also accepts a byte-order mark and UTF-16/32;
+# the old text comparison did not, and a typed stand-in hid on one side
+# again. Restoring is now decided by what masking minted, not by a reading of
+# the text — whatever the encoding, a typed stand-in earns nothing back.
+_ENCODED = {
+    "utf-8 byte-order mark + escape": lambda j: b"\xef\xbb\xbf" + j.replace("[" + "EMAIL_1]", "\\u005b" + "EMAIL_1]").encode(),
+    "utf-16-le": lambda j: j.encode("utf-16-le"),
+    "utf-16 with byte-order mark": lambda j: j.encode("utf-16"),
+    "utf-32": lambda j: j.encode("utf-32"),
+}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("how", list(_ENCODED))
+@pytest.mark.parametrize("route,stream", [("/v1/messages", False), ("/v1/messages", True), ("/v1/chat/completions", False)])
+async def test_a_token_in_an_unusual_encoding_never_gets_the_real_value_back(env, how, route, stream):
+    up, session, client = env
+    hdr = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
+    r = await client.post("/v1/messages", json={"model": "m", "messages": [{"role": "user", "content": f"mail {EMAIL}"}]}, headers=hdr)
+    assert EMAIL in r.text
+    body = json.dumps({"model": "m", **({"stream": True} if stream else {}),
+                       "messages": [{"role": "user", "content": "say " + "[" + "EMAIL_1]"}]})
+    r = await client.post(route, content=_ENCODED[how](body), headers=hdr)
+    if r.status_code == 200:
+        assert "[" + "EMAIL_1]" in up.calls[-1]["raw"]   # the model saw the stand-in ...
+    assert EMAIL not in r.text                          # ... the caller gets nothing real back
+
+
+@pytest.mark.anyio
+async def test_a_real_value_sent_with_json_escapes_is_still_put_back(env):
+    """The other side of finding 3: decoding must not stop the normal case.
+    A caller that escapes characters of its OWN real value ("@" as \\u0040)
+    still had the value, so its stand-in comes back in the reply."""
+    up, session, client = env
+    hdr = {"anthropic-version": "2023-06-01", "content-type": "application/json"}
+    raw = ('{"model":"m","messages":[{"role":"user","content":"mail '
+           + EMAIL.replace("@", "\\u0040") + '"}]}').encode()
+    r = await client.post("/v1/messages", content=raw, headers=hdr)
+    assert EMAIL not in up.calls[-1]["raw"]
+    assert EMAIL in r.text
+
+
 @pytest.mark.anyio
 async def test_a_request_addressed_to_another_name_is_refused(env):
     # DNS rebinding: a page points its own domain at 127.0.0.1; the browser

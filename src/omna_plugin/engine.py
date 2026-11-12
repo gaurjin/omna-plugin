@@ -837,20 +837,40 @@ class MaskingSession:
 
         return self._pattern().sub(sub, text)
 
-    def scoped(self, sent: str, received: str) -> "ScopedRestore":
-        """A restore-only view that puts back ONLY the stand-ins this request
-        itself produced: in ``sent`` (as it left, masked) but not already in
-        ``received`` (as it arrived). Restoring every token we know, for any
-        caller, let any local program — another user on the Mac, a
-        DNS-rebinding page — post "[EMAIL_1] [SECRET_AWS_KEY_1]" to an echoing
-        model and read the real values back (architecture review, MASTER
-        #177). Typing a token yourself therefore earns nothing back. An agent
-        resends its real conversation every turn, so every token its answer
-        can mention is minted again from the real value in that request."""
-        def found(t: str) -> set[str]:
-            return {m.group(0) for m in self._pattern().finditer(t or "")}
-        allowed = found(sent) - found(received)
-        return ScopedRestore(self, allowed.__contains__, any_allowed=bool(allowed))
+    def scoped(self, minted) -> "ScopedRestore":
+        """A restore-only view that puts back ONLY the stand-ins the masking
+        of this request made from real values in it. ``minted``: the stand-in
+        names that masking wrote down ("EMAIL_1", "SECRET_GITHUB_TOKEN_1" —
+        ``MaskResult.labels`` / ``MaskStats.tokens``).
+
+        Restoring every token we know, for any caller, let any local program —
+        another user on the Mac, a DNS-rebinding page — post "[EMAIL_1]
+        [SECRET_AWS_KEY_1]" to an echoing model and read the real values back
+        (architecture review, MASTER #177). Typing a stand-in yourself
+        therefore earns nothing back: it was never minted from a real value
+        in your request. An agent resends its real conversation every turn,
+        so every stand-in its answer can mention is minted again from the
+        real value in that request.
+
+        This used to be worked out by comparing two texts — stand-ins in the
+        request as it left, minus those in the request as it arrived — and an
+        encoding the masker reads but the comparison did not (a JSON escape,
+        a byte-order mark, UTF-16) hid a typed stand-in on one side only, so
+        any local program got real values back (security review 2026-11-11,
+        finding 3). The masker's own list cannot be fooled that way: it is
+        what masking DID, not a reading of the text afterwards."""
+        names = {str(n) for n in (minted or ())}
+        # A realistic fake value carries no name; it is allowed when the real
+        # value behind it is one this request's masking named.
+        keys = {k for k in (self._key_of(f"[{n}]") for n in names) if k}
+
+        def allowed(stand_in: str) -> bool:
+            m = TOKEN_RE.fullmatch(stand_in)
+            if m:
+                return stand_in[1:-1] in names
+            return self._key_of(stand_in) in keys
+
+        return ScopedRestore(self, allowed, any_allowed=bool(names))
 
     def hold_from(self, buf: str) -> int:
         """Where text that might still become a token or a fake value starts.
