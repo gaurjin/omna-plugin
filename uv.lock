@@ -818,17 +818,17 @@ wheels = [
 
 [[package]]
 name = "omna-pii-mask"
-version = "0.2.21"
+version = "0.2.22"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/05/6f/ba6f697a5ee53fa3457a94d727445bb63691e88a009c4767469516d57f18/omna_pii_mask-0.2.21-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:e657de1bdc173a3566347430e3a1dcb5a3b4e5282a47a493531429c043077e0e", size = 9204056, upload-time = "2026-11-11T00:38:47.323Z" },
-    { url = "https://files.pythonhosted.org/packages/7b/e2/c516d623a6160d6f7dc2be5fd59763e52210297e02d96751451cd3043f3c/omna_pii_mask-0.2.21-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:ee8eaa0adc0063756a36c4c5bd0964685aade2d4f2a4828fde845e8e9e2267ad", size = 11585694, upload-time = "2026-11-11T00:38:49.224Z" },
-    { url = "https://files.pythonhosted.org/packages/59/48/d1a628f83cc168d38a05aebfc6b72b71544765216f3f4b39e4c59db37070/omna_pii_mask-0.2.21-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:8c08862c453289bbb0a46824931620d33961694366382ec7331417e11cc33d92", size = 11121122, upload-time = "2026-11-11T00:38:50.949Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/1d/7642e832893f77eaf1835059876820ea36e150b6b03dad25c27042e50691/omna_pii_mask-0.2.22-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:ca1f15f8303e5247207d83edf6352706c53a04d0177c4ee970c07dbda4d05bc1", size = 9204478, upload-time = "2026-11-12T03:15:37.503Z" },
+    { url = "https://files.pythonhosted.org/packages/30/83/3c5ac538f0ce3907ecc7df2ad0d6090f875f465dcd483e2ccc620c8795df/omna_pii_mask-0.2.22-cp39-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:f8a1d6b7f8db8be18a5a9083754e92e23bb993069180f15138043a6693b5d153", size = 11586599, upload-time = "2026-11-12T03:15:40.185Z" },
+    { url = "https://files.pythonhosted.org/packages/21/0f/25f9926a9cf46e6b8467c3b90253bc985bae6f1afc7ee15fe93f25f04f5c/omna_pii_mask-0.2.22-cp39-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:880068097b3d75fa656989064933addc28b233961febcd70c7421e352ee505ca", size = 11122345, upload-time = "2026-11-12T03:15:42.942Z" },
 ]
 
 [[package]]
 name = "omna-plugin"
-version = "0.6.18"
+version = "0.6.19"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
@@ -856,7 +856,7 @@ requires-dist = [
     { name = "cryptography", specifier = ">=42" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "mitmproxy", specifier = ">=12.3.1,<13" },
-    { name = "omna-pii-mask", specifier = ">=0.2.21,<0.3" },
+    { name = "omna-pii-mask", specifier = ">=0.2.22,<0.3" },
     { name = "pillow", specifier = ">=10" },
     { name = "pyobjc-framework-vision", marker = "sys_platform == 'darwin'", specifier = ">=11" },
     { name = "pystray", specifier = ">=0.19,<1" },
