@@ -10,18 +10,32 @@ have their own ``model_providers`` blocks and comments in this file, and a
 generic parse-and-dump would reformat or drop them. Same shape as
 ``claude_code.py``: mark our line, back up the file once, uninstall removes only
 what we added.
+
+WHERE the line goes matters (security review 2026-11-11, finding 8). It used
+to be appended at the end; when the file ended with a ``[section]`` the line
+landed inside that section, Codex ignored it and talked to OpenAI directly,
+and ``omna status`` still said "wired". TOML keys are top-level only before
+the first ``[section]`` header, and line 1 always is — so our line goes first,
+and the result is read back with ``tomllib`` (what Codex sees) before it is
+kept. ``status`` reads the file the same way, and also says when Codex uses a
+provider other than the built-in ``openai`` one, which ``openai_base_url``
+does not cover.
 """
 
 from __future__ import annotations
 
 import re
 import shutil
+import tomllib
 from pathlib import Path
 
 from . import config
 
 MARK = "# added by omna"
-_KEY_RE = re.compile(r'^openai_base_url[ \t]*=.*$', re.MULTILINE)
+# Any line we added, wherever an older version put it.
+_OURS_RE = re.compile(r'^[ \t]*openai_base_url[ \t]*=[^\n]*' + re.escape(MARK) + r'[^\n]*\n?', re.MULTILINE)
+# The provider ``openai_base_url`` applies to (Codex's built-in default).
+BUILTIN_PROVIDER = "openai"
 
 
 def settings_file() -> Path:
@@ -32,32 +46,56 @@ def _our_line(port: int) -> str:
     return f'openai_base_url = "{config.base_url(port)}/v1"  {MARK}'
 
 
-def _is_ours(line: str) -> bool:
-    return MARK in line
+def _without_ours(text: str) -> str:
+    return _OURS_RE.sub("", text)
+
+
+def _parse(text: str) -> dict | None:
+    """The file as Codex reads it, or None when it is not valid TOML."""
+    try:
+        return tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        return None
+
+
+def _provider(doc: dict) -> str:
+    """The provider Codex will use: the selected profile's, else the
+    top-level ``model_provider``, else the built-in ``openai``."""
+    profile = doc.get("profile")
+    if isinstance(profile, str):
+        p = (doc.get("profiles") or {}).get(profile) or {}
+        if isinstance(p, dict) and isinstance(p.get("model_provider"), str):
+            return p["model_provider"]
+    mp = doc.get("model_provider")
+    return mp if isinstance(mp, str) else BUILTIN_PROVIDER
 
 
 def init(path: Path, port: int = config.DEFAULT_PORT) -> dict:
-    """Add/replace the ``openai_base_url`` line. Returns what changed."""
-    changes = {"base_url": False, "backup": None}
+    """Put our ``openai_base_url`` line at the top level. Returns what changed;
+    ``problem`` says why nothing was written when the file can't be wired."""
+    changes = {"base_url": False, "backup": None, "problem": None}
     text = path.read_text() if path.exists() else ""
+    if _parse(text) is None:
+        changes["problem"] = f"{path} is not valid TOML (Codex cannot read it either); left as it is"
+        return changes
+    rest = _without_ours(text)
+    if "openai_base_url" in (_parse(rest) or {}):
+        return changes  # someone set the top-level value deliberately; don't fight it silently
     new_line = _our_line(port)
-    existing = _KEY_RE.search(text)
-    if existing and not _is_ours(existing.group(0)):
-        return changes  # someone set this deliberately; don't fight it silently
+    new_text = f"{new_line}\n{rest}"
+    if new_text == text:
+        return changes  # idempotent: already exactly this, in the right place
+    doc = _parse(new_text)
+    if doc is None or doc.get("openai_base_url") != f"{config.base_url(port)}/v1":
+        changes["problem"] = f"could not place openai_base_url at the top level of {path}; left as it is"
+        return changes
     if path.exists():
         backup = path.with_name(path.name + ".omna-backup")
         if not backup.exists():
             shutil.copyfile(path, backup)
             changes["backup"] = str(backup)
-    if existing:
-        if existing.group(0).strip() == new_line.strip():
-            return changes  # idempotent: already set to exactly this
-        text = _KEY_RE.sub(new_line, text, count=1)
-    else:
-        sep = "" if not text or text.endswith("\n") else "\n"
-        text = f"{text}{sep}{new_line}\n"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(new_text)
     changes["base_url"] = True
     return changes
 
@@ -72,20 +110,42 @@ def uninstall(path: Path) -> dict:
     if not path.exists():
         return changes
     text = path.read_text()
-    m = _KEY_RE.search(text)
-    if m and _is_ours(m.group(0)):
-        text = _KEY_RE.sub("", text, count=1)
-        text = re.sub(r"\n{3,}", "\n\n", text)  # collapse the blank line left behind
-        path.write_text(text)
+    rest = _without_ours(text)
+    if rest != text:
+        rest = re.sub(r"\n{3,}", "\n\n", rest)  # collapse the blank line left behind
+        path.write_text(rest)
         changes["base_url"] = True
     return changes
 
 
 def status(path: Path) -> dict:
+    """What Codex will actually do, read the way Codex reads the file.
+
+    ``base_url``: the top-level ``openai_base_url`` (None when absent).
+    ``ours``: that value is the line Omna wrote. ``provider``: the provider
+    Codex uses. ``routed``: Codex's requests go through the address in
+    ``base_url``. ``problem``: why not, in one sentence, else None."""
+    out = {"file": str(path), "base_url": None, "ours": False,
+           "provider": BUILTIN_PROVIDER, "routed": False, "problem": None}
     if not path.exists():
-        return {"file": str(path), "base_url": None}
-    m = _KEY_RE.search(path.read_text())
-    if not m:
-        return {"file": str(path), "base_url": None}
-    value = m.group(0).split("=", 1)[1].split(MARK)[0].strip().strip('"')
-    return {"file": str(path), "base_url": value, "ours": _is_ours(m.group(0))}
+        out["problem"] = "no Codex config file"
+        return out
+    text = path.read_text()
+    doc = _parse(text)
+    if doc is None:
+        out["problem"] = "the Codex config file is not valid TOML, so Codex cannot read it"
+        return out
+    value = doc.get("openai_base_url")
+    out["base_url"] = value if isinstance(value, str) else None
+    out["provider"] = _provider(doc)
+    ours = _OURS_RE.search(text)
+    out["ours"] = bool(ours) and out["base_url"] is not None and f'"{out["base_url"]}"' in ours.group(0)
+    if out["base_url"] is None:
+        out["problem"] = ("omna's line is inside a [section], where Codex ignores it"
+                          if ours else "no openai_base_url at the top level")
+    elif out["provider"] != BUILTIN_PROVIDER:
+        out["problem"] = (f'Codex uses the "{out["provider"]}" provider, which talks to its own '
+                          f"address — openai_base_url only covers the built-in openai provider")
+    else:
+        out["routed"] = True
+    return out

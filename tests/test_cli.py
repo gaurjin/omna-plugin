@@ -115,7 +115,10 @@ def test_enable_aider_and_codex_wire_when_on_path(monkeypatch):
     monkeypatch.setattr("omna_plugin.cli.shutil.which", lambda name: f"/usr/local/bin/{name}")
     calls = []
     monkeypatch.setattr("omna_plugin.aider.init", lambda port: calls.append(("aider", port)))
-    monkeypatch.setattr("omna_plugin.codex.init", lambda path, port: calls.append(("codex", port)))
+    monkeypatch.setattr("omna_plugin.codex.init", lambda path, port: calls.append(("codex", port)) or {"base_url": True})
+    # `enable codex` reads Codex's config back to prove the wiring (finding 8);
+    # never the real ~/.codex in a test.
+    monkeypatch.setattr("omna_plugin.codex.status", lambda path: {"routed": True, "problem": None})
 
     assert main(["enable", "aider"]) == 0
     assert main(["enable", "codex"]) == 0
@@ -800,3 +803,37 @@ def test_secrets_can_never_be_switched_off(home, capsys):
     assert "cannot be switched off" in capsys.readouterr().err
     assert not config.ruleset_path().exists()
     assert main(["categories", "off", "bogus"]) == 2
+
+
+def test_enable_codex_warns_when_codex_would_not_go_through_omna(monkeypatch, tmp_path, capsys):
+    """Security review 2026-11-11, finding 8: Codex on another provider (or a
+    line Codex ignores) used to read as wired. Now enable says so, out loud."""
+    cfg = tmp_path / ".codex" / "config.toml"
+    cfg.parent.mkdir()
+    cfg.write_text('model_provider = "azure"\n[model_providers.azure]\nbase_url = "https://x.openai.azure.com/openai"\n')
+    monkeypatch.setattr("omna_plugin.cli.shutil.which", lambda name: f"/usr/local/bin/{name}")
+    monkeypatch.setattr("omna_plugin.codex.settings_file", lambda: cfg)
+    assert main(["enable", "codex"]) == 0
+    out = capsys.readouterr().out
+    assert "NOT protected" in out and "azure" in out
+
+
+@pytest.mark.parametrize("cfg,expect", [
+    # The review's case: the file ends with a section, so an older omna's
+    # line landed inside it and Codex ignored it.
+    ('[mcp_servers.github]\ncommand = "npx"\nopenai_base_url = "http://127.0.0.1:7788/v1"  # added by omna\n',
+     "not wired (omna's line is inside a [section]"),
+    ('openai_base_url = "http://127.0.0.1:7788/v1"  # added by omna\nmodel_provider = "azure"\n',
+     'NOT through omna — Codex uses the "azure" provider'),
+    ('openai_base_url = "http://127.0.0.1:7788/v1"  # added by omna\n', "codex cli:    wired"),
+])
+def test_status_tells_the_truth_about_codex(monkeypatch, tmp_path, capsys, cfg, expect):
+    """Security review 2026-11-11, finding 8."""
+    p = tmp_path / "config.toml"
+    p.write_text(cfg)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)
+    monkeypatch.setattr("omna_plugin.cli.shutil.which", lambda name: "/usr/local/bin/codex" if name == "codex" else None)
+    monkeypatch.setattr("omna_plugin.codex.settings_file", lambda: p)
+    main(["status"])
+    line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("codex cli:"))
+    assert expect in line, line

@@ -386,9 +386,19 @@ def cmd_status(a) -> int:
         aw = ast["openai_base"] == f"{config.base_url(a.port)}/v1" or ast["anthropic_base"] == config.base_url(a.port)
         print(f"aider:        {'wired' if aw else 'not wired'}{'' if aw else '  → `omna enable aider`'}")
     if shutil.which("codex"):
+        # Read the way Codex reads it (finding 8): our address at the top
+        # level AND Codex on the built-in openai provider — not just "our
+        # line is somewhere in the file".
         xst = codex.status(codex.settings_file())
-        xw = xst["base_url"] == f"{config.base_url(a.port)}/v1"
-        print(f"codex cli:    {'wired' if xw else 'not wired'}{'' if xw else '  → `omna enable codex`'}")
+        xw = xst["routed"] and xst["base_url"] == f"{config.base_url(a.port)}/v1"
+        if xw:
+            print("codex cli:    wired")
+        elif xst["routed"]:
+            print(f"codex cli:    NOT through omna — Codex points at {xst['base_url']}  → `omna enable codex`")
+        elif xst["base_url"] and xst["provider"] != codex.BUILTIN_PROVIDER:
+            print(f"codex cli:    NOT through omna — {xst['problem']}")
+        else:
+            print(f"codex cli:    not wired ({xst['problem']})  → `omna enable codex`")
     if continue_dev.detected():
         cst = continue_dev.status()
         print(f"continue:     {'wired' if cst['wired'] else 'not wired'}{'' if cst['wired'] else '  → `omna enable continue`'}")
@@ -576,6 +586,11 @@ def _auto_wire_other_tools(port: int) -> None:
             ch = codex.init(codex.settings_file(), port)
             if ch["base_url"]:
                 print(f"omna: Codex CLI wired via {codex.settings_file()}")
+            elif ch.get("problem"):
+                print(f"omna: WARNING — Codex CLI NOT wired: {ch['problem']}")
+            xst = codex.status(codex.settings_file())
+            if xst["base_url"] == f"{config.base_url(port)}/v1" and not xst["routed"]:
+                print(f"omna: WARNING — Codex CLI is NOT protected: {xst['problem']}")
         except OSError as e:
             print(f"omna: WARNING — could not wire Codex CLI ({e}); everything else continues")
     if continue_dev.detected():
@@ -681,7 +696,10 @@ def _set_tool(a, state: str) -> int:
         if state == "off":
             codex.uninstall(path)
         elif shutil.which("codex"):
-            codex.init(path, a.port)
+            ch = codex.init(path, a.port)
+            xst = codex.status(path)
+            if ch.get("problem") or not xst["routed"]:
+                print(f"omna: WARNING — Codex CLI is NOT protected: {ch.get('problem') or xst['problem']}")
         else:
             print("omna: codex not found on PATH — install it first, then `omna enable codex`")
             return 1
