@@ -59,3 +59,13 @@ def test_data_pictures_identical(pic):
 def test_web_image_url_masked():
     s = masked({"input": [{"role": "user", "content": [{"type": "input_image", "image_url": f"https://x.example/a.png?token={GH}"}]}]})
     assert GH not in s
+
+
+def test_a_top_level_text_message_is_not_read_as_a_schema(tmp_path, monkeypatch):
+    """Only the Responses shape {"format": …} is an output schema; a chat
+    site's top-level "text" object keeps message rules (a name in it is
+    masked, as before)."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    body = {"text": {"name": "Maria Gonzalez", "message": "mail maria.gonzalez@fakecorp.example"}}
+    m, _ = Pipeline(MaskingSession()).mask_json(body)
+    assert "maria.gonzalez@fakecorp.example" not in json.dumps(m)

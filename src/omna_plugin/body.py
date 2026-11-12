@@ -130,8 +130,14 @@ def _skip(parent: dict, key: str, value, mode: str, depth: int) -> bool:
 def _child_mode(parent: dict, key: str, mode: str, depth: int = 1) -> str:
     if mode != _MSG:
         return mode
-    if key in _TOOLDEF_KEYS or (depth == 0 and key in _SCHEMA_KEYS):
+    if key in _TOOLDEF_KEYS:
         return _TOOLDEF
+    if depth == 0 and key in _SCHEMA_KEYS:
+        # "text" is an output schema only in its Responses shape
+        # ({"format": …}); any other top-level "text" stays a message.
+        v = parent.get(key)
+        if key != "text" or (isinstance(v, dict) and "format" in v):
+            return _TOOLDEF
     if key == "metadata" or (key == "input" and is_tool_call(parent)):
         return _DATA
     return _MSG
@@ -225,7 +231,10 @@ _TOOL_KEYS = frozenset({"tool_calls", "function_call", "functionCall"})
 
 def is_tool_call(obj: dict) -> bool:
     t = obj.get("type")
-    return isinstance(t, str) and (t in _TOOL_BLOCK_TYPES or t.endswith("_call"))
+    # "*tool_use" also covers Anthropic Managed Agents' events
+    # (agent.custom_tool_use, agent.tool_use, agent.mcp_tool_use) — found by
+    # /security-review, 2026-11-12.
+    return isinstance(t, str) and (t in _TOOL_BLOCK_TYPES or t.endswith("_call") or t.endswith("tool_use"))
 
 
 def restore_body(session, obj, tools=None):
