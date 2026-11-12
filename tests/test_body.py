@@ -58,14 +58,17 @@ def test_anthropic_request_masked_everywhere_it_should_be(session):
     assert EMAIL not in masked["messages"][1]["content"][1]["input"]["note"]
     assert EMAIL not in masked["messages"][2]["content"][0]["content"]
     assert EMAIL not in masked["messages"][2]["content"][1]["content"][0]["text"]
-    # ...but thinking, signature, tools, image data, cache_control are untouched
+    # ...but thinking, signature, image data, cache_control are untouched
     assert masked["messages"][1]["content"][0] == original["messages"][1]["content"][0]
-    assert masked["tools"] == original["tools"]
+    # A tool's name and schema stay; its description is prose and is masked
+    # (security review 2026-11-11, finding 4 — it used to go out as written).
+    assert masked["tools"][0]["name"] == "Read" and masked["tools"][0]["input_schema"] == {"type": "object"}
+    assert EMAIL not in masked["tools"][0]["description"]
     assert masked["messages"][2]["content"][2]["source"]["data"] == B64
     assert masked["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert masked["stop_sequences"] == ["[END]"]
     assert masked["model"] == "claude-sonnet-5" and masked["stream"] is True
-    assert counts["EMAIL"] == 4 and counts["AWS_KEY"] == 1
+    assert counts["EMAIL"] == 5 and counts["AWS_KEY"] == 1
     assert "[SECRET_AWS_KEY_1]" in s
     # the same email became the same token everywhere (one email token + one secret token)
     toks = set(m.group(0) for m in TOKEN_RE.finditer(s))

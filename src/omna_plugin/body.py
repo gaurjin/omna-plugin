@@ -2,9 +2,11 @@
 
 Generic on purpose: Anthropic Messages, OpenAI chat completions and the OpenAI
 Responses API all put text in nested dicts/lists. We mask every string value
-except the ones that must stay byte-identical (signatures, thinking blocks,
-base64 media, tool schemas, config fields) and skip anything that looks like a
-binary blob.
+except the ones that must stay byte-identical — signatures, thinking blocks,
+base64 media, request settings, a message's or block's own identifiers, and the
+names/types/schema words of a tool's definition — each skipped only at its own
+place (finding 4), never by name anywhere. Anything that looks like a binary
+blob is skipped too.
 """
 
 from __future__ import annotations
@@ -15,23 +17,45 @@ from . import receipts
 from .engine import MaskingSession
 from .style import TOKENS
 
-# Keys whose values are never human prose, or must reach the upstream untouched.
-SKIP_KEYS = frozenset(
-    {
-        # identity / config
-        "id", "model", "type", "role", "tool_use_id", "tool_call_id",
-        "call_id", "media_type", "stop_reason", "stop_sequence", "stop_sequences",
-        "file_id", "service_tier", "anthropic_version", "stream",
-        "tool_choice", "output_config", "context_management",
-        "mcp_servers", "container", "response_format", "modalities",
-        # must be byte-identical for the API to accept the request back
-        "signature", "thinking", "redacted_thinking", "cache_control",
-        # binary / opaque
-        "image_url", "b64_json", "encrypted_content",
-        # tool definitions are schemas, not prose
-        "tools", "functions", "input_schema", "parameters",
-    }
-)
+# WHERE a field is skipped matters (security review 2026-11-11, finding 4).
+# These names used to be skipped ANYWHERE in the body, so a real email under
+# "id" or a key under "type" inside a tool call's input, a token in a tool's
+# description and an MCP server's access token all reached the provider. Now
+# each set applies only at its own place:
+#
+# Request settings — skipped at the top of the request only.
+TOP_KEYS = frozenset({
+    "model", "stream", "stop_sequences", "tool_choice", "service_tier", "anthropic_version",
+    "output_config", "context_management", "container", "response_format", "modalities",
+    "previous_response_id", "store", "include", "truncation", "parallel_tool_calls",
+    "reasoning", "text", "prompt_cache_key", "background",
+})
+# Structure of a message, a content block or a reply item: identifiers and
+# byte-exact fields the API matches on. Skipped on messages and blocks, never
+# inside a tool call's input (that is your data) or a tool's definition.
+STRUCT_KEYS = frozenset({
+    "id", "model", "type", "role", "tool_use_id", "tool_call_id", "call_id", "media_type",
+    "stop_reason", "stop_sequence", "file_id",
+    # must be byte-identical for the API to accept the request back
+    "signature", "thinking", "redacted_thinking", "cache_control",
+    # binary / opaque
+    "image_url", "b64_json", "encrypted_content",
+})
+# Inside a tool's DEFINITION (tools[], functions[], mcp_servers[]): what the
+# API and the model match on stays; descriptions, defaults, examples, enum
+# values, server addresses and access tokens are masked.
+TOOLDEF_KEEP = frozenset({
+    "name", "type", "required", "strict", "cache_control", "$schema", "$ref", "$id", "format",
+    "pattern", "additionalProperties", "server_label", "require_approval", "allowed_tools",
+    "defer_loading", "id",
+})
+# Kept for anything that imported it: every name skipped somewhere.
+SKIP_KEYS = TOP_KEYS | STRUCT_KEYS
+
+_MSG, _DATA, _TOOLDEF = "msg", "data", "tooldef"
+# A field whose NAME says its value is a credential (finding 4).
+_CRED_KEY = re.compile(r"(?i)(?:passw(?:or)?d|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential|auth)")
+_TOOLDEF_KEYS = frozenset({"tools", "functions", "mcp_servers"})
 
 # Long runs with no whitespace and only base64 characters: media, not prose.
 _BLOB_RE = re.compile(r"^[A-Za-z0-9+/=_\-]{256,}$")
@@ -80,21 +104,43 @@ def is_id_key(key: str | None) -> bool:
     return bool(key) and bool(_ID_KEY_CAMEL.search(key) or _ID_KEY_PLAIN.search(key))
 
 
-def _walk(obj, fn, counts: dict[str, int], key: str | None = None):
+def _skip(parent: dict, key: str, value, mode: str, depth: int) -> bool:
+    if mode == _DATA:
+        return False
+    if mode == _TOOLDEF:
+        return key in TOOLDEF_KEEP
+    if depth == 0 and key in TOP_KEYS:
+        return True
+    return key in STRUCT_KEYS or _skip_in(parent, key, value)
+
+
+def _child_mode(parent: dict, key: str, mode: str) -> str:
+    if mode != _MSG:
+        return mode
+    if key in _TOOLDEF_KEYS:
+        return _TOOLDEF
+    if key == "metadata" or (key == "input" and is_tool_call(parent)):
+        return _DATA
+    return _MSG
+
+
+def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, in_tool: bool = False):
+    """Visit every string that is someone's content; ``visit(s, key, in_tool)``
+    returns its replacement. ``in_tool``: the string is part of a tool CALL
+    (finding 2). One walker for masking and restoring, so whatever is masked
+    can be put back."""
     if isinstance(obj, str):
-        if key in SKIP_KEYS or _is_blob(obj):
-            return obj
-        return fn(obj, counts, key)
+        return obj if _is_blob(obj) else visit(obj, key, in_tool)
     if isinstance(obj, list):
-        if key in SKIP_KEYS:
-            return obj
-        return [_walk(item, fn, counts, key) for item in obj]
+        return [_walk(item, visit, mode, key, depth + 1, in_tool) for item in obj]
     if isinstance(obj, dict):
-        if key in SKIP_KEYS:
-            return obj
+        here = in_tool or is_tool_call(obj)
         out = {}
         for k, v in obj.items():
-            out[k] = v if _skip_in(obj, k, v) else _walk(v, fn, counts, k)
+            if _skip(obj, k, v, mode, depth):
+                out[k] = v
+            else:
+                out[k] = _walk(v, visit, _child_mode(obj, k, mode), k, depth + 1, here or k in _TOOL_KEYS)
         return out
     return obj
 
@@ -118,8 +164,21 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
     labels: list[str] = []
     finds: list[list[dict]] = []
 
-    def fn(s: str, c: dict[str, int], key: str | None = None) -> str:
-        r = session.mask_text(s, style=style, only=ONLY_IN_IDS if careful and is_id_key(key) else None)
+    c = counts
+
+    def fn(s: str, key: str | None = None, _in_tool: bool = False) -> str:
+        only = ONLY_IN_IDS if careful and is_id_key(key) else None
+        r = session.mask_text(s, style=style, only=only)
+        masked = r.masked
+        if r.masked == s and key and _CRED_KEY.search(key) and s and not any(ch.isspace() for ch in s):
+            # {"password": "S3cure-Horse-Battery-99"}: each value is masked on
+            # its own, so the engine never saw the word that makes it a
+            # password (finding 4). Ask again WITH its name, using the
+            # engine's own rule (keyword + entropy floor), and keep the value.
+            r2 = session.mask_text(f"{key}={s}", style=style, only=only)
+            head = f"{key}="
+            if r2.masked.startswith(head) and r2.masked[len(head):] != s:
+                r, masked = r2, r2.masked[len(head):]   # never edit r2: the engine caches it
         labels.extend(r.labels)
         if r.finds:
             finds.append(r.finds)
@@ -134,9 +193,9 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
         for layer, n in r.by_layer.items():
             k = f"_layer_{layer}"
             c[k] = c.get(k, 0) + n
-        return r.masked
+        return masked
 
-    masked = _walk(obj, fn, counts)
+    masked = _walk(obj, fn)
     if finds:
         counts["_finds"] = receipts.merge_finds(*finds)  # type: ignore[assignment]
     return masked, counts, sorted(set(labels))
@@ -162,22 +221,4 @@ def restore_body(session, obj, tools=None):
     ``engine.ToolView``) — secrets stay stand-ins there by default (finding
     2). None restores tool calls like any other text."""
     tools = tools or session
-
-    def walk(o, in_tool: bool, key: str | None = None):
-        if isinstance(o, str):
-            if key in SKIP_KEYS or _is_blob(o):
-                return o
-            return (tools if in_tool else session).restore_text(o)
-        if isinstance(o, list):
-            if key in SKIP_KEYS:
-                return o
-            return [walk(item, in_tool, key) for item in o]
-        if isinstance(o, dict):
-            if key in SKIP_KEYS:
-                return o
-            here = in_tool or is_tool_call(o)
-            return {k: v if _skip_in(o, k, v) else walk(v, here or k in _TOOL_KEYS, k)
-                    for k, v in o.items()}
-        return o
-
-    return walk(obj, False)
+    return _walk(obj, lambda s, _key, in_tool: (tools if in_tool else session).restore_text(s))

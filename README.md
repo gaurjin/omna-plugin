@@ -521,7 +521,7 @@ built from these receipts, per-machine coverage, and org-wide rulesets. See a sa
 
 ```sh
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q          # 742 tests, ~15 s (fake upstream, no network)
+.venv/bin/pytest -q          # 749 tests, ~15 s (fake upstream, no network)
 .venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
 ```
 
