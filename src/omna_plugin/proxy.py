@@ -31,7 +31,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from . import config, crashlog, ext_l3, mappings, ocr, receipts
+from . import config, crashlog, ext_l3, extension_auth, mappings, ocr, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy, live_policy
@@ -190,14 +190,29 @@ def create_app(
             return pol.style
         return Policy.load().style
 
-    async def health(_: Request) -> Response:
+    def _extension_ok(request: Request) -> bool:
+        """Omna for Chrome, and only it (finding 6): EXT_HEADER (a web page
+        cannot add it to a cross-site request) AND the secret Chrome hands
+        only to the extension (extension_auth). Any other local program that
+        reaches the port is refused."""
+        return bool(request.headers.get(EXT_HEADER)) and extension_auth.header_ok(
+            request.headers.get(extension_auth.HEADER))
+
+    async def health(request: Request) -> Response:
         ok, n, _msg = receipts.verify()
+        # Proof that THIS is the curl command (finding 6): only the holder of
+        # the secret can answer the extension's nonce. A program squatting the
+        # port cannot, so the extension sends it nothing.
+        nonce = request.query_params.get("nonce")
+        token = extension_auth.read_token()
+        proof = extension_auth.proof(token, nonce) if token and extension_auth.valid_nonce(nonce) else None
         doors = doors_state or {"api": True, "system": False, "deep": False}
         return JSONResponse(
             {
                 "ok": True,
                 "plugin": __version__,
                 "engine": engine_version(),
+                "proof": proof,
                 "smart": session.smart,
                 # Which smart models have arrived and passed their hash check.
                 "smart_models": _smart_models_ready() if session.smart else [],
@@ -235,6 +250,8 @@ def create_app(
         # Request.json()) and wrong-shaped (valid JSON that isn't an object,
         # e.g. `null` or `[1,2,3]`, which parses fine but has no `.get`). Both
         # land on the same soft-fail fallback rather than a 500.
+        if not _extension_ok(request):
+            return JSONResponse({"error": "extension only"}, status_code=403)
         try:
             body = await request.json()
         except ValueError:
@@ -260,7 +277,7 @@ def create_app(
         cannot add to a cross-site request without a CORS preflight this
         server never approves — so a page can't make this machine run the
         model. Untrusted body, same soft handling as extension_checkin."""
-        if not request.headers.get(EXT_HEADER):
+        if not _extension_ok(request):
             return JSONResponse({"error": "extension only"}, status_code=403)
         try:
             body = await request.json()
@@ -285,7 +302,7 @@ def create_app(
         the masking engine's L6 finds — never a value. Extension only
         (EXT_HEADER); the body is untrusted, so every field is checked
         exactly and anything else is refused, never half-written."""
-        if not request.headers.get(EXT_HEADER):
+        if not _extension_ok(request):
             return JSONResponse({"error": "extension only"}, status_code=403)
         try:
             body = await request.json()
@@ -322,7 +339,7 @@ def create_app(
         their boxes, NOT masked — the extension masks with its own stand-ins so
         one conversation never has two lists. Extension only (EXT_HEADER),
         untrusted body handled softly, like detect_l3."""
-        if not request.headers.get(EXT_HEADER):
+        if not _extension_ok(request):
             return JSONResponse({"error": "extension only"}, status_code=403)
         try:
             body = await request.json()

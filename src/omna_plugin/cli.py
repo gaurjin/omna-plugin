@@ -36,6 +36,7 @@ import argparse
 import json
 import os
 import shutil
+import secrets
 import signal
 import subprocess
 import sys
@@ -45,7 +46,7 @@ from pathlib import Path
 
 import httpx
 
-from . import aider, claude_code, codex, config, continue_dev, crashlog, receipts
+from . import aider, claude_code, codex, config, continue_dev, crashlog, extension_auth, receipts
 from .policy import Policy
 from .style import STYLES
 
@@ -58,6 +59,45 @@ def _health(port: int) -> dict | None:
     except httpx.HTTPError:
         pass
     return None
+
+
+def _who_answers(port: int) -> str:
+    """"omna" when the curl command answers on ``port`` and proves it holds
+    this machine's secret, "stranger" when something else answers there,
+    "nobody" when nothing does (finding 6: `omna ensure` used to accept any
+    program that answered /omna/health as Omna)."""
+    token = extension_auth.ensure_token()   # no secret yet = nothing could prove it: make one first
+    nonce = secrets.token_hex(16)
+    try:
+        r = httpx.get(f"{config.base_url(port)}/omna/health", params={"nonce": nonce}, timeout=1.0)
+    except httpx.HTTPError:
+        return "nobody"
+    if r.status_code != 200:
+        return "stranger"
+    try:
+        got = r.json().get("proof")
+    except (ValueError, AttributeError):
+        return "stranger"
+    return "omna" if isinstance(got, str) and secrets.compare_digest(got, extension_auth.proof(token, nonce)) else "stranger"
+
+
+def _stranger_message(port: int) -> str:
+    return (f"omna: something that is NOT Omna is answering on port {port} — it did not prove it holds "
+            f"this machine's secret. Nothing was sent to it. Find it with `lsof -nP -iTCP:{port} -sTCP:LISTEN`. "
+            f"Just updated Omna? The old version may still be running: `omna stop`, then `omna start -d`.")
+
+
+def _pair_chrome(quiet: bool = False) -> None:
+    """Register Omna for Chrome's trusted channel (finding 6). Chrome reads it
+    only at start-up, so a first registration needs one Chrome restart."""
+    try:
+        written = extension_auth.register()
+    except OSError as e:
+        if not quiet:
+            print(f"omna: WARNING — could not register Omna for Chrome's channel ({e}); smart masking in Chrome stays off")
+        return
+    if written and not quiet:
+        print("omna: Omna for Chrome can now prove it is talking to Omna — quit and reopen Chrome once to pick this up")
 
 
 def _spawn(port: int, smart: bool, no_restore_secrets: bool = False) -> int:
@@ -125,9 +165,14 @@ def _smart_wanted(a) -> bool:
 
 def cmd_start(a) -> int:
     a.smart = _smart_wanted(a)
-    if _health(a.port):
+    who = _who_answers(a.port)
+    if who == "omna":
         print(f"omna: already running on {config.base_url(a.port)}")
         return 0
+    if who == "stranger":
+        print(_stranger_message(a.port), file=sys.stderr)
+        return 1
+    _pair_chrome()
     if a.daemon:
         pid = _spawn(a.port, a.smart, a.no_restore_secrets)
         h = _wait_healthy(a.port, 60 if a.smart else 10)
@@ -145,8 +190,13 @@ def cmd_start(a) -> int:
 def cmd_ensure(a) -> int:
     # Used by the Claude Code SessionStart hook: must be quiet on success
     # (anything printed becomes context for the model).
-    if _health(a.port):
+    who = _who_answers(a.port)
+    if who == "omna":
         return 0
+    if who == "stranger":
+        print(_stranger_message(a.port), file=sys.stderr)
+        return 1
+    _pair_chrome(quiet=True)
     _spawn(a.port, _smart_wanted(a))
     return 0 if _wait_healthy(a.port, 10) else 1
 
@@ -446,6 +496,8 @@ def cmd_status(a) -> int:
     print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}{off_note}")
     print(_style_line(pol))
     print(tool_calls_line(pol))
+    reg = extension_auth.registered()
+    print(f"chrome link:  {'registered for ' + str(len(reg)) + ' browser(s) — Omna for Chrome proves who it talks to' if reg else 'not registered → `omna init` (then quit and reopen Chrome once)'}")
     print(_registry_line())
     recs_today = _today_receipts()
     print(_doors_line(h))
@@ -647,6 +699,7 @@ def cmd_init(a) -> int:
         print(f"      backup of your previous settings: {ch['backup']}")
     print(f"      env {claude_code.ENV_KEY}={config.base_url(a.port)}  ·  SessionStart hook `omna ensure`")
     _auto_wire_other_tools(a.port)
+    _pair_chrome()
     print("      other tools: export ANTHROPIC_BASE_URL / OPENAI_BASE_URL to the same address (Cursor BYOK, SDKs).")
     if a.no_system:
         print("      Mac system proxy + certificate: skipped (--no-system) — Claude Code only.")
@@ -687,6 +740,9 @@ def cmd_uninstall(a) -> int:
     cch = codex.uninstall(codex.settings_file())
     if cch["base_url"]:
         print(f"omna: removed Codex CLI's Omna setting from {codex.settings_file()}")
+    gone = extension_auth.unregister()
+    if gone:
+        print(f"omna: removed Omna for Chrome's channel from {len(gone)} browser(s)")
     xch = continue_dev.uninstall()
     if xch["models_unwired"]:
         print(f"omna: removed Continue's Omna setting from {', '.join(xch['models_unwired'])}")
@@ -1250,6 +1306,12 @@ def maybe_ask_about_crashes(cmd: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    if args[:1] == ["native-host"]:
+        # Chrome runs this for Omna for Chrome (finding 6) with arguments of
+        # its own (the caller's origin; a window handle on Windows), so it is
+        # handled before argparse, which would refuse them.
+        return extension_auth.native_host_main(args[1:])
     a = build_parser().parse_args(argv)
     try:
         rc = a.fn(a)

@@ -324,6 +324,18 @@ A refusal is never quiet: `omna style realistic` prints which doors kept
 numbered tokens and why, `omna status` shows the style per door, and every
 receipt records which style that request actually used.
 
+### How the Chrome extension knows it is talking to Omna
+
+Omna for Chrome sends text to the curl command on `127.0.0.1:7788` for smart
+masking, and pictures to read their text. Before it sends anything, the curl
+command must prove it holds a secret that only it and the extension know; a
+program squatting the port cannot, so the extension sends it nothing and keeps
+masking in the browser. Chrome itself hands the secret to Omna for Chrome and
+to no one else (native messaging). `omna init` sets this up — **quit and reopen
+Chrome once afterwards**, because Chrome only reads it at start-up. `omna status`
+shows it as `chrome link`. Testing an unpacked build of the extension? Add its
+ID to `~/.omna/dev_extension_ids` (one per line) and run `omna init` again.
+
 ### The Chrome extension, and the one case it keeps numbered tokens
 
 If you also run Omna's Chrome extension, it masks inside the browser before the
@@ -521,7 +533,7 @@ built from these receipts, per-machine coverage, and org-wide rulesets. See a sa
 
 ```sh
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q          # 749 tests, ~15 s (fake upstream, no network)
+.venv/bin/pytest -q          # 761 tests, ~15 s (fake upstream, no network)
 .venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
 ```
 

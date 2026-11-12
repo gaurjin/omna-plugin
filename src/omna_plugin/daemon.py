@@ -53,6 +53,10 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
                 smart: bool = False, restore_secrets: bool = True, stop: asyncio.Event | None = None) -> None:
     policy = Policy.load()
     session = MaskingSession(smart=smart, restore_secrets=restore_secrets)
+    # The secret Omna for Chrome must see proved before it sends anything here
+    # (finding 6) — made now if this is the first start since 0.6.20.
+    from . import extension_auth
+    extension_auth.ensure_token()
     if smart:
         from . import smart as smart_models
 
