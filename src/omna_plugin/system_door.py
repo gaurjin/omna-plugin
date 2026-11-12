@@ -31,6 +31,10 @@ from .pipeline import _merge as merge_stats
 from .policy import Policy
 from .style import TOKENS, style_for_door
 
+# Provider APIs an agent may reach through this door (Claude Code with an
+# HTTPS proxy, an SDK): their streamed replies carry tool calls (finding 2).
+_AGENT_API_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
+
 log = logging.getLogger("omna.system_door")
 
 CA_ORG = "Omna"
@@ -329,6 +333,25 @@ class OmnaAddon:
             flow.response.stream = True
             return
         if mode not in ("stream-json", "stream-text"):
+            return
+        host = flow.request.pretty_host.lower()
+        if host in _AGENT_API_HOSTS and "event-stream" in flow.response.headers.get("content-type", "").lower():
+            # An agent reaching a provider API through this door (finding 2):
+            # its reply holds TOOL CALLS — commands it will run, files it will
+            # write — and a secret must stay a stand-in there. The plain text
+            # restorer below cannot tell a tool call from text, so the provider
+            # formats get the structured restorer the API door uses.
+            sse = self.pipeline.sse_restorer(site=self._site(flow))
+
+            def cb_sse(chunk: bytes) -> bytes | list[bytes]:
+                if chunk == b"":
+                    self._receipt(flow, flow.response.status_code if flow.response else 0, stream=True)
+                    return sse.flush()
+                out = sse.feed(chunk)
+                return out if out else []   # never b"" mid-stream: see cb below
+
+            flow.response.stream = cb_sse
+            flow.metadata["omna_streamed"] = True
             return
         restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"), site=self._site(flow))
         buf = bytearray()

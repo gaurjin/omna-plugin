@@ -34,7 +34,7 @@ from starlette.routing import Route
 from . import config, crashlog, ext_l3, mappings, ocr, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
-from .policy import Policy
+from .policy import Policy, live_policy
 from .style import style_for_door, style_for_extension
 from .system_door import EXT_HEADER
 
@@ -205,6 +205,8 @@ def create_app(
                 # Omna for Chrome sends screenshots to /omna/ocr only when true.
                 "ocr": ocr.available(),
                 "restore_secrets": session.restore_secrets,
+                # What goes back into an agent's tool calls (finding 2).
+                "tool_calls": dict(live_policy().tool_calls),
                 "secrets_held_in_memory": session.secrets_held,
                 "requests_this_run": stats["requests"],
                 "distinct_secrets_this_run": len(stats["distinct_secrets"]),

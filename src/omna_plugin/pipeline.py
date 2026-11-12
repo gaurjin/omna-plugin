@@ -12,8 +12,8 @@ from urllib.parse import parse_qsl, urlencode
 from . import office, pdf, picture, receipts
 from . import smart as smart_models
 from .body import ONLY_IN_IDS, is_id_key, mask_body, restore_body
-from .engine import MaskingSession
-from .policy import Policy
+from .engine import MaskingSession, ToolView
+from .policy import Policy, live_tool_rule
 from .stream import StreamRestorer, TextRestorer
 from .style import TOKENS
 
@@ -62,8 +62,11 @@ def _merge(total: MaskStats, st: MaskStats) -> None:
 
 
 class Pipeline:
-    def __init__(self, session: MaskingSession):
+    def __init__(self, session: MaskingSession, tool_rule=None):
         self.session = session
+        # What may go back into a tool call (finding 2). A callable, so the
+        # saved setting is read when each reply is restored, not at start-up.
+        self.tool_rule = tool_rule or live_tool_rule
 
     # ------------------------------------------------------------ masking
     def mask_json(self, obj, style: str = TOKENS, careful: bool = False) -> tuple[object, MaskStats]:
@@ -290,7 +293,13 @@ class Pipeline:
         (``MaskStats.tokens``). When given, only those are put back
         (``MaskingSession.scoped``). ``site``: only values sent to that site
         come back (``MaskingSession.for_site``, the system door)."""
-        return restore_body(self._restorer(minted, site), obj)
+        r = self._restorer(minted, site)
+        return restore_body(r, obj, tools=self._tools(r))
+
+    def _tools(self, restorer):
+        """The view for tool calls in a reply (finding 2): ``restorer``
+        limited by the saved tool-call rule, read live from policy.json."""
+        return ToolView(restorer, self.session, self.tool_rule())
 
     def _restorer(self, minted: list[str] | None, site: str | None = None):
         if site is not None:
@@ -302,10 +311,12 @@ class Pipeline:
     def restore_text(self, text: str, json_escape: bool = False, site: str | None = None) -> str:
         return self._restorer(None, site).restore_text(text, json_escape=json_escape)
 
-    def sse_restorer(self, minted: list[str] | None = None) -> StreamRestorer:
-        """For Anthropic / OpenAI shaped SSE (the API door's formats).
-        ``minted`` as in ``restore_json``."""
-        return StreamRestorer(self._restorer(minted))
+    def sse_restorer(self, minted: list[str] | None = None, site: str | None = None) -> StreamRestorer:
+        """For Anthropic / OpenAI shaped SSE (the API door's formats, and the
+        provider APIs when an agent reaches them through the system door).
+        ``minted`` / ``site`` as in ``restore_json``."""
+        r = self._restorer(minted, site)
+        return StreamRestorer(r, tools=self._tools(r))
 
     def text_restorer(self, json_escape: bool, site: str | None = None) -> TextRestorer:
         """Token-level restore over any text stream, with partial-token hold-back.

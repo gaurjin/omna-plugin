@@ -142,10 +142,42 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
     return masked, counts, sorted(set(labels))
 
 
-def restore_body(session: MaskingSession, obj):
-    """Return a copy with every reversible token replaced by its real value."""
+# Reply parts that are a TOOL CALL — something the agent will run or write
+# (finding 2). Anthropic content blocks; OpenAI Responses output items (every
+# "*_call": function_call, custom_tool_call, local_shell_call, mcp_call, …);
+# OpenAI chat's ``tool_calls`` / legacy ``function_call``.
+_TOOL_BLOCK_TYPES = frozenset({"tool_use", "server_tool_use", "mcp_tool_use"})
+_TOOL_KEYS = frozenset({"tool_calls", "function_call"})
 
-    def fn(s: str, _c, _key=None) -> str:
-        return session.restore_text(s)
 
-    return _walk(obj, fn, {})
+def is_tool_call(obj: dict) -> bool:
+    t = obj.get("type")
+    return isinstance(t, str) and (t in _TOOL_BLOCK_TYPES or t.endswith("_call"))
+
+
+def restore_body(session, obj, tools=None):
+    """Return a copy with every reversible token replaced by its real value.
+
+    ``tools``: the restorer for TOOL CALLS inside the reply (an
+    ``engine.ToolView``) — secrets stay stand-ins there by default (finding
+    2). None restores tool calls like any other text."""
+    tools = tools or session
+
+    def walk(o, in_tool: bool, key: str | None = None):
+        if isinstance(o, str):
+            if key in SKIP_KEYS or _is_blob(o):
+                return o
+            return (tools if in_tool else session).restore_text(o)
+        if isinstance(o, list):
+            if key in SKIP_KEYS:
+                return o
+            return [walk(item, in_tool, key) for item in o]
+        if isinstance(o, dict):
+            if key in SKIP_KEYS:
+                return o
+            here = in_tool or is_tool_call(o)
+            return {k: v if _skip_in(o, k, v) else walk(v, here or k in _TOOL_KEYS, k)
+                    for k, v in o.items()}
+        return o
+
+    return walk(obj, False)

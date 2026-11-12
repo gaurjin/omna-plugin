@@ -62,17 +62,22 @@ _HoldBack = TextRestorer
 
 
 class StreamRestorer:
-    """Feed raw SSE bytes in, get restored SSE bytes out."""
+    """Feed raw SSE bytes in, get restored SSE bytes out.
 
-    def __init__(self, session: MaskingSession):
+    ``tools``: the restorer for tool-call arguments (``engine.ToolView``) —
+    a secret stays a stand-in in anything the agent will run or write
+    (finding 2). None restores them like text."""
+
+    def __init__(self, session: MaskingSession, tools=None):
         self.session = session
+        self.tools = tools or session
         self._buf = b""
         self._text: dict[str, TextRestorer] = {}  # key -> holdback (per content block / choice)
 
-    def _hb(self, key: str, json_escape: bool) -> TextRestorer:
+    def _hb(self, key: str, json_escape: bool, tool: bool = False) -> TextRestorer:
         hb = self._text.get(key)
         if hb is None:
-            hb = self._text[key] = TextRestorer(self.session, json_escape)
+            hb = self._text[key] = TextRestorer(self.tools if tool else self.session, json_escape)
         return hb
 
     def feed(self, chunk: bytes) -> bytes:
@@ -142,7 +147,7 @@ class StreamRestorer:
                 d["text"] = self._hb("a:text:" + idx, False).feed(d["text"])
                 return True
             if d.get("type") == "input_json_delta" and isinstance(d.get("partial_json"), str):
-                d["partial_json"] = self._hb("a:json:" + idx, True).feed(d["partial_json"])
+                d["partial_json"] = self._hb("a:json:" + idx, True, tool=True).feed(d["partial_json"])
                 return True
             return False
         if t == "content_block_stop":
@@ -164,7 +169,7 @@ class StreamRestorer:
                 for tc in d.get("tool_calls") or []:
                     fn = tc.get("function") if isinstance(tc, dict) else None
                     if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
-                        fn["arguments"] = self._hb(f"o:args:{ci}:{tc.get('index', 0)}", True).feed(fn["arguments"])
+                        fn["arguments"] = self._hb(f"o:args:{ci}:{tc.get('index', 0)}", True, tool=True).feed(fn["arguments"])
                         changed = True
                 if ch.get("finish_reason"):
                     for key in list(self._text):
@@ -178,8 +183,11 @@ class StreamRestorer:
         # ---- OpenAI Responses API
         if isinstance(t, str) and t.endswith(".delta") and isinstance(evt.get("delta"), str):
             esc = "arguments" in t
+            # A tool call's arguments or input (function_call_arguments,
+            # custom_tool_call_input, mcp_call_arguments, code to run …).
+            tool = esc or "_call" in t or "tool" in t
             key = f"r:{t}:{evt.get('output_index', 0)}:{evt.get('content_index', 0)}"
-            evt["delta"] = self._hb(key, esc).feed(evt["delta"])
+            evt["delta"] = self._hb(key, esc, tool=tool).feed(evt["delta"])
             return True
         if isinstance(t, str) and t.endswith(".done"):
             base = t[: -len(".done")] + ".delta"
@@ -198,8 +206,13 @@ class StreamRestorer:
             # from these, so a token left here is written into your files.
             # Restore every string in them, not just a top-level text field.
             prefix = evt.pop("__omna_prefix__", None)
+            # An event ABOUT a tool call (response.function_call_arguments.done
+            # carries the finished arguments at its own top level) is a tool
+            # call through and through (finding 2).
+            about_tool = "arguments" in t or "_call" in t or "tool" in t
+            base = self.tools if about_tool else self.session
             for k in [k for k in evt if k not in ("type", "sequence_number")]:
-                evt[k] = restore_body(self.session, evt[k])
+                evt[k] = restore_body(base, evt[k], tools=self.tools)
             if prefix:
                 evt["__omna_prefix__"] = prefix
             return True

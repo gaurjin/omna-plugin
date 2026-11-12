@@ -37,9 +37,10 @@ class Policy:
     reports_enabled: bool = True   # local receipts (counts only, never values) — off means none are written
     # Put real values back into BROWSER replies (the system door only). Off means
     # you read `[EMAIL_1]` in the page instead of the name. Deliberately scoped to
-    # the browser: the API and deep doors must always restore, because there a
-    # token reaching the tool breaks it outright — Claude Code would write
-    # `[SECRET_AWS_KEY_1]` into your file instead of editing the real line.
+    # the browser: the API and deep doors always restore TEXT, because there a
+    # token reaching the tool breaks it outright. What goes back into a TOOL
+    # CALL (a command, a file the agent writes) is decided by `tool_calls`
+    # below — secrets stay stand-ins there by default (finding 2).
     # Masking is NOT affected by this and never optional.
     restore_browser: bool = True
     # How a masked value is WRITTEN: numbered tokens (the default) or a
@@ -49,6 +50,14 @@ class Policy:
     # realistic style anywhere that reaches a tool which writes files. Kept
     # here because this is also the file an organisation ships to every machine.
     style: str = TOKENS
+    # What may be put back into an agent's TOOL CALLS — commands it runs,
+    # files it writes (security review 2026-11-11, finding 2; owner "A"). A
+    # secret in a command a poisoned page talked the model into went to a
+    # stranger. Secrets: off (the stand-in stays). Personal data: on.
+    # Re-read live (``live_tool_rule``): the CLI / menu bar change it while the
+    # proxy runs, and the old `--no-restore-secrets` start flag was lost on
+    # every restart.
+    tool_calls: dict[str, bool] = field(default_factory=lambda: {"secrets": False, "personal": True})
     # Extra browser origins allowed to read replies through the API door
     # (#137a). Local origins (localhost / 127.0.0.1 / [::1], any port) are
     # always allowed and are not listed here. Anything added here is a
@@ -104,6 +113,9 @@ class Policy:
             pol.restore_browser = bool(data.get("restore_browser", True))
             st = str(data.get("style", TOKENS))
             pol.style = st if st in STYLES else TOKENS
+            tc = data.get("tool_calls") or {}
+            pol.tool_calls = {"secrets": bool(tc.get("secrets", False)) if isinstance(tc, dict) else False,
+                              "personal": bool(tc.get("personal", True)) if isinstance(tc, dict) else True}
             pol.cors_origins = [str(o) for o in data.get("cors_origins", [])]
             sm = str(data.get("smart", "on"))
             pol.smart = sm if sm in ("on", "off") else "on"
@@ -134,6 +146,7 @@ class Policy:
             "reports_enabled": self.reports_enabled,
             "restore_browser": self.restore_browser,
             "style": self.style,
+            "tool_calls": self.tool_calls,
             "cors_origins": self.cors_origins,
             "smart": self.smart,
             "crash_reports": self.crash_reports,
@@ -225,3 +238,26 @@ class Policy:
             if name.lower() == app.lower():
                 del self.apps[name]
         self.apps[app] = action
+
+
+_live_cache: tuple[float, "Policy"] | None = None
+
+
+def live_policy() -> "Policy":
+    """The policy as it is on disk NOW (mtime-cached): another process — the
+    CLI, the menu bar — may have changed it since the proxy started."""
+    global _live_cache
+    try:
+        mtime = config.policy_path().stat().st_mtime
+    except OSError:
+        return Policy()
+    if _live_cache is None or _live_cache[0] != mtime:
+        _live_cache = (mtime, Policy.load())
+    return _live_cache[1]
+
+
+def live_tool_rule():
+    """What may go back into a tool call right now (finding 2)."""
+    from .engine import ToolRule
+    tc = live_policy().tool_calls
+    return ToolRule(secrets=bool(tc.get("secrets", False)), personal=bool(tc.get("personal", True)))
