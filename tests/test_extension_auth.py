@@ -47,22 +47,37 @@ ENDPOINTS = [
 ]
 
 
+def _signed(path: str, raw: bytes, **kw) -> dict:
+    return {"x-omna-extension": "1", "content-type": "application/json", **extension_auth.sign("POST", path, raw, **kw)}
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize("path,body", ENDPOINTS)
-async def test_extension_endpoints_refuse_any_program_without_the_secret(client, path, body):
+async def test_extension_endpoints_refuse_any_program_without_a_valid_signature(client, path, body):
     token = extension_auth.ensure_token()
-    for headers in ({}, {"x-omna-extension": "1"},                       # the old tag alone no longer opens it
-                    {"x-omna-extension": "1", extension_auth.HEADER: "0" * 64},
-                    {extension_auth.HEADER: token}):                     # the secret without the tag: not the extension
-        r = await client.post(path, json=body, headers=headers)
+    raw = json.dumps(body).encode()
+    other = json.dumps({**body, "x": 1}).encode()
+    for headers in (
+        {},
+        {"x-omna-extension": "1"},                                          # the old tag alone no longer opens it
+        {"x-omna-extension": "1", "x-omna-token": token},                   # the raw secret is not accepted at all
+        _signed(path, raw, token="0" * 64),                                  # signed with the wrong secret
+        _signed(path, other),                                                # a signature for a DIFFERENT message
+        _signed(path, raw, now=__import__("time").time() - 600),             # an old signature, caught and replayed
+        {k: v for k, v in _signed(path, raw).items() if k != "x-omna-extension"},
+    ):
+        r = await client.post(path, content=raw, headers={"content-type": "application/json", **headers})
         assert r.status_code == 403, (path, headers)
-    r = await client.post(path, json=body, headers={"x-omna-extension": "1", extension_auth.HEADER: token})
+    r = await client.post(path, content=raw, headers=_signed(path, raw))
     assert r.status_code != 403
 
 
 @pytest.mark.anyio
 async def test_no_secret_on_the_machine_means_nobody_gets_in(client):
-    r = await client.post("/omna/detect-l3", json={"text": "x"}, headers={"x-omna-extension": "1", extension_auth.HEADER: ""})
+    raw = b'{"text": "x"}'
+    hdr = _signed("/omna/detect-l3", raw, token="ab" * 32)
+    extension_auth.token_path().unlink(missing_ok=True)     # no secret on this machine
+    r = await client.post("/omna/detect-l3", content=raw, headers=hdr)
     assert r.status_code == 403
 
 

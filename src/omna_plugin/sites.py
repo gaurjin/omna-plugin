@@ -33,6 +33,10 @@ class Site:
     security: tuple[tuple[str, str], ...] = ()
     # The site's own usage/error reports, verified live to carry no typed text.
     reports: tuple[tuple[str, str], ...] = ()
+    # A provider API that agents call (finding 2): its replies carry TOOL CALLS
+    # — commands an agent runs, files it writes — so a secret is never put
+    # back into them. The chat websites' tool calls run on the site's servers.
+    api: bool = False
 
 
 _COPILOT = ("copilot.com", "copilot.microsoft.com")
@@ -40,18 +44,18 @@ _COPILOT = ("copilot.com", "copilot.microsoft.com")
 SITES: tuple[Site, ...] = (
     # ---- the public APIs: the API door already covers tools that use base
     # URLs; these are for apps that call the APIs directly through the system door
-    Site("Anthropic API", ("api.anthropic.com",)),
-    Site("OpenAI API", ("api.openai.com",)),
-    Site("Gemini API", ("generativelanguage.googleapis.com",)),
-    Site("Mistral API", ("api.mistral.ai",)),
-    Site("Groq API", ("api.groq.com",)),
-    Site("DeepSeek API", ("api.deepseek.com",)),
-    Site("xAI API", ("api.x.ai",)),
-    Site("OpenRouter", ("openrouter.ai",)),
-    Site("Cohere API", ("api.cohere.com",)),
-    Site("Together API", ("api.together.xyz",)),
-    Site("Fireworks API", ("api.fireworks.ai",)),
-    Site("GitHub Copilot API", ("api.githubcopilot.com",)),
+    Site("Anthropic API", ("api.anthropic.com",), api=True),
+    Site("OpenAI API", ("api.openai.com",), api=True),
+    Site("Gemini API", ("generativelanguage.googleapis.com",), api=True),
+    Site("Mistral API", ("api.mistral.ai",), api=True),
+    Site("Groq API", ("api.groq.com",), api=True),
+    Site("DeepSeek API", ("api.deepseek.com",), api=True),
+    Site("xAI API", ("api.x.ai",), api=True),
+    Site("OpenRouter", ("openrouter.ai",), api=True),
+    Site("Cohere API", ("api.cohere.com",), api=True),
+    Site("Together API", ("api.together.xyz",), api=True),
+    Site("Fireworks API", ("api.fireworks.ai",), api=True),
+    Site("GitHub Copilot API", ("api.githubcopilot.com",), api=True),
     # ---- the chat websites
     Site("Claude", ("claude.ai",), reports=(
         ("claude.ai", r"^/api/v2/rum\b"),
@@ -221,3 +225,18 @@ def site_of(host: str) -> str:
 def compiled(attr: str) -> list[tuple]:
     """``typing`` / ``security`` / ``reports`` of every site, patterns compiled."""
     return [(rule[0], re.compile(rule[1]), *rule[2:]) for s in SITES for rule in getattr(s, attr)]
+
+
+# Agent traffic that reaches a chat website's host: Codex signed in with a
+# ChatGPT account talks to chatgpt.com under this path (finding 2).
+_AGENT_PATHS = (("chatgpt.com", "/backend-api/codex/"),)
+
+
+def is_agent_api(host: str, path: str = "") -> bool:
+    """Does this request carry an agent's conversation — replies with tool
+    calls the agent will run (finding 2)?"""
+    h = (host or "").lower().rsplit(":", 1)[0]
+    for site in SITES:
+        if site.api and any(h == x or h.endswith("." + x) for x in site.hosts):
+            return True
+    return any(h == x or h.endswith("." + x) for x, p in _AGENT_PATHS if (path or "").startswith(p))

@@ -124,3 +124,31 @@ def test_restore_puts_back_what_masking_masked_and_never_writes_into_thinking(se
     assert out["content"][1]["input"]["id"] == EMAIL                   # data under "id" comes back
     assert out["content"][1]["id"] == "toolu_9"
     assert out["content"][2]["text"] == f"found {EMAIL}"
+
+
+# ---- found by /security-review of the finding-4 fix (2026-11-12) ----
+
+@pytest.mark.parametrize("body", [
+    # a schema PROPERTY named like a keep-word is a definition, not a value
+    {"tools": [{"name": "t", "input_schema": {"type": "object", "properties": {
+        "name": {"type": "string", "description": f"use {GH}"}}}}]},
+    {"tools": [{"name": "t", "input_schema": {"type": "object", "properties": {
+        "q": {"type": "string", "pattern": GH}}}}]},
+    # request fields that were masked before finding 4 and must stay masked
+    {"model": "m", "input": "hi", "prompt_cache_key": GH},
+    {"model": "m", "input": "hi", "text": {"format": {"type": "json_schema", "name": "x", "schema": {"description": f"key {GH}"}}}},
+    # a web link under image_url (only embedded picture bytes are skipped)
+    {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"https://x.example/a.png?token={GH}"}}]}]},
+    {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": f"https://x.example/a.png?token={GH}"}]}]},
+])
+def test_no_secret_hides_behind_a_keep_word_or_a_setting_name(session, body):
+    masked, _, _ = mask_body(session, body)
+    assert GH not in str(masked)
+
+
+def test_embedded_picture_bytes_stay_byte_identical(session):
+    pic = "data:image/png;base64," + "iVBORw0KGgo" + "A" * 400
+    body = {"messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": pic}}, {"type": "image_url", "image_url": pic}]}]}
+    masked, _, _ = mask_body(session, body)
+    assert masked == body

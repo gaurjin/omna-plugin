@@ -14,7 +14,7 @@ from omna_plugin import ext_l3
 from omna_plugin.engine import MaskingSession
 from omna_plugin.proxy import create_app
 
-from tests.ext_helpers import ext_hdr
+from tests.ext_helpers import EXT
 
 
 def test_byte_offsets_become_utf16_offsets():
@@ -86,7 +86,7 @@ async def test_only_the_extension_may_ask(client):
 async def test_fast_mode_says_smart_is_off(client):
     session, c = client
     assert session.smart is False
-    r = await c.post("/omna/detect-l3", json={"text": "Marcus Whitfield"}, headers=ext_hdr())
+    r = await c.post("/omna/detect-l3", json={"text": "Marcus Whitfield"}, auth=EXT)
     assert r.status_code == 200
     assert r.json() == {"smart": False, "spans": []}
 
@@ -102,7 +102,7 @@ async def test_smart_mode_returns_model_spans(client, monkeypatch):
         return [{"start": 0, "end": 16, "entity": "PERSON", "layer": "L3", "confidence": 0.98}]
 
     monkeypatch.setattr("omna_plugin.proxy._engine_detect", fake_detect)
-    r = await c.post("/omna/detect-l3", json={"text": "Marcus Whitfield called"}, headers=ext_hdr())
+    r = await c.post("/omna/detect-l3", json={"text": "Marcus Whitfield called"}, auth=EXT)
     assert r.status_code == 200
     body = r.json()
     assert body["smart"] is True
@@ -119,7 +119,7 @@ async def test_too_long_is_refused_without_running_the_model(client, monkeypatch
         raise AssertionError("the model must not run on an over-long text")
 
     monkeypatch.setattr("omna_plugin.proxy._engine_detect", boom)
-    r = await c.post("/omna/detect-l3", json={"text": "x" * (ext_l3.MAX_CHARS + 1)}, headers=ext_hdr())
+    r = await c.post("/omna/detect-l3", json={"text": "x" * (ext_l3.MAX_CHARS + 1)}, auth=EXT)
     assert r.status_code == 200
     assert r.json() == {"smart": True, "spans": [], "too_long": True}
 
@@ -128,5 +128,5 @@ async def test_too_long_is_refused_without_running_the_model(client, monkeypatch
 @pytest.mark.parametrize("body", [b"not json", b"[1,2]", b'{"text": 5}'])
 async def test_bad_bodies_are_refused_not_crashed(client, body):
     _, c = client
-    r = await c.post("/omna/detect-l3", content=body, headers={**ext_hdr(), "content-type": "application/json"})
+    r = await c.post("/omna/detect-l3", content=body, auth=EXT, headers={"content-type": "application/json"})
     assert r.status_code == 400

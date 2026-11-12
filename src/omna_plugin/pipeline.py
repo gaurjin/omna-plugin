@@ -288,13 +288,17 @@ class Pipeline:
         return MaskedBody(out[0] + (b"\r\n" + delim).join(out[1:]), total)
 
     # ------------------------------------------------------------ restoring
-    def restore_json(self, obj, minted: list[str] | None = None, site: str | None = None):
+    def restore_json(self, obj, minted: list[str] | None = None, site: str | None = None,
+                     tools_only: bool = False):
         """``minted``: the stand-in names masking this request made
         (``MaskStats.tokens``). When given, only those are put back
         (``MaskingSession.scoped``). ``site``: only values sent to that site
-        come back (``MaskingSession.for_site``, the system door)."""
+        come back (``MaskingSession.for_site``, the system door).
+        ``tools_only``: the whole reply follows the tool-call rule — an agent
+        API whose reply format Omna does not read part by part (finding 2)."""
         r = self._restorer(minted, site)
-        return restore_body(r, obj, tools=self._tools(r))
+        t = self._tools(r)
+        return restore_body(t if tools_only else r, obj, tools=t)
 
     def _tools(self, restorer):
         """The view for tool calls in a reply (finding 2): ``restorer``
@@ -318,10 +322,11 @@ class Pipeline:
         r = self._restorer(minted, site)
         return StreamRestorer(r, tools=self._tools(r))
 
-    def text_restorer(self, json_escape: bool, site: str | None = None) -> TextRestorer:
+    def text_restorer(self, json_escape: bool, site: str | None = None, tools_only: bool = False) -> TextRestorer:
         """Token-level restore over any text stream, with partial-token hold-back.
-        ``site`` as in ``restore_json``."""
-        return TextRestorer(self._restorer(None, site), json_escape=json_escape)
+        ``site`` / ``tools_only`` as in ``restore_json``."""
+        r = self._restorer(None, site)
+        return TextRestorer(self._tools(r) if tools_only else r, json_escape=json_escape)
 
     # ------------------------------------------------------------ receipts
     def receipt(self, *, door: str, route: str, host: str, status: int, stats: MaskStats,

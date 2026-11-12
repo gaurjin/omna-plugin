@@ -13,8 +13,9 @@ Now:
 - Chrome hands it ONLY to Omna for Chrome: a native-messaging host manifest
   (``dev.omna.curl``) lists the extension IDs allowed to ask, and Chrome checks
   the caller itself. A stranger program cannot ask Chrome for it.
-- Every extension-only call carries the secret (``x-omna-token``), checked
-  in constant time.
+- Every extension-only call is SIGNED with the secret (``x-omna-ts`` +
+  ``x-omna-sig``: HMAC over time, method, path and body), checked in constant
+  time; the secret itself never travels.
 - Before the extension sends any text, the curl command must PROVE it holds
   the secret: ``/omna/health?nonce=…`` answers ``proof = HMAC-SHA256(secret,
   nonce)``. A squatter on the port cannot, so the extension sends it nothing
@@ -41,7 +42,10 @@ from pathlib import Path
 from . import config
 
 HOST_NAME = "dev.omna.curl"
-HEADER = "x-omna-token"
+TS_HEADER = "x-omna-ts"
+SIG_HEADER = "x-omna-sig"
+# How old a signed request may be (clock skew + a slow model call).
+MAX_SKEW_S = 120
 # The published Omna for Chrome (Chrome Web Store).
 STORE_EXTENSION_ID = "nnkjconloimokalfdghmhifcangdbmnc"
 _NONCE_MAX = 128
@@ -84,11 +88,35 @@ def valid_nonce(nonce: str | None) -> bool:
     return bool(nonce) and len(nonce) <= _NONCE_MAX and all(c in "0123456789abcdef" for c in nonce)
 
 
-def header_ok(value: str | None) -> bool:
-    """Does a request's ``x-omna-token`` match the secret? No secret on this
-    machine yet means nobody can pass (fail closed)."""
+def signature(token: str, ts: str, method: str, path: str, body: bytes) -> str:
+    """What the extension sends instead of the secret itself: HMAC-SHA256 of
+    the time, the method, the path and the exact body. A program that catches
+    one can't reuse it later or for a different message — the secret never
+    travels (found by /security-review of the first finding-6 fix: the raw
+    secret went to whatever answered on the port, and one catch undid the
+    whole protection)."""
+    msg = f"{ts}\n{method.upper()}\n{path}\n{sha256(body).hexdigest()}"
+    return hmac.new(token.encode(), msg.encode(), sha256).hexdigest()
+
+
+def sign(method: str, path: str, body: bytes, token: str | None = None, now: float | None = None) -> dict[str, str]:
+    """The two headers an extension-only request carries."""
+    import time
+    t = token or ensure_token()
+    ts = str(int(now if now is not None else time.time()))
+    return {TS_HEADER: ts, SIG_HEADER: signature(t, ts, method, path, body)}
+
+
+def request_ok(ts: str | None, sig: str | None, method: str, path: str, body: bytes, now: float | None = None) -> bool:
+    """Is this an extension-only request signed with the secret, recently?
+    No secret on this machine yet means nobody can pass (fail closed)."""
+    import time
     t = read_token()
-    return bool(t) and bool(value) and hmac.compare_digest(t.encode(), value.encode())
+    if not (t and ts and sig and ts.isdigit()):
+        return False
+    if abs((now if now is not None else time.time()) - int(ts)) > MAX_SKEW_S:
+        return False
+    return hmac.compare_digest(signature(t, ts, method, path, body).encode(), sig.encode())
 
 
 # ------------------------------------------------------- Chrome's trusted channel

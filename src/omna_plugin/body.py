@@ -28,7 +28,9 @@ TOP_KEYS = frozenset({
     "model", "stream", "stop_sequences", "tool_choice", "service_tier", "anthropic_version",
     "output_config", "context_management", "container", "response_format", "modalities",
     "previous_response_id", "store", "include", "truncation", "parallel_tool_calls",
-    "reasoning", "text", "prompt_cache_key", "background",
+    "reasoning", "background",
+    # NOT here: "prompt_cache_key" (often a user id or email) and "text"
+    # (Responses output format + schema) — both were masked before finding 4.
 })
 # Structure of a message, a content block or a reply item: identifiers and
 # byte-exact fields the API matches on. Skipped on messages and blocks, never
@@ -38,17 +40,21 @@ STRUCT_KEYS = frozenset({
     "stop_reason", "stop_sequence", "file_id",
     # must be byte-identical for the API to accept the request back
     "signature", "thinking", "redacted_thinking", "cache_control",
-    # binary / opaque
-    "image_url", "b64_json", "encrypted_content",
+    # binary / opaque ("image_url": only its data: form is skipped — _skip_in)
+    "b64_json", "encrypted_content",
 })
 # Inside a tool's DEFINITION (tools[], functions[], mcp_servers[]): what the
 # API and the model match on stays; descriptions, defaults, examples, enum
 # values, server addresses and access tokens are masked.
 TOOLDEF_KEEP = frozenset({
     "name", "type", "required", "strict", "cache_control", "$schema", "$ref", "$id", "format",
-    "pattern", "additionalProperties", "server_label", "require_approval", "allowed_tools",
+    "additionalProperties", "server_label", "require_approval", "allowed_tools",
     "defer_loading", "id",
 })
+# A keep-word keeps a VALUE (a string, a list of names) — never an object: in
+# a schema's "properties", "name" or "id" is a property whose description,
+# enum and default are prose to mask (found by /security-review, 2026-11-12).
+# "pattern" is not kept: a literal in it is masked like any other text.
 # Kept for anything that imported it: every name skipped somewhere.
 SKIP_KEYS = TOP_KEYS | STRUCT_KEYS
 
@@ -79,7 +85,10 @@ def _skip_in(parent: dict, key: str, value) -> bool:
         media = str(parent.get("media_type") or parent.get("mime_type") or "")
         return parent.get("type") in ("base64", "image", "file", "input_image") or (
             bool(media) and not media.startswith("text/"))
-    if key == "url":
+    if key in ("url", "image_url"):
+        # Embedded picture bytes stay byte-identical; a web link is text, and
+        # carries ?token=… often enough to be masked (it used to be skipped
+        # whole — /security-review 2026-11-12).
         return isinstance(value, str) and value.startswith("data:")
     if key == "name":
         # A message's speaker is masked; a tool's or a function's name is an
@@ -108,7 +117,7 @@ def _skip(parent: dict, key: str, value, mode: str, depth: int) -> bool:
     if mode == _DATA:
         return False
     if mode == _TOOLDEF:
-        return key in TOOLDEF_KEEP
+        return key in TOOLDEF_KEEP and not isinstance(value, dict)
     if depth == 0 and key in TOP_KEYS:
         return True
     return key in STRUCT_KEYS or _skip_in(parent, key, value)
@@ -206,7 +215,8 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
 # "*_call": function_call, custom_tool_call, local_shell_call, mcp_call, …);
 # OpenAI chat's ``tool_calls`` / legacy ``function_call``.
 _TOOL_BLOCK_TYPES = frozenset({"tool_use", "server_tool_use", "mcp_tool_use"})
-_TOOL_KEYS = frozenset({"tool_calls", "function_call"})
+# Gemini writes a tool call as a part ``{"functionCall": {"name", "args"}}``.
+_TOOL_KEYS = frozenset({"tool_calls", "function_call", "functionCall"})
 
 
 def is_tool_call(obj: dict) -> bool:

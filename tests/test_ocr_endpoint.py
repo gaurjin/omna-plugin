@@ -15,7 +15,7 @@ from omna_plugin import ocr
 from omna_plugin.engine import MaskingSession
 from omna_plugin.proxy import create_app
 
-from tests.ext_helpers import ext_hdr
+from tests.ext_helpers import EXT
 PNG = b"\x89PNG\r\n\x1a\nfake"
 
 
@@ -51,7 +51,7 @@ async def test_reads_lines_and_returns_them_unmasked(client, monkeypatch):
                 "lines": [{"text": "Email: maria@acme-test.com", "x": 30.0, "y": 100.0, "w": 542.0, "h": 28.0}]}
 
     monkeypatch.setattr(ocr, "recognize", fake)
-    r = await client.post("/omna/ocr", json={"content_b64": base64.b64encode(PNG).decode()}, headers=ext_hdr())
+    r = await client.post("/omna/ocr", json={"content_b64": base64.b64encode(PNG).decode()}, auth=EXT)
     assert r.status_code == 200
     body = r.json()
     assert body["available"] is True
@@ -62,7 +62,7 @@ async def test_reads_lines_and_returns_them_unmasked(client, monkeypatch):
 @pytest.mark.anyio
 async def test_not_on_a_mac_says_unavailable(client, monkeypatch):
     monkeypatch.setattr(ocr, "available", lambda: False)
-    r = await client.post("/omna/ocr", json={"content_b64": base64.b64encode(PNG).decode()}, headers=ext_hdr())
+    r = await client.post("/omna/ocr", json={"content_b64": base64.b64encode(PNG).decode()}, auth=EXT)
     assert r.json() == {"available": False}
 
 
@@ -70,7 +70,7 @@ async def test_not_on_a_mac_says_unavailable(client, monkeypatch):
 @pytest.mark.parametrize("body", [b"nope", b"[1]", b'{"content_b64": 5}', b'{"content_b64": "!!!not base64!!!"}'])
 async def test_bad_bodies_are_refused(client, monkeypatch, body):
     monkeypatch.setattr(ocr, "available", lambda: True)
-    r = await client.post("/omna/ocr", content=body, headers={**ext_hdr(), "content-type": "application/json"})
+    r = await client.post("/omna/ocr", content=body, auth=EXT, headers={"content-type": "application/json"})
     assert r.status_code == 400
 
 
@@ -82,5 +82,5 @@ async def test_unreadable_picture_is_a_400_not_a_crash(client, monkeypatch):
         raise ValueError("not a picture")
 
     monkeypatch.setattr(ocr, "recognize", bad)
-    r = await client.post("/omna/ocr", json={"content_b64": base64.b64encode(b"zzz").decode()}, headers=ext_hdr())
+    r = await client.post("/omna/ocr", json={"content_b64": base64.b64encode(b"zzz").decode()}, auth=EXT)
     assert r.status_code == 400

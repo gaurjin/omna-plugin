@@ -35,6 +35,13 @@ from .style import TOKENS, style_for_door
 # HTTPS proxy, an SDK): their streamed replies carry tool calls (finding 2).
 _AGENT_API_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
 
+
+def _agent_coarse(flow) -> bool:
+    """Agent traffic whose reply format is NOT read part by part here: every
+    agent API but the two whose streams the structured restorer reads."""
+    host = flow.request.pretty_host.lower()
+    return sites.is_agent_api(host, flow.request.path) and host not in _AGENT_API_HOSTS
+
 log = logging.getLogger("omna.system_door")
 
 CA_ORG = "Omna"
@@ -335,7 +342,15 @@ class OmnaAddon:
         if mode not in ("stream-json", "stream-text"):
             return
         host = flow.request.pretty_host.lower()
-        if host in _AGENT_API_HOSTS and "event-stream" in flow.response.headers.get("content-type", "").lower():
+        coarse = _agent_coarse(flow)
+        if coarse:
+            # Another agent API (OpenRouter, Groq, Gemini, Copilot, Codex via
+            # chatgpt.com …): its stream is not read part by part, so the WHOLE
+            # reply follows the tool-call rule — a secret is never put back
+            # into it (finding 2; found by /security-review of the first fix).
+            restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"), site=self._site(flow),
+                                                   tools_only=True)
+        elif host in _AGENT_API_HOSTS and "event-stream" in flow.response.headers.get("content-type", "").lower():
             # An agent reaching a provider API through this door (finding 2):
             # its reply holds TOOL CALLS — commands it will run, files it will
             # write — and a secret must stay a stand-in there. The plain text
@@ -353,7 +368,8 @@ class OmnaAddon:
             flow.response.stream = cb_sse
             flow.metadata["omna_streamed"] = True
             return
-        restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"), site=self._site(flow))
+        else:
+            restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"), site=self._site(flow))
         buf = bytearray()
 
         def cb(chunk: bytes) -> bytes | list[bytes]:
@@ -396,7 +412,7 @@ class OmnaAddon:
         if adapter.response_mode(flow.response.headers.get("content-type", "")) == "json" and flow.response.status_code < 400:
             try:
                 obj = json.loads(flow.response.get_content() or b"null")
-                restored = self.pipeline.restore_json(obj, site=self._site(flow))
+                restored = self.pipeline.restore_json(obj, site=self._site(flow), tools_only=_agent_coarse(flow))
                 flow.response.set_content(json.dumps(restored, ensure_ascii=False).encode("utf-8"))
             except ValueError:
                 pass

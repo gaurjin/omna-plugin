@@ -190,13 +190,16 @@ def create_app(
             return pol.style
         return Policy.load().style
 
-    def _extension_ok(request: Request) -> bool:
+    async def _extension_ok(request: Request) -> bool:
         """Omna for Chrome, and only it (finding 6): EXT_HEADER (a web page
-        cannot add it to a cross-site request) AND the secret Chrome hands
-        only to the extension (extension_auth). Any other local program that
-        reaches the port is refused."""
-        return bool(request.headers.get(EXT_HEADER)) and extension_auth.header_ok(
-            request.headers.get(extension_auth.HEADER))
+        cannot add it to a cross-site request) AND a recent signature made
+        with the secret Chrome hands only to the extension (extension_auth).
+        Any other local program that reaches the port is refused."""
+        if not request.headers.get(EXT_HEADER):
+            return False
+        return extension_auth.request_ok(
+            request.headers.get(extension_auth.TS_HEADER), request.headers.get(extension_auth.SIG_HEADER),
+            request.method, request.url.path, await request.body())
 
     async def health(request: Request) -> Response:
         ok, n, _msg = receipts.verify()
@@ -250,7 +253,7 @@ def create_app(
         # Request.json()) and wrong-shaped (valid JSON that isn't an object,
         # e.g. `null` or `[1,2,3]`, which parses fine but has no `.get`). Both
         # land on the same soft-fail fallback rather than a 500.
-        if not _extension_ok(request):
+        if not await _extension_ok(request):
             return JSONResponse({"error": "extension only"}, status_code=403)
         try:
             body = await request.json()
@@ -277,7 +280,7 @@ def create_app(
         cannot add to a cross-site request without a CORS preflight this
         server never approves — so a page can't make this machine run the
         model. Untrusted body, same soft handling as extension_checkin."""
-        if not _extension_ok(request):
+        if not await _extension_ok(request):
             return JSONResponse({"error": "extension only"}, status_code=403)
         try:
             body = await request.json()
@@ -302,7 +305,7 @@ def create_app(
         the masking engine's L6 finds — never a value. Extension only
         (EXT_HEADER); the body is untrusted, so every field is checked
         exactly and anything else is refused, never half-written."""
-        if not _extension_ok(request):
+        if not await _extension_ok(request):
             return JSONResponse({"error": "extension only"}, status_code=403)
         try:
             body = await request.json()
@@ -339,7 +342,7 @@ def create_app(
         their boxes, NOT masked — the extension masks with its own stand-ins so
         one conversation never has two lists. Extension only (EXT_HEADER),
         untrusted body handled softly, like detect_l3."""
-        if not _extension_ok(request):
+        if not await _extension_ok(request):
             return JSONResponse({"error": "extension only"}, status_code=403)
         try:
             body = await request.json()

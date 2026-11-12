@@ -11,7 +11,7 @@ import re
 import httpx
 import pytest
 
-from tests.ext_helpers import ext_hdr
+from tests.ext_helpers import EXT
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
@@ -211,7 +211,7 @@ async def test_extension_checkin_updates_health(env):
     r = await client.get("/omna/health")
     assert r.json()["extension_last_seen"] is None
 
-    r = await client.post("/omna/extension-checkin", headers=ext_hdr(), json={"version": "0.6.0"})
+    r = await client.post("/omna/extension-checkin", auth=EXT, json={"version": "0.6.0"})
     assert r.status_code == 200
     assert r.json() == {"ok": True}
 
@@ -224,7 +224,7 @@ async def test_extension_checkin_updates_health(env):
 @pytest.mark.anyio
 async def test_extension_checkin_without_version_key_reports_none(env):
     up, session, client = env
-    r = await client.post("/omna/extension-checkin", headers=ext_hdr(), json={})
+    r = await client.post("/omna/extension-checkin", auth=EXT, json={})
     assert r.status_code == 200
     assert r.json() == {"ok": True}
 
@@ -245,7 +245,7 @@ async def test_extension_checkin_rejects_non_dict_json_without_500(env, malforme
     r = await client.post(
         "/omna/extension-checkin",
         content=malformed_body,
-        headers={**ext_hdr(), "content-type": "application/json"},
+        auth=EXT, headers={"content-type": "application/json"},
     )
     assert r.status_code == 200
     assert r.json() == {"ok": True}
@@ -340,7 +340,7 @@ async def test_dashboard_shows_the_sent_as_is_count_the_extension_reports(env):
 
     up, session, client = env
     k = config.dashboard_token(create=True)
-    await client.post("/omna/extension-checkin", headers=ext_hdr(), json={"version": "0.6.0", "sent_as_is": 7})
+    await client.post("/omna/extension-checkin", auth=EXT, json={"version": "0.6.0", "sent_as_is": 7})
     j = (await client.get(f"/omna/dashboard.json?k={k}")).json()
     assert j["sent_as_is"] == 7
 
@@ -352,7 +352,7 @@ async def test_a_bogus_sent_as_is_is_ignored_not_trusted(env):
     up, session, client = env
     k = config.dashboard_token(create=True)
     for bad in ("many", -3, None, {"n": 1}):
-        await client.post("/omna/extension-checkin", headers=ext_hdr(), json={"version": "0.6.0", "sent_as_is": bad})
+        await client.post("/omna/extension-checkin", auth=EXT, json={"version": "0.6.0", "sent_as_is": bad})
     j = (await client.get(f"/omna/dashboard.json?k={k}")).json()
     assert j["sent_as_is"] == 0
 

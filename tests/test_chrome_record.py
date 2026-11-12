@@ -13,7 +13,7 @@ from omna_plugin import receipts
 from omna_plugin.engine import MaskingSession
 from omna_plugin.proxy import create_app
 
-from tests.ext_helpers import ext_hdr
+from tests.ext_helpers import EXT
 FINDS = [{"entity": "EMAIL", "layer": "L1", "risk": "direct_identifier", "action": "tokenized",
           "n": 2, "fp": ["0123456789abcdef"]}]
 
@@ -35,7 +35,7 @@ async def test_only_the_extension_may_record(c):
 @pytest.mark.anyio
 async def test_a_chrome_record_joins_the_chain(c):
     receipts.append({"route": "/v1/messages", "masked": {}})          # a curl command receipt first
-    r = await c.post("/omna/record", headers=ext_hdr(),
+    r = await c.post("/omna/record", auth=EXT,
                      json={"kind": "file", "site": "chatgpt.com", "finds": FINDS, "engine": "0.2.19+abc"})
     assert r.status_code == 200 and r.json() == {"ok": True, "kept": True}
     rec = receipts.tail(1)[0]
@@ -56,7 +56,7 @@ async def test_a_chrome_record_joins_the_chain(c):
     ["not", "a", "record"],
 ])
 async def test_anything_but_an_exact_record_is_refused(c, body):
-    r = await c.post("/omna/record", headers=ext_hdr(), json=body)
+    r = await c.post("/omna/record", auth=EXT, json=body)
     assert r.status_code == 400
     assert receipts.count() == 0
 
@@ -68,7 +68,7 @@ async def test_reports_off_keeps_nothing(c, monkeypatch):
     class Off:
         reports_enabled = False
     monkeypatch.setattr(proxy.Policy, "load", classmethod(lambda cls: Off()))
-    r = await c.post("/omna/record", headers=ext_hdr(), json={"kind": "typed", "site": "claude.ai", "finds": FINDS})
+    r = await c.post("/omna/record", auth=EXT, json={"kind": "typed", "site": "claude.ai", "finds": FINDS})
     assert r.json() == {"ok": True, "kept": False} and receipts.count() == 0
 
 
@@ -77,7 +77,7 @@ async def test_the_report_counts_chrome_records_and_their_distinct_values(c):
     from omna_plugin import report
     secret = {"entity": "AWS_KEY", "layer": "L2", "risk": "secret", "action": "redacted", "n": 1, "fp": ["aaaaaaaaaaaaaaaa"]}
     for _ in range(2):   # the same key and email, twice
-        r = await c.post("/omna/record", headers=ext_hdr(), json={"kind": "typed", "site": "claude.ai", "finds": FINDS + [secret]})
+        r = await c.post("/omna/record", auth=EXT, json={"kind": "typed", "site": "claude.ai", "finds": FINDS + [secret]})
         assert r.status_code == 200
     rep = report.build(days=7)
     assert rep["requests"] == 2
