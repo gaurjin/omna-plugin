@@ -342,7 +342,11 @@ class OmnaAddon:
         if mode not in ("stream-json", "stream-text"):
             return
         host = flow.request.pretty_host.lower()
-        coarse = _agent_coarse(flow)
+        is_sse = "event-stream" in flow.response.headers.get("content-type", "").lower()
+        # Agent traffic not read part by part: every agent API but the two
+        # whose SSE the structured restorer reads — and THEIR other streams
+        # (x-ndjson, text/*) too.
+        coarse = sites.is_agent_api(host, flow.request.path) and not (host in _AGENT_API_HOSTS and is_sse)
         if coarse:
             # Another agent API (OpenRouter, Groq, Gemini, Copilot, Codex via
             # chatgpt.com …): its stream is not read part by part, so the WHOLE
@@ -350,7 +354,7 @@ class OmnaAddon:
             # into it (finding 2; found by /security-review of the first fix).
             restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"), site=self._site(flow),
                                                    tools_only=True)
-        elif host in _AGENT_API_HOSTS and "event-stream" in flow.response.headers.get("content-type", "").lower():
+        elif host in _AGENT_API_HOSTS and is_sse:
             # An agent reaching a provider API through this door (finding 2):
             # its reply holds TOOL CALLS — commands it will run, files it will
             # write — and a secret must stay a stand-in there. The plain text
@@ -468,8 +472,13 @@ class OmnaAddon:
             # extension's tag are honoured, only this site's values come back,
             # and a value spliced into a JSON frame is JSON-escaped (a quote
             # in it broke the frame — architecture review, MASTER #178).
+            # An agent API's WebSocket (OpenAI Realtime / Responses WebSocket
+            # mode, Codex on chatgpt.com, Gemini Live) carries tool calls: the
+            # whole message follows the tool-call rule (finding 2 — found by
+            # /security-review of the second fix).
+            agent = sites.is_agent_api(flow.request.pretty_host.lower(), flow.request.path)
             msg.content = self.pipeline.restore_text(text, json_escape=_is_json(text),
-                                                     site=self._site(flow)).encode("utf-8")
+                                                     site=self._site(flow), tools_only=agent).encode("utf-8")
 
 
     def websocket_end(self, flow: http.HTTPFlow) -> None:

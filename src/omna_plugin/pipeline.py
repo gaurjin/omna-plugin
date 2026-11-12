@@ -312,8 +312,10 @@ class Pipeline:
             return self.session
         return self.session.scoped(minted)
 
-    def restore_text(self, text: str, json_escape: bool = False, site: str | None = None) -> str:
-        return self._restorer(None, site).restore_text(text, json_escape=json_escape)
+    def restore_text(self, text: str, json_escape: bool = False, site: str | None = None,
+                     tools_only: bool = False) -> str:
+        r = self._restorer(None, site)
+        return (self._tools(r) if tools_only else r).restore_text(text, json_escape=json_escape)
 
     def sse_restorer(self, minted: list[str] | None = None, site: str | None = None) -> StreamRestorer:
         """For Anthropic / OpenAI shaped SSE (the API door's formats, and the

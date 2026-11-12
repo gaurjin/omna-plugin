@@ -26,11 +26,12 @@ from .style import TOKENS
 # Request settings — skipped at the top of the request only.
 TOP_KEYS = frozenset({
     "model", "stream", "stop_sequences", "tool_choice", "service_tier", "anthropic_version",
-    "output_config", "context_management", "container", "response_format", "modalities",
+    "context_management", "container", "modalities",
     "previous_response_id", "store", "include", "truncation", "parallel_tool_calls",
     "reasoning", "background",
-    # NOT here: "prompt_cache_key" (often a user id or email) and "text"
-    # (Responses output format + schema) — both were masked before finding 4.
+    # NOT here: "prompt_cache_key" (often a user id or email); and the output
+    # SCHEMAS — "text" (Responses), "response_format" (OpenAI chat),
+    # "output_config" (Anthropic) — read like a tool definition below.
 })
 # Structure of a message, a content block or a reply item: identifiers and
 # byte-exact fields the API matches on. Skipped on messages and blocks, never
@@ -62,6 +63,9 @@ _MSG, _DATA, _TOOLDEF = "msg", "data", "tooldef"
 # A field whose NAME says its value is a credential (finding 4).
 _CRED_KEY = re.compile(r"(?i)(?:passw(?:or)?d|pwd|secret|token|api[_-]?key|apikey|access[_-]?key|private[_-]?key|credential|auth)")
 _TOOLDEF_KEYS = frozenset({"tools", "functions", "mcp_servers"})
+# A request's output schema: names, types and "strict" stay, its descriptions,
+# enum values, defaults and examples are masked (found by /security-review).
+_SCHEMA_KEYS = frozenset({"text", "response_format", "output_config"})
 
 # Long runs with no whitespace and only base64 characters: media, not prose.
 _BLOB_RE = re.compile(r"^[A-Za-z0-9+/=_\-]{256,}$")
@@ -123,10 +127,10 @@ def _skip(parent: dict, key: str, value, mode: str, depth: int) -> bool:
     return key in STRUCT_KEYS or _skip_in(parent, key, value)
 
 
-def _child_mode(parent: dict, key: str, mode: str) -> str:
+def _child_mode(parent: dict, key: str, mode: str, depth: int = 1) -> str:
     if mode != _MSG:
         return mode
-    if key in _TOOLDEF_KEYS:
+    if key in _TOOLDEF_KEYS or (depth == 0 and key in _SCHEMA_KEYS):
         return _TOOLDEF
     if key == "metadata" or (key == "input" and is_tool_call(parent)):
         return _DATA
@@ -149,7 +153,7 @@ def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, 
             if _skip(obj, k, v, mode, depth):
                 out[k] = v
             else:
-                out[k] = _walk(v, visit, _child_mode(obj, k, mode), k, depth + 1, here or k in _TOOL_KEYS)
+                out[k] = _walk(v, visit, _child_mode(obj, k, mode, depth), k, depth + 1, here or k in _TOOL_KEYS)
         return out
     return obj
 
