@@ -97,7 +97,10 @@ it runs. Pass `--no-system` to skip it and wire Claude Code only. `omna uninstal
 On a Mac, `omna init` also starts a menu-bar icon (`omna menubar`) showing live status — secrets
 kept off the wire, personal values tokenised, requests masked, what's covered, and masking
 overhead in ms, each on its own line. Its top line is the toggle itself (click, or the native
-checkmark, to pause/resume masking), and it's the only thing Omna adds to System Settings → Login
+checkmark, to pause/resume masking). **A pause switches masking off:** browsers and desktop apps then
+go to the AI unmasked (coding tools cannot connect at all), so the icon turns red, the pause and its
+length are written to the receipts and counted in `omna report`, and it ends by itself after 15 minutes.
+The icon is the only thing Omna adds to System Settings → Login
 Items: the masking proxy has no login item of its own, the menu-bar process supervises it.
 Quitting the icon only stops that one process: relaunch it any time from Spotlight/Launchpad as
 **Omna Plugin** (a small `.app` at `/Applications/Omna Plugin.app`, kept distinct from the native

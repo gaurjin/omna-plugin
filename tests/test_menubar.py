@@ -4,8 +4,11 @@ from omna_plugin import menubar
 from omna_plugin.mac import app_bundle, launchd
 
 
-def test_status_lines_not_running():
-    assert menubar.status_lines(None) == ["Omna: OFF · click to resume", "omna start -d (or click above)"]
+def test_status_lines_not_running(tmp_path, monkeypatch):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    assert menubar.status_lines(None) == ["Omna: OFF — NOT masking · click to resume",
+                                          "Browsers and desktop apps go to the AI UNMASKED",
+                                          "omna start -d (or click above)"]
 
 
 def test_status_lines_api_door_only():

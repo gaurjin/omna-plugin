@@ -75,6 +75,12 @@ def build(days: int = 7) -> dict:
     not_masked: Counter = Counter()
     n_not_masked = 0
     rulesets: list[str] = []          # ruleset fingerprints, in the order first seen (finding 15)
+    # Protection switched off on purpose (Pause, `omna stop`) — finding 16.
+    # These lines are not requests: they are taken out before anything is counted.
+    control = [r for _, r in recs if r.get("note") in CONTROL_NOTES]
+    recs = [(t, r) for t, r in recs if r.get("note") not in CONTROL_NOTES]
+    off_times = sum(1 for r in control if r.get("note") != "protection-resumed")
+    off_seconds = sum(int(r.get("off_seconds") or 0) for r in control if r.get("note") == "protection-resumed")
     for t, r in recs:
         for k, v in (r.get("masked") or {}).items():
             by_kind[k] += v
@@ -160,6 +166,8 @@ def build(days: int = 7) -> dict:
         "requests_not_masked": n_not_masked,
         "not_masked": dict(not_masked.most_common()),
         "rulesets": rulesets,
+        "protection_off_times": off_times,
+        "protection_off_seconds": off_seconds,
         "sessions": len(sessions),
         "secrets_caught": n_secret,
         "pii_caught": n_pii,
@@ -195,6 +203,18 @@ def _not_masked_words(d: dict) -> str:
     return ", ".join(f"{words.get(k, k)} ×{v}" for k, v in (d.get("not_masked") or {}).items())
 
 
+CONTROL_NOTES = ("protection-paused", "protection-stopped", "protection-resumed")
+
+
+def _protection_off_line(d: dict) -> str:
+    n = d.get("protection_off_times", 0)
+    if not n:
+        return "masking was never paused or stopped in this period"
+    mins = (d.get("protection_off_seconds", 0) + 59) // 60
+    return (f"PROTECTION OFF: paused or stopped {n} time(s), about {mins} min in total — "
+            "in that time browsers and desktop apps went to the AI unmasked")
+
+
 def _ruleset_line(d: dict) -> str:
     """One ruleset for the whole period is the calm case; more than one means
     somebody changed what is NOT masked, and when is in the receipts."""
@@ -225,6 +245,7 @@ def render_text(d: dict) -> str:
         lines.append("          by kind: " + ", ".join(f"{k} ×{v}" for k, v in d["by_kind"].items()))
     lines.append("          " + _not_masked_line(d))
     lines.append("          " + _ruleset_line(d))
+    lines.append("          " + _protection_off_line(d))
     apps_str = " · ".join(
         f"{k} {v}" + (" (bypassed)" if k in d["bypassed_apps"] else "") for k, v in d["by_app"].items()
     ) or "none seen"
@@ -268,6 +289,7 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 <p><b>THE UNLOCK.</b> Your team used AI on everything. {d['requests']} requests enabled, 0 blocked, masked on this machine before they left.</p>
 <p><b>{e(_not_masked_line(d))}.</b></p>
 <p>{e(_ruleset_line(d))}.</p>
+<p>{e(_protection_off_line(d))}.</p>
 <div class="grid">
 <div class="cell"><b>{d['requests']}</b>AI requests enabled · 0 blocked</div>
 <div class="cell"><b>{d['distinct_secrets']}</b>distinct secrets kept off the wire ({d['secrets_caught']} occurrences)</div>
@@ -296,7 +318,7 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 SHAREABLE_KEYS = (
     "period_days", "since", "engine",
     "requests", "requests_ok", "requests_refused", "requests_failed",
-    "requests_with_catch", "requests_not_masked", "not_masked", "sessions",
+    "requests_with_catch", "requests_not_masked", "not_masked", "protection_off_times", "protection_off_seconds", "sessions",
     "secrets_caught", "pii_caught", "distinct_secrets", "distinct_pii",
     "avg_mask_ms", "avg_ms",
     "by_kind", "by_day", "by_door", "bypassed",
@@ -369,7 +391,7 @@ def merge(shares: list[dict]) -> dict:
         not_masked: Counter = Counter()
         acc = {k: 0 for k in (
             "requests", "requests_ok", "requests_refused", "requests_failed",
-            "requests_with_catch", "requests_not_masked", "sessions", "secrets_caught", "pii_caught",
+            "requests_with_catch", "requests_not_masked", "protection_off_times", "protection_off_seconds", "sessions", "secrets_caught", "pii_caught",
             "distinct_secrets", "distinct_pii", "bypassed",
         )}
         for s in group:

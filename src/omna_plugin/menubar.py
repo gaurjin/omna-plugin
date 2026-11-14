@@ -18,11 +18,14 @@ from pathlib import Path
 
 import httpx
 
-from . import config
+from . import config, pause
 
 POLL_SECONDS = 4
 LOGO_PATH = Path(__file__).parent / "assets" / "menubar-icon.png"
-OFF_DOT_COLOR = (156, 163, 175, 255)  # gray — overlay shown when not reachable/paused
+# RED — shown whenever Omna is not masking (paused or not running). It was a
+# calm grey, for a state in which browsers go to the AI unmasked (security
+# review 2026-11-11, finding 16).
+OFF_DOT_COLOR = (220, 38, 38, 255)
 
 
 def _health(port: int) -> dict | None:
@@ -41,7 +44,17 @@ def status_lines(h: dict | None) -> list[str]:
     app's "PII Masking: ON/OFF" item — so there is no separate Pause/Resume entry.
     Every metric gets its own line — never merged into one run-on sentence."""
     if not h:
-        return ["Omna: OFF · click to resume", "omna start -d (or click above)"]
+        left = pause.minutes_left()
+        if left is not None:
+            return [
+                "Omna: PAUSED — NOT masking · click to resume",
+                "Browsers and desktop apps go to the AI UNMASKED",
+                "Coding tools cannot connect until you resume",
+                f"Resumes by itself in {left} min",
+            ]
+        return ["Omna: OFF — NOT masking · click to resume",
+                "Browsers and desktop apps go to the AI UNMASKED",
+                "omna start -d (or click above)"]
     doors = h.get("doors") or {}
     coverage = "every app on this Mac" if doors.get("system") else "coding tools only (Claude Code etc.)"
     return [
@@ -68,18 +81,37 @@ def _icon_image(on: bool):
 
 
 def _toggle_masking(h: dict | None, state: dict) -> None:
-    """Pause = stop the proxy so it fails closed (connection refused for any tool
-    still pointed at it — nothing is ever forwarded unmasked). Resume starts it
-    again. The proxy has no launchd job of its own anymore (it's a plain
-    subprocess this menu-bar process supervises), so both platforms just drive
-    the `omna` CLI's own pidfile-based start/stop. `state["paused"]` records a
-    deliberate pause so the poll loop's crash-recovery doesn't fight it."""
+    """Pause = stop the proxy. A coding tool still pointed at it then cannot
+    connect at all — but a browser or desktop app goes STRAIGHT to the AI,
+    UNMASKED, because the routing file that sends it through Omna is served
+    by the proxy itself. (This comment used to say "nothing is ever forwarded
+    unmasked", which was wrong — security review 2026-11-11, finding 16.)
+
+    So a pause is loud and short (`pause.py`): red in the menu bar, a line in
+    the receipts when it starts and when it ends, and it ends by itself after
+    15 minutes (the poll loop below). Resume starts the proxy again.
+    `state["paused"]` records a deliberate pause so the poll loop's
+    crash-recovery doesn't fight it."""
     if h:
         state["paused"] = True
+        pause.begin("menubar")
         subprocess.run(["omna", "stop"], capture_output=True)
     else:
-        state["paused"] = False
-        subprocess.run(["omna", "start", "-d"], capture_output=True)
+        _resume(state, "click")
+
+
+def _resume(state: dict, why: str) -> None:
+    state["paused"] = False
+    pause.end(why)
+    subprocess.run(["omna", "start", "-d"], capture_output=True)
+
+
+def _end_pause_if_over(state: dict) -> bool:
+    """A Pause ends by itself after 15 minutes (finding 16). True when it did."""
+    if state["paused"] and pause.expired():
+        _resume(state, "auto")
+        return True
+    return False
 
 
 def _ensure_daemon(state: dict) -> None:
@@ -214,7 +246,9 @@ def _confirm_and_uninstall(icon, state: dict) -> None:
 def run(port: int = config.DEFAULT_PORT) -> int:
     import pystray
 
-    state = {"paused": False}
+    # A pause survives this process being quit and reopened: it is on disk.
+    st = pause.state()
+    state = {"paused": bool(st and st["by"] == "menubar")}
 
     def menu_items():
         h = _health(port)
@@ -253,6 +287,7 @@ def run(port: int = config.DEFAULT_PORT) -> int:
 
     def poll() -> None:
         while True:
+            _end_pause_if_over(state)
             h = _health(port)
             if h is None:
                 _ensure_daemon(state)

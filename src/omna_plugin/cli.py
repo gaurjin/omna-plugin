@@ -46,7 +46,7 @@ from pathlib import Path
 
 import httpx
 
-from . import aider, claude_code, codex, config, continue_dev, crashlog, extension_auth, receipts
+from . import aider, claude_code, codex, config, continue_dev, crashlog, extension_auth, pause, receipts
 from .policy import Policy
 from .style import STYLES
 
@@ -199,12 +199,14 @@ def cmd_start(a) -> int:
         pid = _spawn(a.port, a.smart, a.no_restore_secrets)
         h = _wait_healthy(a.port, 60 if a.smart else 10)
         if h:
+            pause.end("start")      # protection is back: written down with how long it was off
             print(f"omna: running in the background on {config.base_url(a.port)} (pid {pid}, engine {h['engine']})")
             return 0
         print(f"omna: failed to start; see {config.log_path()}", file=sys.stderr)
         return 1
     from . import daemon
 
+    pause.end("start")
     daemon.run(api_port=a.port, smart=a.smart, restore_secrets=not a.no_restore_secrets)
     return 0
 
@@ -220,7 +222,10 @@ def cmd_ensure(a) -> int:
         return 1
     _pair_chrome(quiet=True)
     _spawn(a.port, _smart_wanted(a), _no_restore_secrets_wanted(a))
-    return 0 if _wait_healthy(a.port, 10) else 1
+    if not _wait_healthy(a.port, 10):
+        return 1
+    pause.end("start")
+    return 0
 
 
 def cmd_stop(a) -> int:
@@ -232,12 +237,15 @@ def cmd_stop(a) -> int:
         print("omna: not running")
         return 0
     pid = int(p.read_text().strip() or 0)
+    # Written down BEFORE it goes off (finding 16). The menu bar's Pause has
+    # already recorded itself (with its 15-minute end); this is a plain stop.
+    pause.begin("stop")
     try:
         os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
     p.unlink(missing_ok=True)
-    print("omna: stopped")
+    print("omna: stopped — browsers and desktop apps now go to the AI UNMASKED; coding tools cannot connect. `omna start -d` to protect again")
     return 0
 
 
@@ -468,7 +476,7 @@ def cmd_status(a) -> int:
         speed = f", {h['avg_mask_ms_this_run']} ms average to mask" if h.get("avg_mask_ms_this_run") else ""
         print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {'on' if h['smart'] else 'off'}, secrets {'restored locally, never on disk' if h.get('restore_secrets', True) else 'redacted for good'}, {h['requests_this_run']} requests this run{speed})")
     else:
-        print(f"proxy:        NOT running  → `omna start -d`")
+        print(pause.status_line() or "proxy:        NOT running — nothing is masked  → `omna start -d`")
     if h:
         for line in smart_message(bool(h.get("smart")), h.get("smart_models") or []):
             print(line)
