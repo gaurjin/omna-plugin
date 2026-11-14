@@ -110,3 +110,32 @@ def test_download_and_verify_cover_both_models(monkeypatch):
     smart.download_models()
     assert got == [smart.COMPACT, smart.PRIVACY_FILTER]
     assert [r["model"] for r in smart.verify_models()] == ["openai-privacy-filter", "compact"]
+
+
+# --- security review 2026-11-11: "no sign of whether fast or smart masking was used"
+def test_the_record_says_which_masking_a_request_really_got(tmp_path, monkeypatch):
+    from omna_plugin import menubar, receipts, report, smart
+    from omna_plugin.engine import MaskingSession
+    from omna_plugin.pipeline import MaskStats, Pipeline
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+
+    def receipt(session_smart, ready):
+        monkeypatch.setattr(smart, "ready_models", lambda: ready)
+        pipe = Pipeline(MaskingSession())
+        pipe.session.smart = session_smart
+        pipe.receipt(door="api", route="/v1/messages", host="x", status=200, stats=MaskStats(), nbytes=1, ms=1,
+                     stream=False, app=None, note=None, session_id=None)
+        return receipts.tail(1)[0]["masking"]
+
+    assert receipt(False, []) == "fast"
+    assert receipt(True, []) == "fast-smart-not-ready"        # on, but the model has not arrived: said, not silent
+    assert receipt(True, [smart.COMPACT]) == "smart"
+    d = report.build(7)
+    assert d["by_masking"] == {"fast": 1, "fast-smart-not-ready": 1, "smart": 1}
+    text = report.render_text(d)
+    assert "masking used: smart (rules + the on-device model) ×1 · fast (rules only) ×1" in text
+    assert "FAST ONLY ×1 — smart masking was on, but its model had not arrived yet" in text
+    lines = menubar.status_lines({"masking": "fast-smart-not-ready", "smart": True})
+    assert lines[-1] == "Masking: FAST ONLY — the smart model is still loading"
+    assert menubar.status_lines({"masking": "smart"})[-1].startswith("Masking: smart")

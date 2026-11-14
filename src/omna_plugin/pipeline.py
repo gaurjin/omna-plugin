@@ -483,6 +483,9 @@ class Pipeline:
             # was in force: a change to what is NOT masked is on the record
             # (security review 2026-11-11, finding 15).
             "ruleset": ruleset_file.fingerprint(),
+            # fast / smart / fast-smart-not-ready (smart.mode): which masking
+            # this request really got.
+            "masking": smart_models.mode(self.session.smart),
         }
         if note:
             rec["note"] = note

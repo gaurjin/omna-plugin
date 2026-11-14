@@ -117,3 +117,11 @@ async def test_values_chrome_hid_in_a_file_name_are_recorded(c):
     assert r.status_code == 200
     rec = receipts.tail(1)[0]
     assert rec["kind"] == "file_name" and rec["masked"] == {"EMAIL": 2} and "note" not in rec
+
+
+@pytest.mark.anyio
+async def test_a_chrome_record_says_which_masking_was_used(c):
+    r = await c.post("/omna/record", auth=EXT, json={"kind": "typed", "site": "claude.ai", "finds": FINDS, "masking": "smart"})
+    assert r.status_code == 200 and receipts.tail(1)[0]["masking"] == "smart"
+    await c.post("/omna/record", auth=EXT, json={"kind": "typed", "site": "claude.ai", "finds": FINDS, "masking": "<b>"})
+    assert "masking" not in receipts.tail(1)[0]              # only the two known words are kept

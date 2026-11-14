@@ -96,6 +96,17 @@ def _choice(chrome_text: str | None = None) -> str | None:
     return BOTH
 
 
+def mode(smart: bool) -> str:
+    """Which masking a request really gets right now, for the record:
+    "smart" (rules + an on-device model), "fast" (rules only, by choice) or
+    "fast-smart-not-ready" (smart is on, but its model has not arrived yet,
+    so the rules ran alone — this used to happen without a word anywhere:
+    security review 2026-11-11)."""
+    if not smart:
+        return "fast"
+    return "smart" if _choice() is not None else "fast-smart-not-ready"
+
+
 class EngineCrashed(ValueError):
     """The masking engine itself crashed. Its crash arrives as pyo3's
     ``PanicException`` — a ``BaseException``, so ``except Exception`` misses

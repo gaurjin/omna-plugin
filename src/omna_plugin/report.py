@@ -74,6 +74,7 @@ def build(days: int = 7) -> dict:
     # (security review 2026-11-11, finding 7: never blocked, always reported).
     not_masked: Counter = Counter()
     n_not_masked = 0
+    by_masking: Counter = Counter()   # fast / smart / fast-smart-not-ready, per request
     rulesets: list[str] = []          # ruleset fingerprints, in the order first seen (finding 15)
     # Protection switched off on purpose (Pause, `omna stop`) — finding 16.
     # These lines are not requests: they are taken out before anything is counted.
@@ -96,6 +97,8 @@ def build(days: int = 7) -> dict:
         # API door by definition, since it is the only door that existed then.
         by_door[r.get("door", "api")] += 1
         note = r.get("note")
+        if r.get("masking"):
+            by_masking[str(r["masking"])] += 1
         rs = r.get("ruleset")
         if isinstance(rs, str) and rs and rs not in rulesets:
             rulesets.append(rs)
@@ -166,6 +169,7 @@ def build(days: int = 7) -> dict:
         "requests_not_masked": n_not_masked,
         "not_masked": dict(not_masked.most_common()),
         "rulesets": rulesets,
+        "by_masking": dict(by_masking.most_common()),
         "protection_off_times": off_times,
         "protection_off_seconds": off_seconds,
         "sessions": len(sessions),
@@ -201,6 +205,22 @@ def build(days: int = 7) -> dict:
 def _not_masked_words(d: dict) -> str:
     words = {**receipts.NOT_MASKED_WORDS, "not-a-prompt": "a request that is not a prompt Omna can read"}
     return ", ".join(f"{words.get(k, k)} ×{v}" for k, v in (d.get("not_masked") or {}).items())
+
+
+def _masking_line(d: dict) -> str:
+    m = d.get("by_masking") or {}
+    if not m:
+        return "masking used: not recorded in this period"
+    parts = []
+    if m.get("smart"):
+        parts.append(f"smart (rules + the on-device model) ×{m['smart']}")
+    if m.get("fast"):
+        parts.append(f"fast (rules only) ×{m['fast']}")
+    line = "masking used: " + " · ".join(parts) if parts else "masking used:"
+    if m.get("fast-smart-not-ready"):
+        line += (f"{' · ' if parts else ' '}FAST ONLY ×{m['fast-smart-not-ready']} — smart masking was on, "
+                 "but its model had not arrived yet")
+    return line
 
 
 CONTROL_NOTES = ("protection-paused", "protection-stopped", "protection-resumed")
@@ -246,6 +266,7 @@ def render_text(d: dict) -> str:
     lines.append("          " + _not_masked_line(d))
     lines.append("          " + _ruleset_line(d))
     lines.append("          " + _protection_off_line(d))
+    lines.append("          " + _masking_line(d))
     apps_str = " · ".join(
         f"{k} {v}" + (" (bypassed)" if k in d["bypassed_apps"] else "") for k, v in d["by_app"].items()
     ) or "none seen"
@@ -290,6 +311,7 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 <p><b>{e(_not_masked_line(d))}.</b></p>
 <p>{e(_ruleset_line(d))}.</p>
 <p>{e(_protection_off_line(d))}.</p>
+<p>{e(_masking_line(d))}.</p>
 <div class="grid">
 <div class="cell"><b>{d['requests']}</b>AI requests enabled · 0 blocked</div>
 <div class="cell"><b>{d['distinct_secrets']}</b>distinct secrets kept off the wire ({d['secrets_caught']} occurrences)</div>
@@ -318,7 +340,7 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 SHAREABLE_KEYS = (
     "period_days", "since", "engine",
     "requests", "requests_ok", "requests_refused", "requests_failed",
-    "requests_with_catch", "requests_not_masked", "not_masked", "protection_off_times", "protection_off_seconds", "sessions",
+    "requests_with_catch", "requests_not_masked", "not_masked", "protection_off_times", "protection_off_seconds", "by_masking", "sessions",
     "secrets_caught", "pii_caught", "distinct_secrets", "distinct_pii",
     "avg_mask_ms", "avg_ms",
     "by_kind", "by_day", "by_door", "bypassed",

@@ -28,6 +28,15 @@ LOGO_PATH = Path(__file__).parent / "assets" / "menubar-icon.png"
 OFF_DOT_COLOR = (220, 38, 38, 255)
 
 
+# What `/omna/health` says a request gets right now, in plain words (the menu
+# never said whether fast or smart masking was in use — security review 2026-11-11).
+MASKING_WORDS = {
+    "smart": "smart (rules + the on-device model)",
+    "fast": "fast (rules only)",
+    "fast-smart-not-ready": "FAST ONLY — the smart model is still loading",
+}
+
+
 def _health(port: int) -> dict | None:
     try:
         r = httpx.get(f"{config.base_url(port)}/omna/health", timeout=1.0)
@@ -64,7 +73,7 @@ def status_lines(h: dict | None) -> list[str]:
         f"Requests masked this session: {h.get('requests_this_run', 0)}",
         f"Covers: {coverage}",
         f"Masking overhead: {h.get('avg_mask_ms_this_run', 0)} ms/request",
-    ]
+    ] + ([f"Masking: {MASKING_WORDS[h['masking']]}"] if h.get("masking") in MASKING_WORDS else [])
 
 
 def _icon_image(on: bool):

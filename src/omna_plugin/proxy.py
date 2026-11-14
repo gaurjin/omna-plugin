@@ -36,6 +36,7 @@ from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy, live_policy
 from . import ruleset as ruleset_file
+from .smart import mode as smart_mode
 from .style import style_for_door, style_for_extension
 from .system_door import EXT_HEADER
 
@@ -253,6 +254,8 @@ def create_app(
                 "engine": engine_version(),
                 "proof": proof,
                 "smart": session.smart,
+                # What a request gets RIGHT NOW: smart / fast / fast-smart-not-ready.
+                "masking": smart_mode(session.smart),
                 # Which smart models have arrived and passed their hash check.
                 "smart_models": _smart_models_ready() if session.smart else [],
                 # Can this machine read text in pictures (Apple Vision, macOS)?
@@ -374,6 +377,8 @@ def create_app(
         if unlisted:
             # Found by the Mac app, which reports a count but no L6 list.
             rec["unlisted"] = unlisted
+        if body.get("masking") in ("fast", "smart"):
+            rec["masking"] = body["masking"]     # which masking Omna for Chrome really used
         if not_read:
             # Same note the curl command's own doors write, so the report
             # counts both products' unread files in one line.
