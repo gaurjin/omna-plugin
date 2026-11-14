@@ -3,13 +3,13 @@
   "specVersion": "1.5",
   "version": 1,
   "metadata": {
-    "timestamp": "2026-10-31T00:01:18+00:00",
+    "timestamp": "2026-11-14T21:49:43+00:00",
     "component": {
       "type": "application",
       "name": "omna-plugin",
-      "version": "0.6.6",
-      "purl": "pkg:pypi/omna-plugin@0.6.6",
-      "description": "Omna \u2014 local privacy proxy for AI coding tools. Masks secrets and PII before a prompt leaves your machine, restores them in the reply.",
+      "version": "0.6.21",
+      "purl": "pkg:pypi/omna-plugin@0.6.21",
+      "description": "Omna \u2014 Mask it. Prove it. Hides secrets and personal data on your device before any AI or AI agent sees them, and gives you the report that proves it.",
       "licenses": [
         {
           "license": {
@@ -266,8 +266,8 @@
     {
       "type": "library",
       "name": "omna-pii-mask",
-      "version": "0.2.12",
-      "purl": "pkg:pypi/omna-pii-mask@0.2.12",
+      "version": "0.2.23",
+      "purl": "pkg:pypi/omna-pii-mask@0.2.23",
       "scope": "required",
       "description": "The Omna masking engine. Closed-source kernel, distributed as a compiled binary wheel; built in CI from a private repository."
     },
@@ -302,8 +302,8 @@
     {
       "type": "library",
       "name": "pyasn1",
-      "version": "0.6.4",
-      "purl": "pkg:pypi/pyasn1@0.6.4",
+      "version": "0.6.5",
+      "purl": "pkg:pypi/pyasn1@0.6.5",
       "scope": "required"
     },
     {
@@ -337,22 +337,36 @@
     {
       "type": "library",
       "name": "pyobjc-core",
-      "version": "12.2.2",
-      "purl": "pkg:pypi/pyobjc-core@12.2.2",
+      "version": "13.0",
+      "purl": "pkg:pypi/pyobjc-core@13.0",
       "scope": "required"
     },
     {
       "type": "library",
       "name": "pyobjc-framework-cocoa",
-      "version": "12.2.2",
-      "purl": "pkg:pypi/pyobjc-framework-cocoa@12.2.2",
+      "version": "13.0",
+      "purl": "pkg:pypi/pyobjc-framework-cocoa@13.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyobjc-framework-coreml",
+      "version": "13.0",
+      "purl": "pkg:pypi/pyobjc-framework-coreml@13.0",
       "scope": "required"
     },
     {
       "type": "library",
       "name": "pyobjc-framework-quartz",
-      "version": "12.2.2",
-      "purl": "pkg:pypi/pyobjc-framework-quartz@12.2.2",
+      "version": "13.0",
+      "purl": "pkg:pypi/pyobjc-framework-quartz@13.0",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "name": "pyobjc-framework-vision",
+      "version": "13.0",
+      "purl": "pkg:pypi/pyobjc-framework-vision@13.0",
       "scope": "required"
     },
     {
