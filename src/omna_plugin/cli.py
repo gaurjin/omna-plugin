@@ -124,7 +124,7 @@ def _restart_daemon(a=None, smart: bool | None = None) -> None:
     which always monkeypatches this by name — see the safety rule): if the Mac
     launchd job is installed, kick it; else if a background (`-d`) proxy is
     tracked by a pidfile, stop it and re-spawn it detached with the SAME
-    smart/restore_secrets it was already running with; else — including a
+    smart it was already running with and the SAVED secrets setting; else — including a
     foreground instance that answers health checks but owns no pidfile, which
     this process cannot safely restart from the outside — do nothing but say so."""
     from .mac import launchd
@@ -141,7 +141,9 @@ def _restart_daemon(a=None, smart: bool | None = None) -> None:
     h = _health(port) or {}
     if smart is None:
         smart = bool(h.get("smart", False))
-    no_restore_secrets = not h.get("restore_secrets", True)
+    # The saved setting, never the dying daemon's answer: when it does not
+    # answer, "restore" used to be assumed (lead L1).
+    no_restore_secrets = not Policy.load().restore_secrets
     try:
         os.kill(int(p.read_text().strip() or 0), signal.SIGTERM)
     except (ProcessLookupError, ValueError):
@@ -163,8 +165,28 @@ def _smart_wanted(a) -> bool:
     return bool(getattr(a, "smart", False)) or Policy.load().smart == "on"
 
 
+def _no_restore_secrets_wanted(a) -> bool:
+    """True when secrets must be redacted for good. `--no-restore-secrets` /
+    `--restore-secrets` on `omna start` SAVE the choice (policy.json); every
+    later start — `omna ensure`, the menu bar, the login job, a restart after
+    a settings change — reads it from there (security review, lead L1)."""
+    pol = Policy.load()
+    want = pol.restore_secrets
+    if getattr(a, "no_restore_secrets", False):
+        want = False
+    elif getattr(a, "restore_secrets", False):
+        want = True
+    if want != pol.restore_secrets:
+        pol.restore_secrets = want
+        pol.save()
+        print("omna: saved — secrets are " + ("put back locally again" if want else
+              "redacted for good from now on, also after a restart (undo: omna start --restore-secrets)"))
+    return not want
+
+
 def cmd_start(a) -> int:
     a.smart = _smart_wanted(a)
+    a.no_restore_secrets = _no_restore_secrets_wanted(a)
     who = _who_answers(a.port)
     if who == "omna":
         print(f"omna: already running on {config.base_url(a.port)}")
@@ -197,7 +219,7 @@ def cmd_ensure(a) -> int:
         print(_stranger_message(a.port), file=sys.stderr)
         return 1
     _pair_chrome(quiet=True)
-    _spawn(a.port, _smart_wanted(a))
+    _spawn(a.port, _smart_wanted(a), _no_restore_secrets_wanted(a))
     return 0 if _wait_healthy(a.port, 10) else 1
 
 
@@ -1200,7 +1222,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("start", help="run the masking proxy"); add_port(s)
     s.add_argument("-d", "--daemon", action="store_true", help="run in the background")
     s.add_argument("--smart", action="store_true", help="also run the on-device smart models (L3), chosen automatically; catches names written in sentences")
-    s.add_argument("--no-restore-secrets", action="store_true", help="redact secrets for good (engine default) instead of numbered tokens restored locally; breaks edits to lines that contain a key")
+    s.add_argument("--no-restore-secrets", action="store_true", help="redact secrets for good (engine default) instead of numbered tokens restored locally; breaks edits to lines that contain a key. Saved: stays on after a restart")
+    s.add_argument("--restore-secrets", action="store_true", help="undo --no-restore-secrets (saved)")
     s.set_defaults(fn=cmd_start)
     s = sub.add_parser("stop", help="stop the background proxy"); add_port(s); s.set_defaults(fn=cmd_stop)
     s = sub.add_parser("ensure", help="start the background proxy if needed"); add_port(s)

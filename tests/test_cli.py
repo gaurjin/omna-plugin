@@ -388,6 +388,9 @@ def test_restart_daemon_respawns_with_the_same_smart_and_secrets_mode(monkeypatc
     pidfile.write_text("4242")
     monkeypatch.setattr("omna_plugin.config.pid_path", lambda: pidfile)
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"smart": True, "restore_secrets": False})
+    pol = Policy.load()
+    pol.restore_secrets = False       # the SAVED setting decides (lead L1), not the daemon's answer
+    pol.save()
     killed = []
     monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
     spawned = []
@@ -396,7 +399,7 @@ def test_restart_daemon_respawns_with_the_same_smart_and_secrets_mode(monkeypatc
     _real_restart_daemon()
     assert killed == [4242]
     assert not pidfile.exists()
-    assert spawned == [(7788, True, True)]   # same smart=on, same restore_secrets=off (no_restore_secrets=True) it was already running with
+    assert spawned == [(7788, True, True)]   # same smart=on it was running with; secrets mode from the saved setting
 
 
 def test_restart_daemon_does_not_double_spawn_a_foreground_instance(monkeypatch, tmp_path, capsys):
@@ -837,3 +840,57 @@ def test_status_tells_the_truth_about_codex(monkeypatch, tmp_path, capsys, cfg, 
     main(["status"])
     line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("codex cli:"))
     assert expect in line, line
+
+
+# --- security review 2026-11-11, lead L1: "--no-restore-secrets" was a start
+# flag, so every restart that did not go through a healthy running daemon —
+# a crash and `omna ensure`, the menu bar's `omna start -d`, the login job —
+# silently brought secrets back to "restored locally". It is a saved setting now.
+def _spawn_recorder(monkeypatch):
+    spawned = []
+    monkeypatch.setattr("omna_plugin.cli._spawn", lambda port, smart, no_restore_secrets=False: spawned.append(no_restore_secrets) or 4243)
+    monkeypatch.setattr("omna_plugin.cli._wait_healthy", lambda port, seconds: {"engine": "x"})
+    monkeypatch.setattr("omna_plugin.cli._who_answers", lambda port: None)
+    monkeypatch.setattr("omna_plugin.cli._pair_chrome", lambda quiet=False: None)
+    return spawned
+
+
+def test_no_restore_secrets_is_saved_and_survives_a_crash_and_ensure(monkeypatch):
+    spawned = _spawn_recorder(monkeypatch)
+    assert main(["start", "-d", "--no-restore-secrets"]) == 0
+    assert spawned == [True] and Policy.load().restore_secrets is False
+    # The daemon died. Nothing answers on the port, so nobody can be asked
+    # how it was running: the saved setting decides.
+    assert main(["ensure"]) == 0
+    assert main(["start", "-d"]) == 0                 # what the menu bar runs
+    assert spawned == [True, True, True], "the switch must not be lost on a restart"
+
+
+def test_restart_after_a_policy_save_reads_the_saved_setting_not_the_dying_daemon(monkeypatch, tmp_path):
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: tmp_path / "missing.plist")
+    pidfile = tmp_path / "omna.pid"
+    pidfile.write_text("4242")
+    monkeypatch.setattr("omna_plugin.config.pid_path", lambda: pidfile)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)       # the daemon is not answering
+    monkeypatch.setattr("os.kill", lambda pid, sig: None)
+    spawned = _spawn_recorder(monkeypatch)
+    pol = Policy.load()
+    pol.restore_secrets = False
+    pol.save()
+    _real_restart_daemon()
+    assert spawned == [True]
+
+
+def test_restore_secrets_switches_it_back_on_and_says_so(monkeypatch, capsys):
+    spawned = _spawn_recorder(monkeypatch)
+    main(["start", "-d", "--no-restore-secrets"])
+    assert "saved" in capsys.readouterr()[0]
+    assert main(["start", "-d", "--restore-secrets"]) == 0
+    assert spawned == [True, False] and Policy.load().restore_secrets is True
+    assert main(["ensure"]) == 0 and spawned[-1] is False
+
+
+def test_the_default_is_unchanged_secrets_are_restored_locally(monkeypatch):
+    spawned = _spawn_recorder(monkeypatch)
+    assert main(["start", "-d"]) == 0 and main(["ensure"]) == 0
+    assert spawned == [False, False] and Policy.load().restore_secrets is True

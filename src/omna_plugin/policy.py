@@ -58,6 +58,13 @@ class Policy:
     # proxy runs, and the old `--no-restore-secrets` start flag was lost on
     # every restart.
     tool_calls: dict[str, bool] = field(default_factory=lambda: {"secrets": False, "personal": True})
+    # False = secrets are redacted for good ("[REDACTED:KIND]"), never kept to
+    # be put back. Was only the `--no-restore-secrets` START FLAG, so any
+    # restart that could not ask a healthy running daemon how it was started
+    # (a crash + `omna ensure`, the menu bar, the login job) silently went
+    # back to restoring (security review 2026-11-11, lead L1). Saved here;
+    # `omna start --no-restore-secrets` / `--restore-secrets` change it.
+    restore_secrets: bool = True
     # Extra browser origins allowed to read replies through the API door
     # (#137a). Local origins (localhost / 127.0.0.1 / [::1], any port) are
     # always allowed and are not listed here. Anything added here is a
@@ -116,6 +123,7 @@ class Policy:
             tc = data.get("tool_calls") or {}
             pol.tool_calls = {"secrets": bool(tc.get("secrets", False)) if isinstance(tc, dict) else False,
                               "personal": bool(tc.get("personal", True)) if isinstance(tc, dict) else True}
+            pol.restore_secrets = bool(data.get("restore_secrets", True))
             pol.cors_origins = [str(o) for o in data.get("cors_origins", [])]
             sm = str(data.get("smart", "on"))
             pol.smart = sm if sm in ("on", "off") else "on"
@@ -147,6 +155,7 @@ class Policy:
             "restore_browser": self.restore_browser,
             "style": self.style,
             "tool_calls": self.tool_calls,
+            "restore_secrets": self.restore_secrets,
             "cors_origins": self.cors_origins,
             "smart": self.smart,
             "crash_reports": self.crash_reports,
