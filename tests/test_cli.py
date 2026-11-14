@@ -359,7 +359,7 @@ def test_mappings_command_opens_the_browser_with_the_dashboard_token(monkeypatch
     monkeypatch.setattr("webbrowser.open", lambda url: opened.append(url) or True)
     assert main(["mappings"]) == 0
     assert len(opened) == 1
-    assert "/omna/mappings?k=" in opened[0]
+    assert "/omna/mappings#k=" in opened[0]
     assert config.dashboard_token(create=True) in opened[0]
 
 

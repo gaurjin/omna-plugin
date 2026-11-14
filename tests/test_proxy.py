@@ -310,7 +310,7 @@ async def test_dashboard_serves_html_and_json(env):
 
     up, session, client = env
     k = config.dashboard_token(create=True)   # token required since #134
-    r = await client.get(f"/omna/dashboard?k={k}")
+    r = await client.get("/omna/dashboard", headers={"authorization": f"Bearer {k}"})
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     body = r.text
@@ -319,7 +319,7 @@ async def test_dashboard_serves_html_and_json(env):
     for bad in ("http://", "https://", "cdn.", "<script src"):
         assert bad not in body, f"dashboard reaches outside for {bad!r}"
 
-    j = await client.get(f"/omna/dashboard.json?k={k}")
+    j = await client.get("/omna/dashboard.json", headers={"authorization": f"Bearer {k}"})
     assert j.status_code == 200
     assert "p95_ms" in j.json() and "sent_as_is" in j.json()
 
@@ -330,7 +330,7 @@ async def test_dashboard_links_to_the_mappings_review_screen(env):
 
     up, session, client = env
     k = config.dashboard_token(create=True)
-    r = await client.get(f"/omna/dashboard?k={k}")
+    r = await client.get("/omna/dashboard", headers={"authorization": f"Bearer {k}"})
     assert "/omna/mappings" in r.text
 
 
@@ -341,7 +341,7 @@ async def test_dashboard_shows_the_sent_as_is_count_the_extension_reports(env):
     up, session, client = env
     k = config.dashboard_token(create=True)
     await client.post("/omna/extension-checkin", auth=EXT, json={"version": "0.6.0", "sent_as_is": 7})
-    j = (await client.get(f"/omna/dashboard.json?k={k}")).json()
+    j = (await client.get("/omna/dashboard.json", headers={"authorization": f"Bearer {k}"})).json()
     assert j["sent_as_is"] == 7
 
 
@@ -353,7 +353,7 @@ async def test_a_bogus_sent_as_is_is_ignored_not_trusted(env):
     k = config.dashboard_token(create=True)
     for bad in ("many", -3, None, {"n": 1}):
         await client.post("/omna/extension-checkin", auth=EXT, json={"version": "0.6.0", "sent_as_is": bad})
-    j = (await client.get(f"/omna/dashboard.json?k={k}")).json()
+    j = (await client.get("/omna/dashboard.json", headers={"authorization": f"Bearer {k}"})).json()
     assert j["sent_as_is"] == 0
 
 
@@ -399,21 +399,26 @@ async def test_the_dashboard_refuses_without_the_token(env):
     from omna_plugin import config
 
     up, session, client = env
-    for path in ("/omna/dashboard", "/omna/dashboard.json"):
-        r = await client.get(path)
-        assert r.status_code == 401, path
-        assert "token" in r.text
-        # the 401 itself must not hand out the secret
-        assert config.dashboard_token(create=True) not in r.text
+    tok = config.dashboard_token(create=True)
+    r = await client.get("/omna/dashboard.json")
+    assert r.status_code == 401 and "token" in r.text and tok not in r.text
+    # A browser cannot send a header: it gets the first page, which holds no
+    # data and no token, and asks again properly.
+    r = await client.get("/omna/dashboard")
+    assert r.status_code == 200 and "sessionStorage" in r.text and tok not in r.text
+    assert "AI requests" not in r.text and "Catches" not in r.text
+    assert "no-store" in r.headers["cache-control"]
+    r = await client.get("/omna/dashboard", headers={"authorization": "Bearer wrong"})
+    assert r.status_code == 401
 
 
 @pytest.mark.anyio
-async def test_the_dashboard_opens_with_the_token_in_the_url_or_a_bearer_header(env):
+async def test_the_dashboard_opens_with_the_token_in_a_bearer_header(env):
     from omna_plugin import config
 
     up, session, client = env
     tok = config.dashboard_token(create=True)
-    r = await client.get(f"/omna/dashboard?k={tok}")
+    r = await client.get("/omna/dashboard", headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 200 and "text/html" in r.headers["content-type"]
     r = await client.get("/omna/dashboard.json", headers={"authorization": f"Bearer {tok}"})
     assert r.status_code == 200 and isinstance(r.json(), dict)
@@ -422,7 +427,21 @@ async def test_the_dashboard_opens_with_the_token_in_the_url_or_a_bearer_header(
 @pytest.mark.anyio
 async def test_a_wrong_token_is_refused(env):
     up, session, client = env
-    r = await client.get("/omna/dashboard?k=not-the-token")
+    r = await client.get("/omna/dashboard.json", headers={"authorization": "Bearer not-the-token"})
+    assert r.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_the_token_in_the_address_is_no_longer_accepted(env):
+    # Security review 2026-11-11, delete list: `?k=` put the token into the
+    # browser history and into anything that logs addresses.
+    from omna_plugin import config
+
+    up, session, client = env
+    tok = config.dashboard_token(create=True)
+    r = await client.get(f"/omna/dashboard.json?k={tok}")
+    assert r.status_code == 401
+    r = await client.get(f"/omna/mappings.json?k={tok}&reveal=all")
     assert r.status_code == 401
 
 

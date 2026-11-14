@@ -107,6 +107,7 @@ class Pipeline:
         # What may go back into a tool call (finding 2). A callable, so the
         # saved setting is read when each reply is restored, not at start-up.
         self.tool_rule = tool_rule or live_tool_rule
+        self._route_cache: dict[str, str] = {}
 
     # ------------------------------------------------------------ masking
     def mask_json(self, obj, style: str = TOKENS, careful: bool = False) -> tuple[object, MaskStats]:
@@ -433,6 +434,33 @@ class Pipeline:
         return TextRestorer(self._tools(r) if tools_only else r, json_escape=json_escape)
 
     # ------------------------------------------------------------ receipts
+    def safe_route(self, route: str) -> str:
+        """The address path as it may be written to a receipt. A path can
+        carry a value (``/v1/files/ghp_…/content``, ``/api/users/jane@x.io``):
+        the receipt held it as it was, on disk — the one exception to
+        "receipts hold no values" (security review 2026-11-11, finding 18).
+        Whatever the engine finds in the path is replaced by its kind."""
+        route = str(route or "")
+        hit = self._route_cache.get(route)
+        if hit is not None:
+            return hit
+        safe = route
+        if len(route) >= 8:
+            try:
+                text = unquote(route)
+                spans = sorted(self._detect(text), key=lambda sp: sp["start"], reverse=True)
+                raw = text.encode("utf-8")
+                for sp in spans:      # the engine's spans are BYTE offsets
+                    raw = raw[:sp["start"]] + f"[{sp.get('entity') or 'VALUE'}]".encode() + raw[sp["end"]:]
+                if spans:
+                    safe = raw.decode("utf-8", "replace")
+            except Exception:  # noqa: BLE001 - a receipt must never carry what could not be checked
+                safe = "/[unchecked]"
+        if len(self._route_cache) > 2048:
+            self._route_cache.clear()
+        self._route_cache[route] = safe
+        return safe
+
     def receipt(self, *, door: str, route: str, host: str, status: int, stats: MaskStats,
                 nbytes: int, ms: int, stream: bool, app: str | None, note: str | None,
                 session_id: str | None, style: str = TOKENS) -> None:
@@ -446,7 +474,7 @@ class Pipeline:
         # the masking engine's L6 finds; the totals are worked out from them.
         rec = {
             "v": receipts.FORMAT, "product": "curl", "engine": smart_models.engine_fingerprint(),
-            "door": door, "route": route, "host": host, "upstream": host, "status": status,
+            "door": door, "route": self.safe_route(route), "host": host, "upstream": host, "status": status,
             "stream": stream, "finds": stats.finds, **receipts.totals_of(stats.finds),
             "validated": stats.validated,
             "mask_ms": stats.mask_ms, "tokens": stats.tokens, "bytes_in": nbytes, "ms": ms,

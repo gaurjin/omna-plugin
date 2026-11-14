@@ -89,6 +89,35 @@ _DROP_RESP = {"content-length", "content-encoding", "connection", "keep-alive",
 _LOCAL_ORIGIN_RE = __import__("re").compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", __import__("re").I)
 
 
+# The first page of the dashboard and the mappings screen. It holds no data.
+# It takes the token from after the "#" (never sent to any server), removes
+# it from the address bar and the history entry, keeps it for this tab only,
+# and asks for the real page with the token in a header.
+_BOOT_PAGE = """<!doctype html><html><head><meta charset="utf-8"><title>Omna</title>
+<meta name="referrer" content="no-referrer"></head>
+<body style="font:15px -apple-system,Helvetica,Arial,sans-serif;margin:40px">
+<p id="m">Opening…</p>
+<script>
+(async () => {
+  const say = (t) => { document.getElementById('m').textContent = t; };
+  let k = new URLSearchParams(location.hash.slice(1)).get('k');
+  if (k) {
+    try { sessionStorage.setItem('omna_k', k); } catch (e) {}
+    history.replaceState(null, '', location.pathname);
+  } else {
+    try { k = sessionStorage.getItem('omna_k'); } catch (e) {}
+  }
+  if (!k) { say('This page needs its local token. Run `omna dashboard` (or `omna mappings`) in a terminal to open it.'); return; }
+  try {
+    const r = await fetch(location.pathname, {headers: {authorization: 'Bearer ' + k}, cache: 'no-store'});
+    if (!r.ok) { say('That token is not valid any more. Run `omna dashboard` (or `omna mappings`) again.'); return; }
+    const html = await r.text();
+    document.open(); document.write(html); document.close();
+  } catch (e) { say('Omna is not running. Start it with `omna start -d`.'); }
+})();
+</script></body></html>"""
+
+
 def _note(passthrough: bool | str, mstats: MaskStats) -> str | None:
     """What the receipt says about a request that was not (fully) masked.
     ``passthrough``: True, or the reason as a word ("compressed",
@@ -387,24 +416,35 @@ def create_app(
     def _dashboard_ok(request: Request) -> bool:
         """The dashboard needs the token from ~/.omna/dashboard.token (#134).
 
-        Accepted as `?k=` (so `omna dashboard` can just open a URL, the way
-        Jupyter does) or as `Authorization: Bearer`. Compared in constant time
-        so a local process cannot narrow it down guess by guess.
+        Accepted ONLY as `Authorization: Bearer`. It used to be accepted as
+        `?k=` in the address too, which put the token into the browser's
+        history, into any page linked from there (Referer) and into anything
+        that logs addresses (security review 2026-11-11, delete list).
+        `omna dashboard` now opens the page with the token after a `#`,
+        which a browser never sends anywhere; a small first page (`_BOOT_PAGE`)
+        takes it out of the address at once and asks again with the header.
+        Compared in constant time so a local process cannot narrow it down.
         """
         import secrets as _secrets
 
         want = config.dashboard_token(create=True)
-        got = request.query_params.get("k") or ""
-        if not got:
-            auth = request.headers.get("authorization", "")
-            if auth.lower().startswith("bearer "):
-                got = auth[7:].strip()
+        got = ""
+        auth = request.headers.get("authorization", "")
+        if auth.lower().startswith("bearer "):
+            got = auth[7:].strip()
         return bool(want) and _secrets.compare_digest(got, want)
+
+    def _page_or_401(request: Request) -> Response:
+        """A browser opening the page has no way to send a header: it gets
+        the first page (no data in it), which then asks properly."""
+        if "authorization" not in request.headers:
+            return Response(_BOOT_PAGE, media_type="text/html; charset=utf-8", headers={"cache-control": "no-store"})
+        return _unauthorised()
 
     def _unauthorised() -> Response:
         return JSONResponse(
             {"error": "omna: the dashboard needs its local token. Run `omna dashboard` "
-                      "to open it, or read ~/.omna/dashboard.token and pass ?k=<token>."},
+                      "to open it, or read ~/.omna/dashboard.token and send it as `Authorization: Bearer <token>`."},
             status_code=401,
         )
 
@@ -412,9 +452,9 @@ def create_app(
         from . import dashboard as dash
 
         if not _dashboard_ok(request):
-            return _unauthorised()
+            return _page_or_401(request)
         d = dash.snapshot(days=7, sent_as_is=stats.get("sent_as_is", 0))
-        return Response(dash.render(d), media_type="text/html; charset=utf-8")
+        return Response(dash.render(d), media_type="text/html; charset=utf-8", headers={"cache-control": "no-store"})
 
     async def dashboard_json(request: Request) -> Response:
         from . import dashboard as dash
@@ -427,7 +467,7 @@ def create_app(
 
     async def mappings_page(request: Request) -> Response:
         if not _dashboard_ok(request):
-            return _unauthorised()
+            return _page_or_401(request)
         return Response(mappings.render(mappings.snapshot(session)), media_type="text/html; charset=utf-8",
                          headers=_NO_STORE)
 

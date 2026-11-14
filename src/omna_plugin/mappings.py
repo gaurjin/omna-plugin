@@ -82,9 +82,8 @@ def snapshot(session: MaskingSession, *, q: str = "", kind: str = "", sort: str 
              dir: str = "desc", page: int = 1, per_page: int = 50,
              reveal: str = "") -> dict:
     """Query the joined rows. `reveal` is either "" (no values disclosed,
-    the default), a single label ("EMAIL_3", disclose that one row's value),
-    or "all" (disclose every row ON THIS PAGE — never the whole registry in
-    one response). Every row's `value`/`fake` keys are present but `None`
+    the default) or a single label ("EMAIL_3", disclose that one row's
+    value). Every row's `value`/`fake` keys are present but `None`
     unless disclosed, so a caller can tell "hidden" from "no fake exists"
     apart.
     """
@@ -103,7 +102,9 @@ def snapshot(session: MaskingSession, *, q: str = "", kind: str = "", sort: str 
     page_rows = rows[start:start + per_page]
     out_rows = []
     for r in page_rows:
-        disclose = reveal == "all" or reveal == r["label"]
+        # One row at a time, on a click. "all" used to hand over every real
+        # value in one request (security review 2026-11-11, delete list).
+        disclose = bool(reveal) and reveal == r["label"]
         out_rows.append({**r, "value": r["value"] if disclose else None,
                           "fake": r["fake"] if disclose else None})
     return {
@@ -168,7 +169,6 @@ you click Reveal — they are never sent to this page until then.</p>
 <div class="controls">
   <input id="q" placeholder="search label or kind" />
   <select id="kind"><option value="">all entity types</option></select>
-  <button id="revealAll">Reveal all on this page</button>
   <button id="clearAll" style="color:var(--bad)">Clear all mappings</button>
 </div>
 
@@ -193,13 +193,18 @@ This page loads nothing from the internet. Values are fetched only when you clic
 </footer>
 </div>
 <script>
-const params = new URLSearchParams(location.search);
-const k = params.get('k') || '';
+// The token lives in this tab only (sessionStorage), never in an address.
+let k = ''; try {{ k = sessionStorage.getItem('omna_k') || ''; }} catch (e) {{}}
+const AUTH = {{authorization: 'Bearer ' + k}};
+// Every value is TEXT. Rows were built by pasting values into HTML as they
+// were (security review 2026-11-11, finding 18): a value holding markup
+// would have run in this page, which can read every real value.
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}}[c]));
 let state = {{q:'', kind:'', sort:'created', dir:'desc', page:1, per_page:50}};
 
 function api(extra) {{
-  const p = new URLSearchParams({{...state, ...extra, k}});
-  return fetch('/omna/mappings.json?' + p.toString(), {{cache:'no-store'}}).then(r => r.json());
+  const p = new URLSearchParams({{...state, ...extra}});
+  return fetch('/omna/mappings.json?' + p.toString(), {{cache:'no-store', headers: AUTH}}).then(r => r.json());
 }}
 
 function row(r) {{
@@ -207,18 +212,18 @@ function row(r) {{
   tr.dataset.label = r.label;
   const val = r.value !== null ? r.value : '••••••••';
   const fake = r.fake !== null ? (r.fake || '') : (r.style === 'realistic' ? '••••••••' : '');
-  tr.innerHTML = `<td>${{r.kind}}</td>
-    <td class="value">${{val}} <button class="reveal" data-label="${{r.label}}">reveal</button></td>
-    <td>${{fake || '[' + r.label + ']'}}</td>
-    <td>${{r.layer || 'unknown'}}</td>
+  tr.innerHTML = `<td>${{esc(r.kind)}}</td>
+    <td class="value">${{esc(val)}} <button class="reveal" data-label="${{esc(r.label)}}">reveal</button></td>
+    <td>${{esc(fake || '[' + r.label + ']')}}</td>
+    <td>${{esc(r.layer || 'unknown')}}</td>
     <td>${{r.validated ? 'yes' : 'no'}}</td>
-    <td>${{r.style || 'unknown (masked before this was recorded)'}}</td>
-    <td>${{r.times_sent}}</td>
-    <td>${{r.last_sent || 'never'}}</td>
-    <td>${{(r.providers||[]).join(', ') || '—'}}</td>
-    <td>${{(r.apps||[]).join(', ') || '—'}}</td>
-    <td>${{r.created || 'unknown'}}</td>
-    <td><button class="del" data-label="${{r.label}}">delete</button></td>`;
+    <td>${{esc(r.style || 'unknown (masked before this was recorded)')}}</td>
+    <td>${{esc(r.times_sent)}}</td>
+    <td>${{esc(r.last_sent || 'never')}}</td>
+    <td>${{esc((r.providers||[]).join(', ') || '—')}}</td>
+    <td>${{esc((r.apps||[]).join(', ') || '—')}}</td>
+    <td>${{esc(r.created || 'unknown')}}</td>
+    <td><button class="del" data-label="${{esc(r.label)}}">delete</button></td>`;
   return tr;
 }}
 
@@ -236,7 +241,7 @@ async function load() {{
   const sel = document.getElementById('kind');
   const cur = sel.value;
   sel.innerHTML = '<option value="">all entity types</option>' +
-    d.kinds.map(kk => `<option value="${{kk}}">${{kk}}</option>`).join('');
+    d.kinds.map(kk => `<option value="${{esc(kk)}}">${{esc(kk)}}</option>`).join('');
   sel.value = cur;
   document.getElementById('pageInfo').textContent =
     `page ${{d.page}} of ${{Math.max(1, Math.ceil(d.total / d.per_page))}} (${{d.total}} total)`;
@@ -255,7 +260,7 @@ document.getElementById('next').addEventListener('click', () => {{ state.page++;
 document.getElementById('tbl').addEventListener('click', async e => {{
   if (e.target.classList.contains('reveal')) {{
     const d = await api({{reveal: e.target.dataset.label}});
-    const tr = document.querySelector(`tr[data-label="${{e.target.dataset.label}}"]`);
+    const tr = [...document.querySelectorAll('#tbl tbody tr')].find(x => x.dataset.label === e.target.dataset.label);
     const r = d.rows.find(x => x.label === e.target.dataset.label);
     if (tr && r) tr.replaceWith(row(r));
   }}
@@ -263,26 +268,19 @@ document.getElementById('tbl').addEventListener('click', async e => {{
     const label = e.target.dataset.label;
     if (!confirm(`Delete this mapping? If this value is masked again it gets a brand new ` +
                  `token/fake — this one (${{label}}) is gone for good.`)) return;
-    await fetch('/omna/mappings/delete?k=' + encodeURIComponent(k), {{
-      method: 'POST', headers: {{'content-type':'application/json'}},
+    await fetch('/omna/mappings/delete', {{
+      method: 'POST', headers: {{'content-type':'application/json', ...AUTH}},
       body: JSON.stringify({{label}}),
     }});
     load();
   }}
 }});
 
-document.getElementById('revealAll').addEventListener('click', async () => {{
-  const d = await api({{reveal: 'all'}});
-  const tbody = document.querySelector('#tbl tbody');
-  tbody.innerHTML = '';
-  d.rows.forEach(r => tbody.appendChild(row(r)));
-}});
-
 document.getElementById('clearAll').addEventListener('click', async () => {{
   if (!confirm('Clear every mapping? This is the same as `omna forget` — it also resets your ' +
                'secret counters and encryption key. Every value masked again afterward gets a ' +
                'brand new token. This cannot be undone.')) return;
-  await fetch('/omna/mappings/clear?k=' + encodeURIComponent(k), {{method: 'POST'}});
+  await fetch('/omna/mappings/clear', {{method: 'POST', headers: AUTH}});
   load();
 }});
 

@@ -241,3 +241,27 @@ def test_real_masking_fingerprints_are_keyed(home):
 ])
 def test_untrusted_finds_are_refused_unless_exact(bad):
     assert receipts.valid_finds(bad) is None
+
+
+def test_a_value_in_the_address_path_never_reaches_the_receipt(tmp_path, monkeypatch):
+    # Security review 2026-11-11, finding 18: "/v1/files/ghp_…/content" was
+    # written to receipts.jsonl as it was — a secret on disk.
+    from omna_plugin.engine import MaskingSession
+    from omna_plugin.pipeline import MaskStats, Pipeline
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    token = "ghp_" + "fgYFNmLOZlhOWtmhi0EwWcTCEsLvKQdOrH3k"
+    pipe = Pipeline(MaskingSession())
+    for route in (f"/v1/files/{token}/content", "/api/users/jane.doe%40example.com/profile"):
+        pipe.receipt(door="api", route=route, host="x", status=200, stats=MaskStats(), nbytes=1, ms=1,
+                     stream=False, app=None, note=None, session_id=None)
+    raw = (tmp_path / "receipts.jsonl").read_text()
+    assert token not in raw and "jane.doe" not in raw
+    routes = [r["route"] for r in receipts.tail(2)]
+    assert routes[0] == "/v1/files/[GITHUB_TOKEN]/content" and routes[1].startswith("/api/users/[EMAIL]")
+    # An ordinary route is written exactly as it was.
+    pipe.receipt(door="api", route="/v1/messages", host="x", status=200, stats=MaskStats(), nbytes=1, ms=1,
+                 stream=False, app=None, note=None, session_id=None)
+    assert receipts.tail(1)[0]["route"] == "/v1/messages"
+    # ...and no stand-in was minted for it: nothing was "sent".
+    assert pipe.session.registry_size == 0 and pipe.session.secrets_held == 0

@@ -72,13 +72,31 @@ def test_reveal_one_label_discloses_only_that_row(home):
     assert by_label["EMAIL_2"]["value"] is None
 
 
-def test_reveal_all_discloses_every_row_on_the_page(home):
+def test_reveal_all_is_gone_one_row_at_a_time_only(home):
+    # Security review 2026-11-11, delete list: one request used to hand over
+    # every real value on the page.
     s = MaskingSession()
     s.mask_text("email a@x.com", style=TOKENS)
     s.mask_text("email b@x.com", style=TOKENS)
     mappings.invalidate_cache()
     d = mappings.snapshot(s, reveal="all")
-    assert all(r["value"] for r in d["rows"])
+    assert all(r["value"] is None for r in d["rows"])
+    assert "revealAll" not in mappings.render(mappings.snapshot(s))
+
+
+def test_the_page_escapes_every_value_it_shows(home):
+    # Finding 18: rows were built by pasting values into HTML as they were.
+    page = mappings.render(mappings.snapshot(MaskingSession()))
+    assert "const esc = " in page
+    row = page[page.index("tr.innerHTML = `"):page.index("return tr;")]
+    import re
+    bare = [m for m in re.findall(r"\$\{([^}]*)\}", row) if not m.startswith("esc(") and "? 'yes' : 'no'" not in m]
+    assert bare == [], f"not escaped: {bare}"
+
+
+def test_the_token_is_never_put_in_an_address(home):
+    page = mappings.render(mappings.snapshot(MaskingSession()))
+    assert "?k=" not in page and "location.search" not in page and "authorization: 'Bearer '" in page
 
 
 def test_filter_by_kind(home):
@@ -167,9 +185,16 @@ def app_env(tmp_path, monkeypatch):
 @pytest.mark.anyio
 async def test_mappings_page_and_json_require_the_dashboard_token(app_env):
     session, client = app_env
-    for path in ("/omna/mappings", "/omna/mappings.json"):
-        r = await client.get(path)
-        assert r.status_code == 401, path
+    session.mask_text("email secret.person@x.com", style=TOKENS)
+    mappings.invalidate_cache()
+    r = await client.get("/omna/mappings.json")
+    assert r.status_code == 401
+    r = await client.get("/omna/mappings", headers={"authorization": "Bearer wrong"})
+    assert r.status_code == 401
+    # A browser opening the address gets the first page: no row, no value, no token.
+    r = await client.get("/omna/mappings")
+    assert r.status_code == 200 and "EMAIL_1" not in r.text and "secret.person" not in r.text
+    assert config.dashboard_token(create=True) not in r.text
 
 
 @pytest.mark.anyio
@@ -177,9 +202,9 @@ async def test_mappings_page_and_json_open_with_the_dashboard_token(app_env):
     session, client = app_env
     session.mask_text("email john.smith@acme.com", style=TOKENS)
     k = config.dashboard_token(create=True)
-    r = await client.get(f"/omna/mappings?k={k}")
+    r = await client.get("/omna/mappings", headers={"authorization": f"Bearer {k}"})
     assert r.status_code == 200 and "text/html" in r.headers["content-type"]
-    j = await client.get(f"/omna/mappings.json?k={k}")
+    j = await client.get("/omna/mappings.json", headers={"authorization": f"Bearer {k}"})
     assert j.status_code == 200
     body = j.json()
     assert body["total"] == 1 and body["rows"][0]["value"] is None
@@ -189,8 +214,8 @@ async def test_mappings_page_and_json_open_with_the_dashboard_token(app_env):
 async def test_mappings_routes_send_no_store_cache_headers(app_env):
     session, client = app_env
     k = config.dashboard_token(create=True)
-    for path in (f"/omna/mappings?k={k}", f"/omna/mappings.json?k={k}"):
-        r = await client.get(path)
+    for path in ("/omna/mappings", "/omna/mappings.json"):
+        r = await client.get(path, headers={"authorization": f"Bearer {k}"})
         assert "no-store" in r.headers.get("cache-control", "")
 
 
@@ -201,7 +226,7 @@ async def test_mappings_delete_requires_token_and_removes_the_row(app_env):
     r = await client.post("/omna/mappings/delete", json={"label": "EMAIL_1"})
     assert r.status_code == 401
     k = config.dashboard_token(create=True)
-    r = await client.post(f"/omna/mappings/delete?k={k}", json={"label": "EMAIL_1"})
+    r = await client.post("/omna/mappings/delete", headers={"authorization": f"Bearer {k}"}, json={"label": "EMAIL_1"})
     assert r.status_code == 200 and r.json()["ok"] is True
     assert session.registry_rows() == []
 
@@ -211,6 +236,6 @@ async def test_mappings_clear_wipes_everything(app_env):
     session, client = app_env
     session.mask_text("email john.smith@acme.com", style=TOKENS)
     k = config.dashboard_token(create=True)
-    r = await client.post(f"/omna/mappings/clear?k={k}")
+    r = await client.post("/omna/mappings/clear", headers={"authorization": f"Bearer {k}"})
     assert r.status_code == 200 and r.json()["ok"] is True
     assert session.registry_rows() == []

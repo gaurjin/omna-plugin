@@ -182,7 +182,8 @@ This page loads nothing from the internet. Refreshes every 3s.
 // Re-fetch and swap the body rather than reloading, so scroll position holds.
 setInterval(async () => {{
   try {{
-    const r = await fetch('/omna/dashboard', {{cache: 'no-store'}});
+    let k = ''; try {{ k = sessionStorage.getItem('omna_k') || ''; }} catch (e) {{}}
+    const r = await fetch('/omna/dashboard', {{cache: 'no-store', headers: {{authorization: 'Bearer ' + k}}}});
     if (!r.ok) return;
     const doc = new DOMParser().parseFromString(await r.text(), 'text/html');
     const next = doc.querySelector('.wrap');

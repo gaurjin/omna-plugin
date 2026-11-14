@@ -936,7 +936,7 @@ def cmd_dashboard(a) -> int:
         return 1
     # The dashboard is token-protected (#134). The token lives in a 0600 file,
     # so this command is the easy path and reading the file is the manual one.
-    url = f"{config.base_url(a.port)}/omna/dashboard?k={config.dashboard_token()}"
+    url = f"{config.base_url(a.port)}/omna/dashboard#k={config.dashboard_token()}"
     print(f"omna: opening the dashboard on {config.base_url(a.port)}")
     if not webbrowser.open(url):
         print(f"  (couldn't open a browser — paste this in yourself: {url})")
@@ -952,7 +952,7 @@ def cmd_mappings(a) -> int:
         print(f"omna: the proxy isn't running, so there's nothing to show yet.", file=sys.stderr)
         print("  start it with `omna start -d`, then run this again.", file=sys.stderr)
         return 1
-    url = f"{config.base_url(a.port)}/omna/mappings?k={config.dashboard_token()}"
+    url = f"{config.base_url(a.port)}/omna/mappings#k={config.dashboard_token()}"
     print(f"omna: opening the mappings review screen on {config.base_url(a.port)}")
     if not webbrowser.open(url):
         print(f"  (couldn't open a browser — paste this in yourself: {url})")
