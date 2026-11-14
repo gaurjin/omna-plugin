@@ -148,7 +148,7 @@ formatting, styles and images are kept). **On a Mac**, pictures and screenshots 
 holding a value blacked out, and PDFs have each page holding a value turned into a picture with
 black boxes (the text layer under it is removed; clean pages and clean PDFs are left untouched).
 Old `.doc` / `.xls`, PowerPoint, and — on Linux — pictures and PDFs go as they are, and
-`omna log` says `file NOT masked (...)`. Every size limit, and what happens above it, is listed in
+`omna log` says `NOT masked: ...`. Every size limit, and what happens above it, is listed in
 [Where masking stops](#where-masking-stops).
 
 It makes no difference how a file or text gets into the chat box — the + button, drag and drop,
@@ -165,7 +165,7 @@ omna mask --realistic "email jane.doe@example.com, key AKIAIOSFODNN7EXAMPLE, pho
 # email robert.jones@example.org, key [SECRET_AWS_KEY_N], phone 415-555-0128
 #  ...the key stays a label on purpose. See "Two masking styles" below.
 
-omna log         # one line per request: time, route, status, ms, what was masked (or "file NOT masked")
+omna log         # one line per request: time, route, status, ms, what was masked (and "NOT masked: ..." for anything Omna could not read)
 omna log --verify
 ```
 
@@ -173,7 +173,7 @@ omna log --verify
 
 | Command | What it does |
 |---|---|
-| `omna start [-d] [--no-restore-secrets]` | Run the proxy (foreground, or `-d` in the background). Smart masking follows `omna smart` (on by default). |
+| `omna start [-d] [--no-restore-secrets \| --restore-secrets]` | Run the proxy (foreground, or `-d` in the background). Smart masking follows `omna smart` (on by default). `--no-restore-secrets` is saved: it stays on after a restart until you pass `--restore-secrets`. |
 | `omna tool-calls [secrets\|personal] [on\|off]` | What goes back into an agent's tool calls — the commands it runs and the files it writes. Secrets: **off** by default (a poisoned page cannot get your key sent anywhere); personal data: on. Read live, no restart. |
 | `omna smart [on\|off]` | Smart masking: on-device models that also catch names and addresses written in sentences. **On by default.** Code only, no personal data? `omna smart off` saves a little memory and speed. With no argument, says which it is. |
 | `omna categories [on\|off NAME...]` | What Omna masks. `omna categories off PHONE` lets phone numbers through; `on` undoes it. Categories: `PERSON EMAIL PHONE ADDRESS GOV_ID FINANCIAL HEALTH EMPLOYMENT DIGITAL BIRTH`. **Secrets (API keys, passwords, tokens) are always masked and cannot be switched off.** |
@@ -188,12 +188,12 @@ omna log --verify
 | `omna mask [TEXT or -]` | Mask a string or stdin. |
 | `omna style [tokens\|realistic]` | How a masked value is written: a numbered token (the default, every door) or a realistic fake value (your browser only — refused for anything that writes files). Prints what changed and which doors it affects. |
 | `omna allow VALUE` | Never mask this exact value again (false positive). |
-| `omna forget` | Wipe the token registry and its encryption key (tokens renumber). |
+| `omna forget` | Wipe the token registry and its encryption key (personal-data tokens renumber; a secret's stand-in number is never reused, even after this). |
 | `omna crash [--show N] [--send] [--clear]` | What broke on this machine. Masked by Omna's own engine before it is written to disk, and **never sent anywhere** — `--send` opens a GitHub issue pre-filled with the report you just read, and you submit it or close the tab. |
 | `omna verify-model` | Re-hash both on-device smart models and compare every file to the hash this engine was built against. Does the full check every time, never a cached answer. |
-| `omna dashboard` | Open the live dashboard. It is protected by a local token (`~/.omna/dashboard.token`, owner-only), so another program on your machine cannot read your numbers over HTTP. |
+| `omna dashboard` | Open the live dashboard. It is protected by a local token (`~/.omna/dashboard.token`, owner-only), so another program on your machine cannot read your numbers over HTTP. The token is never part of the address the browser keeps: it rides after a `#` once, then in a header. |
 | `omna mappings` | Open the Mappings Review screen — every value Omna has masked, real values hidden until you click Reveal. Same token as the dashboard. |
-| `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, aider, Codex CLI, VS Code and Continue (each only if already installed), and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up every settings file it touches first and removes only its own keys on uninstall. |
+| `omna init [--project] [--no-system]` / `omna uninstall` | Wire / un-wire Claude Code, aider, Codex CLI, VS Code and Continue (each only if already installed), and (on a Mac, unless `--no-system`) the system proxy + certificate. `init` backs up every settings file it touches first and removes only its own keys on uninstall. `uninstall` also stops the proxy and deletes `~/.omna` and its keys on every platform; the program itself is removed with `brew uninstall omna` or `uv tool uninstall omna-plugin`. |
 | `omna tools` / `omna enable TOOL` / `omna disable TOOL` | Show, or turn on/off, which tools Omna covers. `enable`/`disable claude-code`, `aider`, `codex`, or `continue` also wire/unwire it (same as `init`/`uninstall`); other tool names (Cursor) just record the policy today. |
 | `omna apps` / `omna bypass app NAME` / `omna mask app NAME` | Show, or set, what happens to an app's traffic through the system proxy: `mask` (default) tokenises it like everything else, `bypass` tunnels it through untouched (still receipted, so you can see what wasn't masked). |
 | `omna capture app NAME` | Stage 3: deep-capture an app that ignores the system proxy, via its own signed network extension. |
@@ -224,10 +224,12 @@ The proxy relays the stream as it arrives (pings included), forwards `anthropic-
 
 | File (`~/.omna/`) | Contents | Permissions |
 |---|---|---|
-| `registry.json` | token → real value for reversible PII (needed to restore replies). Secrets are never in it; they live in the running proxy's memory only. | 0600 + **encrypted** |
+| `registry.json` | token → real value for reversible PII (needed to restore replies). Secrets are never in it; they live in the running proxy's memory only. For each secret it keeps only its stand-in **number** against a keyed fingerprint (never the secret), so the same secret gets the same stand-in after a restart. | 0600 + **encrypted** |
 | `receipts.jsonl` | one hash-chained record per request: route, status, ms, and what was found (kind, layer, what was done, a keyed fingerprint of each value). No values. Omna for Chrome's records join the same chain while the curl command runs, so `omna report` covers both. | 0600 + **encrypted** |
 | `fingerprint.key` | only on a machine without a Keychain: the secret that keys the value fingerprints (on a Mac it comes from the Keychain). | 0600 |
-| `ruleset.json` | your allowlist and custom patterns (`{"allowlist": [...], "custom_rules": [{"label": "CUSTOMER_ID", "pattern": "ACME-\\d{6}"}]}`). Created with loopback addresses (`127.0.0.1`, `0.0.0.0`, `::1`, `localhost`) allowlisted. | |
+| `ruleset.json` | your allowlist and custom patterns (`{"allowlist": [...], "custom_rules": [{"label": "CUSTOMER_ID", "pattern": "ACME-\\d{6}"}]}`). Created with loopback addresses (`127.0.0.1`, `0.0.0.0`, `::1`, `localhost`) allowlisted. An allowlist **pattern** never spares a secret (only an entry naming one exact value does, e.g. via `omna allow`), and a pattern that matches everything (`.+`) is refused and named in `omna status`. The file's fingerprint is on every receipt, so a change to what is not masked shows in `omna report`. | 0600 |
+| `secret_counters.json` | the highest stand-in number given to each kind of secret — numbers only, so a number never comes to mean a second secret, even after a restart or `omna forget`. | 0600 |
+| `paused.json` | only while masking is paused or stopped on purpose: since when, and when the pause ends by itself. | 0600 |
 | `proxy.log`, `omna.pid` | background-process housekeeping | |
 | `policy.json` | which tools/apps/hosts are covered, and — only if you ran `omna enroll` — an organisation name, a department name, and a random device id. | 0600 |
 | `crashes.jsonl` | the last 50 crashes: error type, message, stack frames (filenames only), versions. Masked by the engine before it is written, so a value that leaked into an error message is a token here too. Never sent. | 0600 |
@@ -389,8 +391,7 @@ or realistic — a value masked before the two-style feature existed says
 last, and to which provider and app.
 
 Real values are never on the page until you ask. Each row is hidden by
-default; click **reveal** to fetch just that one, or **reveal all** for every
-row on the current page. Nothing is embedded in the page source ahead of
+default; click **reveal** to fetch just that one. Nothing is embedded in the page source ahead of
 time, so a screenshot or a browser extension reading the DOM sees nothing
 until you click. Search, filter by entity type, sort any column, and
 paginate are all built in.
@@ -403,8 +404,7 @@ silently omitting them.
 realistic-style fake together, so a "deleted" value can't keep resolving
 through the fake path. The same real value gets a brand-new token or fake the
 next time it's seen; the deleted one never comes back. **Clear all** is the
-same as `omna forget` — it also resets your secret counters and your
-encryption key.
+same as `omna forget` — it also resets your encryption key.
 
 ## Reading browser replies: real values or labels
 
@@ -441,7 +441,7 @@ leave that reply alone — masking still happens either way.
 
 A request to an inference path (`/v1/messages`, `/v1/chat/completions`, `/v1/responses`, …) whose body cannot be
 parsed as JSON (compressed, malformed, wrong content type) is answered with `400 omna_refused` and never forwarded.
-Uploads (`/v1/files` and other non-JSON bodies) are masked like an attached file: text, code, Word and Excel are masked; a picture, PDF or audio goes as it is and the receipt says `file-not-masked:<kind>` or `passthrough`. An upload form that cannot be read is refused.
+Uploads (`/v1/files` and other non-JSON bodies) are masked like an attached file: text, code, Word and Excel are masked; a picture, PDF or audio goes as it is and the receipt says `file-not-masked:<kind>` or `passthrough:<why>`. A file's **name** is masked like its contents. Pictures and PDFs **inside an agent's request** (base64) are never changed, and the receipt names them the same way. An upload form that cannot be read is refused.
 If the proxy is not running, the tool's requests fail to connect: nothing leaves unmasked.
 If masking itself fails at the system door (an engine error, a full disk), the request is refused
 (`refused-error:<kind>` in the receipt), never forwarded as it was.
@@ -477,7 +477,7 @@ non-stop work so a long job does not overheat a fanless Mac; a 2-minute rest bri
 ## Where masking stops
 
 Every limit, and what happens past it. Omna never pretends a file was masked: anything it could not
-mask goes as it is and `omna log` says `file NOT masked (...)`.
+mask goes as it is, `omna log` says `NOT masked: ...`, and `omna report` counts it in its `SENT UNREAD` line: zip and other compressed files, unknown file types, a Word/Excel file that cannot be opened, a value left in a hidden place of a Word/Excel file (formula, sheet name, link, property), pictures inside a Word/Excel file, scanned PDF pages, a value in a PDF's properties or comments, and pictures or PDFs inside an agent's request.
 
 | What you send | Masked? | Limit | Past the limit |
 |---|---|---|---|
