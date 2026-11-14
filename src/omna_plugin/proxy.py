@@ -41,7 +41,7 @@ from .system_door import EXT_HEADER
 # What Omna for Chrome may record (#184): text it hid in a box, a file it
 # masked, a picture it blacked out — and a file it could NOT read, which went
 # as it is ("not_read", security review finding 7: always a report line).
-CHROME_RECORD_KINDS = ("typed", "file", "picture", "not_read")
+CHROME_RECORD_KINDS = ("typed", "file", "file_name", "picture", "not_read")
 _SITE_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")
 
 
@@ -564,6 +564,13 @@ def create_app(
                 body = masked
 
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _DROP_REQ}
+        if headers.get("content-disposition"):
+            # A raw upload names its file in its own headers (finding 12).
+            cd, cd_stats = pipeline.mask_content_disposition(headers["content-disposition"].encode("utf-8", "surrogateescape"), api_style.style)
+            if cd_stats.counts:
+                headers["content-disposition"] = cd.decode("utf-8", "surrogateescape")
+                from .pipeline import _merge as _merge_stats
+                _merge_stats(mstats, cd_stats)
         headers["host"] = upstream_host
         headers["accept-encoding"] = "identity"
 

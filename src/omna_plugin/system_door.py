@@ -318,6 +318,14 @@ class OmnaAddon:
             return
         if out.body is not None:
             flow.request.set_content(out.body)
+        # A raw upload names its file in its own headers (finding 12).
+        cd = flow.request.headers.get("content-disposition")
+        if cd:
+            with self.pipeline.session.sending_to(self._site(flow)):
+                new, st = self.pipeline.mask_content_disposition(cd.encode("utf-8", "surrogateescape"), flow.metadata.get("omna_style", TOKENS))
+            if st.counts:
+                flow.request.headers["content-disposition"] = new.decode("utf-8", "surrogateescape")
+                merge_stats(out.stats, st)
         for k, v in (out.headers or {}).items():
             if v is None:
                 flow.request.headers.pop(k, None)

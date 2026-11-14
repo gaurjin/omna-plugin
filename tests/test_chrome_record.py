@@ -108,3 +108,12 @@ async def test_a_file_chrome_could_not_read_is_recorded_as_sent_unread(c):
 async def test_a_not_read_record_carries_only_a_known_word(c, body):
     r = await c.post("/omna/record", auth=EXT, json=body)
     assert r.status_code == 400 and receipts.count() == 0
+
+
+@pytest.mark.anyio
+async def test_values_chrome_hid_in_a_file_name_are_recorded(c):
+    # Finding 12: Omna for Chrome masks a file's NAME; what it hid there is counted.
+    r = await c.post("/omna/record", auth=EXT, json={"kind": "file_name", "site": "claude.ai", "finds": FINDS})
+    assert r.status_code == 200
+    rec = receipts.tail(1)[0]
+    assert rec["kind"] == "file_name" and rec["masked"] == {"EMAIL": 2} and "note" not in rec

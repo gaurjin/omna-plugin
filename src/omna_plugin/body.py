@@ -156,10 +156,20 @@ def _skip_in(parent: dict, key: str, value) -> bool:
         # whole — /security-review 2026-11-12).
         return isinstance(value, str) and value.startswith("data:")
     if key == "name":
-        # A message's speaker is masked; a tool's or a function's name is an
-        # identifier the API matches against the tool list.
-        return "role" not in parent
+        # A tool's or a function's name is an identifier the API matches
+        # against the tool list: kept. Any other "name" is somebody's text —
+        # a message's speaker, a FILE's name, a project's — and is masked. It
+        # used to be kept everywhere but on a message, so "Jane Doe SSN
+        # 402-99-1234.txt" went out as it was (security review, finding 12).
+        return is_tool_call(parent) or any(k in parent for k in _TOOL_SHAPE_KEYS)
     return False
+
+
+# What sits next to a tool's or function's "name": OpenAI's ``function``
+# {"name", "arguments"}, Gemini's ``functionCall`` {"name", "args"} and
+# ``functionResponse`` {"name", "response"}, a definition met outside
+# ``tools`` {"name", "parameters" / "input_schema"}, a tool call {"name", "input"}.
+_TOOL_SHAPE_KEYS = frozenset({"arguments", "args", "response", "parameters", "input_schema", "input", "tool_use_id"})
 
 
 # A field a site names as one of its own identifiers ("requestId", "trace_id",

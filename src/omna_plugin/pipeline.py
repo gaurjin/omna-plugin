@@ -5,9 +5,10 @@ request. It owns nothing network-related."""
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
-from urllib.parse import parse_qsl, urlencode
+from urllib.parse import parse_qsl, quote, unquote, urlencode
 
 from . import office, pdf, picture, receipts
 from . import smart as smart_models
@@ -80,6 +81,25 @@ def _merge(total: MaskStats, st: MaskStats) -> None:
         total.finds = receipts.merge_finds(total.finds, st.finds)
 
 
+# A file's NAME is text the AI reads ("Jane Doe SSN 402-99-1234.txt"); it
+# went out as it was while the contents were masked (security review
+# 2026-11-11, finding 12). An "extension" is short and plain, so the type
+# survives: only the part before it is masked.
+_EXT_RE = re.compile(r"\.[A-Za-z0-9]{1,8}")
+# filename="…" (the browser's form: the bytes as they are, a quote as %22) and
+# filename*=UTF-8''… (RFC 5987, percent-encoded) in a Content-Disposition line.
+_CD_FILENAME_RE = re.compile(rb'(?i)(\bfilename=")((?:[^"\\\r\n]|\\.)*)(")')
+_CD_FILENAME_STAR_RE = re.compile(rb"(?i)(\bfilename\*=(?:utf-8|UTF-8)'[^']*')([^;\r\n]*)")
+
+
+def split_file_name(name: str) -> tuple[str, str]:
+    """("report.final", ".pdf"); (".env", ""); ("README", "")."""
+    dot = name.rfind(".")
+    if dot <= 0 or not _EXT_RE.fullmatch(name[dot:]):
+        return name, ""
+    return name[:dot], name[dot:]
+
+
 class Pipeline:
     def __init__(self, session: MaskingSession, tool_rule=None):
         self.session = session
@@ -119,6 +139,49 @@ class Pipeline:
                                     validated=r.validated, by_layer=dict(r.by_layer),
                                     mask_ms=int((time.time() - t0) * 1000), tokens=list(r.labels),
                                     finds=list(r.finds))
+
+    def mask_file_name(self, name: str, style: str = TOKENS) -> tuple[str, MaskStats]:
+        """A file's name with its values masked and its extension kept
+        (finding 12). Never a path separator or a control character."""
+        stem, ext = split_file_name(name)
+        if len(stem.strip()) < 3:
+            return name, MaskStats()
+        masked, stats = self.mask_text(stem, style)
+        if masked == stem:
+            return name, stats
+        masked = re.sub(r"[/\\\x00-\x1f]", "_", masked).strip() or "file"
+        return masked + ext, stats
+
+    def mask_content_disposition(self, value: bytes, style: str = TOKENS) -> tuple[bytes, MaskStats]:
+        """A ``Content-Disposition`` line (of a form part, or of a raw
+        upload's own headers) with the file name in it masked. Anything that
+        is not readable as a name is left exactly as it was."""
+        total = MaskStats()
+
+        def plain(m: re.Match) -> bytes:
+            try:
+                name = m[2].decode("utf-8").replace("%22", '"')
+            except UnicodeDecodeError:
+                return m[0]
+            masked, st = self.mask_file_name(name, style)
+            if masked == name:
+                return m[0]
+            _merge(total, st)
+            return m[1] + masked.replace('"', "%22").replace("\r", "").replace("\n", "").encode("utf-8") + m[3]
+
+        def star(m: re.Match) -> bytes:
+            try:
+                name = unquote(m[2].decode("ascii"), errors="strict")
+            except (UnicodeDecodeError, ValueError):
+                return m[0]
+            masked, st = self.mask_file_name(name, style)
+            if masked == name:
+                return m[0]
+            _merge(total, st)
+            return m[1] + quote(masked, safe="").encode("ascii")
+
+        out = _CD_FILENAME_STAR_RE.sub(star, _CD_FILENAME_RE.sub(plain, value))
+        return out, total
 
     def mask_bytes(self, body: bytes, content_type: str, style: str = TOKENS, careful: bool = False) -> MaskedBody:
         """Mask a request body by content type. Never forwarded unmasked.
@@ -308,9 +371,14 @@ class Pipeline:
                     return MaskedBody(None, MaskStats(), refused="unparseable")
                 part_ct = next((ln.split(b":", 1)[1].decode("latin-1").strip() for ln in head.split(b"\r\n")
                                 if ln.lower().startswith(b"content-type:")), "")
-                if files_only and b"filename=" not in head.lower():
+                is_file = b"filename" in head.lower()
+                if files_only and not is_file:
                     out.append(chunk)
                     continue
+                if is_file:
+                    # The file's NAME is in this part's own header (finding 12).
+                    head, st = self.mask_content_disposition(head, style)
+                    _merge(total, st)
                 masked, st = self.mask_file(data, part_ct, style)
                 _merge(total, st)
                 out.append(head + sep + masked)
