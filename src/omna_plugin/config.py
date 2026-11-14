@@ -47,6 +47,13 @@ def registry_path() -> Path:
     return home() / "registry.json"
 
 
+def secret_counters_path() -> Path:
+    """The highest stand-in number given to each kind of secret
+    (``{"GITHUB_TOKEN": 3}``) — numbers only. Its own file so ``omna forget``
+    never resets it: a number must not come to mean a second secret."""
+    return home() / "secret_counters.json"
+
+
 def ruleset_path() -> Path:
     return home() / "ruleset.json"
 

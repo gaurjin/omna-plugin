@@ -35,6 +35,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -134,6 +135,13 @@ class MaskingSession:
         self._secret_value_to_token: dict[str, str] = {}
         self._secret_token_to_value: dict[str, str] = {}
         self._secret_counters: dict[str, int] = {}
+        # Which NUMBER each secret has: "KIND\x00<keyed fingerprint>" -> n.
+        # Saved with the registry (never the secret itself), so a secret keeps
+        # its stand-in across a restart and a number never comes to mean a
+        # different secret (security review 2026-11-11, finding 10 — see
+        # ``_secret_token``).
+        self._secret_numbers: dict[str, int] = {}
+        self._secret_numbers_changed = False
         # Realistic style: fake value <-> real value, persisted with the tokens
         # (same file, same encryption) because a fake must survive a restart or
         # the provider's prompt cache is thrown away on every restart.
@@ -266,6 +274,16 @@ class MaskingSession:
             for site in saved_sites.get(key, [EVERYWHERE]):
                 if site not in have:
                     have.append(site)
+        # Secret NUMBERS (finding 10): memory wins on a clash, and a number
+        # already used here is never taken for another fingerprint.
+        saved_numbers = data.get("secret_numbers")
+        for fk, n in (saved_numbers.items() if isinstance(saved_numbers, dict) else ()):
+            kind = str(fk).partition("\x00")[0]
+            if (isinstance(n, int) and not isinstance(n, bool) and n > 0 and fk not in self._secret_numbers
+                    and not any(k.startswith(kind + "\x00") and v == n for k, v in self._secret_numbers.items())):
+                self._secret_numbers[fk] = n
+                if n > self._secret_counters.get(kind, 0):
+                    self._secret_counters[kind] = n
         if not self._fake_salt:
             try:
                 self._fake_salt = bytes.fromhex(str(data.get("fake_salt", "")))
@@ -378,7 +396,8 @@ class MaskingSession:
     def _write_registry(self) -> None:
         payload = {"tokens": self._token_to_value, "counters": self._counters,
                    "fakes": self._value_to_fake, "fake_salt": self._fake_salt.hex(),
-                   "meta": self._meta, "sites": self._sites}
+                   "meta": self._meta, "sites": self._sites,
+                   "secret_numbers": self._secret_numbers}
         body = vault.seal(payload, self._key) if self._key else json.dumps(payload)
         tmp = self._registry_file.with_suffix(".json.tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -451,16 +470,63 @@ class MaskingSession:
         return None
 
     def _secret_token(self, kind: str, value: str) -> str:
+        """The stand-in for a secret. The secret itself stays in memory only.
+
+        Its NUMBER is remembered on disk, against a keyed fingerprint of the
+        secret (never the secret): numbering used to restart from 1 with every
+        restart, and every settings change restarts the daemon — so
+        ``[SECRET_GITHUB_TOKEN_1]`` in a conversation from before the restart
+        came to mean whichever token was seen first after it, and the
+        production token was handed over where the staging one was meant
+        (security review 2026-11-11, finding 10). Now the same secret gets
+        the same number after a restart, and a number is never given to a
+        second secret — not even after ``omna forget`` (the counters have a
+        file of their own that forget leaves alone)."""
         key = f"{kind}\x00{value}"
         tok = self._secret_value_to_token.get(key)
         if tok:
             return tok
-        n = self._secret_counters.get(kind, 0) + 1
-        self._secret_counters[kind] = n
+        fp_key = f"{kind}\x00{_secret_fingerprint(value)}"
+        n = self._secret_numbers.get(fp_key)
+        if n is None:
+            n = self._next_secret_number(kind)
+            self._secret_numbers[fp_key] = n
+            self._secret_numbers_changed = True
         tok = f"[{SECRET_PREFIX}{kind}_{n}]"
         self._secret_value_to_token[key] = tok
         self._secret_token_to_value[tok] = value
         return tok
+
+    def _next_secret_number(self, kind: str) -> int:
+        """The next unused number for this kind of secret — one past the
+        highest ever given out by any program sharing this folder, read from
+        and written to ``secret_counters.json`` under the registry's lock.
+        Numbers only (``{"GITHUB_TOKEN": 3}``): nothing about any secret."""
+        path = config.secret_counters_path()
+        with self._file_lock():
+            saved: dict = {}
+            try:
+                got = json.loads(path.read_text())
+                saved = got if isinstance(got, dict) else {}
+            except (OSError, ValueError):
+                saved = {}
+            for k, v in saved.items():
+                if isinstance(v, int) and not isinstance(v, bool) and v > self._secret_counters.get(k, 0):
+                    self._secret_counters[k] = v
+            # Also above every number the registry remembers: the counters
+            # file may be missing (deleted by hand, restored from a backup).
+            known = max((num for fk, num in self._secret_numbers.items() if fk.startswith(kind + "\x00")), default=0)
+            n = max(self._secret_counters.get(kind, 0), known) + 1
+            self._secret_counters[kind] = n
+            try:
+                tmp = path.with_suffix(".json.tmp")
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    f.write(json.dumps({**saved, **self._secret_counters}, sort_keys=True))
+                os.replace(tmp, path)
+            except OSError:
+                pass   # cannot write: numbering still never repeats within this run
+        return n
 
     def forget(self) -> None:
         """Wipe the registries, the cache and the key (``omna forget``).
@@ -483,7 +549,9 @@ class MaskingSession:
         self._counters.clear()
         self._secret_value_to_token.clear()
         self._secret_token_to_value.clear()
-        self._secret_counters.clear()
+        # NOT the secret counters: after a forget the next secret must still
+        # get a number no earlier secret ever had (finding 10).
+        self._secret_numbers.clear()
         self._value_to_fake.clear()
         self._fake_to_value.clear()
         self._fake_prefixes.clear()
@@ -633,6 +701,7 @@ class MaskingSession:
         labels: list[str] = []
         pos = 0
         changed_before = (len(self._token_to_value), len(self._fake_to_value), self._fake_salt)
+        self._secret_numbers_changed = False
         meta_touched = False
         for sp in sorted(spans, key=lambda s: (s["start"], -s["end"])):
             start, end = sp["start"], sp["end"]
@@ -678,7 +747,7 @@ class MaskingSession:
             pos = end
         out.append(text[pos:])
         now = (len(self._token_to_value), len(self._fake_to_value), self._fake_salt)
-        return "".join(out), labels, now != changed_before or meta_touched
+        return "".join(out), labels, now != changed_before or meta_touched or self._secret_numbers_changed
 
     def mask_text(self, text: str, style: str = TOKENS, only: frozenset[str] | None = None) -> MaskResult:
         """``only``: mask just secrets and these entities (``{"EMAIL"}`` for a
@@ -980,6 +1049,15 @@ class ScopedRestore:
 
     def hold_from(self, buf: str) -> int:
         return self._session.hold_from(buf)
+
+
+def _secret_fingerprint(value: str) -> str:
+    """A keyed fingerprint of a secret (HMAC-SHA256 with this computer's own
+    fingerprint key, the one receipts use): tells "the same secret again"
+    without the secret being anywhere on disk. Without the key it says
+    nothing about the secret, and it differs on every computer."""
+    return hmac.new(receipts.fingerprint_key(), b"omna-secret-number-v1\x00" + value.encode("utf-8", "surrogatepass"),
+                    hashlib.sha256).hexdigest()[:32]
 
 
 def _spans_in_chars(text: str, spans: list[dict]) -> list[dict]:
