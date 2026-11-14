@@ -301,3 +301,54 @@ def test_plain_text_behind_a_data_address_is_masked(pipe):
     url = masked["messages"][0]["content"][0]["image_url"]["url"]
     assert url.startswith("data:text/plain,key ") and TOKEN not in url and EMAIL not in url
     assert st.not_masked == ""
+
+
+# --- found by /security-review, 2026-11-14: the label is never trusted -------
+@pytest.mark.parametrize("text", [
+    f"data:a/b,AWS key {TOKEN} and mail {EMAIL}",
+    f"data:image/svg+xml,<svg><text>{EMAIL} {TOKEN}</text></svg>",
+    'data:application/json,{"email":"' + EMAIL + '","key":"' + TOKEN + '"}',
+    f"data:text/plain;base64,this is not base64 at all: {TOKEN} {EMAIL}",
+    f"data:image/png;base64,{TOKEN} {EMAIL} !!",
+    f"data:a/b,\nline one\n{TOKEN}\n{EMAIL}\n" * 3,
+])
+def test_readable_text_behind_a_data_prefix_is_masked_wherever_it_sits(pipe, text):
+    for body in ({"model": "m", "messages": [{"role": "user", "content": text}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [{"type": "text", "text": text}]}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": text}]}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": text}}]}]}):
+        sent = json.dumps(pipe.mask_json(body)[0])
+        assert TOKEN not in sent and EMAIL not in sent, body
+
+
+def test_text_packed_as_base64_under_a_picture_label_is_masked(pipe):
+    b64 = base64.b64encode(f"key {TOKEN} mail {EMAIL} ".encode() * 20).decode()      # long: a "blob"
+    for body in ({"model": "m", "messages": [{"role": "user", "content": f"data:image/png;base64,{b64}"}]},
+                 {"model": "m", "messages": [{"role": "user", "content": b64}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [
+                     {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64}}]}]}):
+        masked, st = pipe.mask_json(body)
+        sent = json.dumps(masked)
+        assert b64 not in sent and st.secrets >= 1
+        import re
+        runs = re.findall(r"[A-Za-z0-9+/=]{200,}", sent)
+        assert runs, "it is still sent as base64"
+        for run in runs:
+            decoded = base64.b64decode(run)
+            assert TOKEN.encode() not in decoded and EMAIL.encode() not in decoded
+
+
+def test_text_labelled_as_bytes_under_a_media_key_is_masked(pipe):
+    masked, _ = pipe.mask_json({"model": "m", "messages": [{"role": "user", "content": [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": f"not bytes: {TOKEN} {EMAIL}"}}]}]})
+    assert TOKEN not in json.dumps(masked) and EMAIL not in json.dumps(masked)
+
+
+def test_real_bytes_and_clean_text_stay_byte_identical(pipe):
+    clean = base64.b64encode(b"nothing private in this text file at all\n" * 10).decode()
+    body = {"model": "m", "messages": [{"role": "user", "content": [
+        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": PNG}},
+        {"type": "document", "source": {"type": "base64", "media_type": "text/plain", "data": clean}},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64," + PNG}}]}]}
+    masked, st = pipe.mask_json(body)
+    assert masked == body and st.not_masked == "image"

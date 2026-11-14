@@ -43,7 +43,14 @@ def test_text_and_cache_key():
     assert GH not in s and EMAIL not in s, s
 
 PNG = "data:image/png;base64," + base64.b64encode(b"\x89PNG" + (f"{GH} {EMAIL} ".encode() * 20)).decode()
-SHORT = "data:image/png;base64,iVBORw0KGgo=" + "/jane.doe@acme.com"
+SHORT = "data:image/png;base64,iVBORw0KGgo="
+# Not base64 at all behind a picture label ("@" and "." are never base64):
+# readable text, so it is masked — the label is not trusted (2026-11-14).
+NOT_A_PICTURE = "data:image/png;base64,iVBORw0KGgo=" + "/jane.doe@acme.com"
+
+def test_text_behind_a_picture_label_is_masked():
+    s = masked({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": NOT_A_PICTURE}}]}]})
+    assert "jane.doe@acme.com" not in s
 
 @pytest.mark.parametrize("pic", [PNG, SHORT])
 def test_data_pictures_identical(pic):

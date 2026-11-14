@@ -119,29 +119,51 @@ def _b64_text(data: str) -> str | None:
         return None
 
 
+_B64_CHARS_RE = re.compile(r"[A-Za-z0-9+/=\s]*")
+
+
+def _masked_b64(prefix: str, payload: str, visit) -> str | None:
+    """``payload`` is base64 of plain text: the same text masked and packed
+    again — or exactly as it was when nothing in it needed masking. None
+    when it is not base64 of text (a picture, a PDF: real bytes)."""
+    text = _b64_text(payload)
+    if text is None:
+        return None
+    masked = visit(text)
+    if masked == text:
+        return prefix + payload
+    return prefix + base64.b64encode(masked.encode("utf-8")).decode("ascii")
+
+
 def _media(parent: dict | None, key: str | None, value: str, visit):
     """Bytes carried inside a request (a picture, a PDF, a file as base64 or a
     ``data:`` address). Returns (replacement, receipt word or None).
 
-    A TEXT file is text: decoded, masked like any other text, packed again
-    (it used to go out as it was — security review 2026-11-11, finding 7).
-    Anything else stays byte-identical, and the receipt names it."""
+    Only REAL bytes are left alone: base64 that does not decode to text. The
+    label is never trusted — a ``data:`` prefix or a media type in front of
+    readable text is still readable text, and it is masked:
+
+    * base64 of plain text (whatever type it claims) is decoded, masked and
+      packed again; byte-identical when nothing was found;
+    * anything after a ``data:…,`` prefix that is not base64 at all is masked
+      as the text it is.
+
+    (The first version of this function believed the prefix: any string that
+    merely STARTED with ``data:a/b,`` went out unmasked, which the released
+    version did not do — found by /security-review, 2026-11-14.)"""
     m = _DATA_URL_RE.match(value)
     if m:
-        media, b64, payload = (m[1] or "text/plain"), bool(m[3]), value[m.end():]
-        if media.lower().startswith("text/") and b64:
-            text = _b64_text(payload)
-            if text is not None:
-                return value[:m.end()] + base64.b64encode(visit(text).encode("utf-8")).decode("ascii"), None
-        if media.lower().startswith("text/") and not b64:
-            # "data:text/plain,the text itself": plain text behind a prefix.
-            return value[:m.end()] + visit(payload), None
-        return value, _media_word(media)
+        media, b64, prefix, payload = (m[1] or "text/plain"), bool(m[3]), value[:m.end()], value[m.end():]
+        if not b64 or not _B64_CHARS_RE.fullmatch(payload):
+            return prefix + visit(payload), None
+        out = _masked_b64(prefix, payload, visit)
+        return (out, None) if out is not None else (value, _media_word(media))
     media = str((parent or {}).get("media_type") or (parent or {}).get("mime_type") or "")
-    if media.lower().startswith("text/"):
-        text = _b64_text(value)
-        if text is not None:
-            return base64.b64encode(visit(text).encode("utf-8")).decode("ascii"), None
+    if not _B64_CHARS_RE.fullmatch(value) and not _is_blob(value):
+        return visit(value), None             # labelled as bytes, but it is readable text
+    out = _masked_b64("", value, visit)
+    if out is not None:
+        return out, None
     if not media and key in ("image_url", "b64_json"):
         media = "image/"
     return value, _media_word(media)
