@@ -25,14 +25,23 @@ def revert_plan(*, services: list[str], cert: Path) -> list[str]:
 
 
 def _run_batch(lines: list[str], why: str) -> int:
-    script = config.home() / "setup.sh"
-    fd = os.open(script, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o700)
-    with os.fdopen(fd, "w") as f:
-        f.write("set -e\n" + "\n".join(lines) + "\n")
+    """Run the printed commands as administrator, in one password prompt.
+
+    The commands go to ``sudo sh -s`` on its standard input. They used to be
+    written to ``~/.omna/setup.sh`` first, and that file stayed behind after
+    setup: a script that had run as administrator, left where any program of
+    this user could read it — or rewrite it before the next run (security
+    review 2026-11-11, delete list). ``sudo`` asks for the password on the
+    terminal itself, not on standard input, so nothing else changes. A file
+    left by an older version is removed."""
+    try:
+        (config.home() / "setup.sh").unlink()
+    except OSError:
+        pass
     print(f"omna: {why} — these {len(lines)} commands will run as administrator (one password prompt):")
     for l in lines:
         print("      " + l)
-    return subprocess.run(["sudo", "sh", str(script)], check=False).returncode
+    return subprocess.run(["sudo", "sh", "-s"], input="set -e\n" + "\n".join(lines) + "\n", text=True, check=False).returncode
 
 
 def apply(api_port: int = config.DEFAULT_PORT) -> dict:

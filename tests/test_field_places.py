@@ -152,3 +152,35 @@ def test_embedded_picture_bytes_stay_byte_identical(session):
         {"type": "image_url", "image_url": {"url": pic}}, {"type": "image_url", "image_url": pic}]}]}
     masked, _, _ = mask_body(session, body)
     assert masked == body
+
+
+# --- security review 2026-11-11, delete list: the last of "skip by name" ----
+def test_text_under_an_identifier_name_is_masked_on_a_chat_website(tmp_path, monkeypatch):
+    from omna_plugin.engine import MaskingSession
+    from omna_plugin.pipeline import Pipeline
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    pipe = Pipeline(MaskingSession())
+    token = "ghp_" + "fgYFNmLOZlhOWtmhi0EwWcTCEsLvKQdOrH3k"
+    text = f"my email is priya.raman@northwind-traders.co, token {token}"
+    for key in ("id", "type", "model", "role", "file_id", "media_type"):
+        masked, _ = pipe.mask_json({key: text, "note": "x"})
+        assert "priya.raman" not in masked[key] and token not in masked[key], key
+    masked, _ = pipe.mask_json({"messages": [{"role": "user", "id": "jane.doe@example.com", "content": "hi"}]})
+    assert masked["messages"][0]["id"] != "jane.doe@example.com"
+
+
+def test_real_identifiers_and_byte_exact_fields_are_still_never_touched(tmp_path, monkeypatch):
+    from omna_plugin import body
+    from omna_plugin.engine import MaskingSession
+    from omna_plugin.pipeline import Pipeline
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    pipe = Pipeline(MaskingSession())
+    req = {"model": "claude-sonnet-5", "messages": [
+        {"role": "assistant", "content": [
+            {"type": "thinking", "thinking": "write to jane.doe@example.com now", "signature": "c2ln bmF0dXJl jane.doe@example.com"},
+            {"type": "tool_use", "id": "toolu_01A09q90qw90lq917835lq9", "name": "Write", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_01A09q90qw90lq917835lq9", "content": "ok"}]}]}
+    assert pipe.mask_json(req)[0] == req
+    assert not hasattr(body, "SKIP_KEYS")

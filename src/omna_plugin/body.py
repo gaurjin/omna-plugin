@@ -58,8 +58,19 @@ TOOLDEF_KEEP = frozenset({
 # a schema's "properties", "name" or "id" is a property whose description,
 # enum and default are prose to mask (found by /security-review, 2026-11-12).
 # "pattern" is not kept: a literal in it is masked like any other text.
-# Kept for anything that imported it: every name skipped somewhere.
-SKIP_KEYS = TOP_KEYS | STRUCT_KEYS
+# (``SKIP_KEYS`` — "skip these names anywhere" — is gone: security review
+# 2026-11-11, delete list.)
+# The STRUCT_KEYS that hold an IDENTIFIER (one word, no spaces). On an AI
+# company's API that is all they ever hold. On a chat website the same names
+# can hold a person's text ({"type": "my email is …"}), and it went out as it
+# was. So an identifier key is skipped only while its value still looks like
+# an identifier: text with a space in it, or an "@", is masked like any other.
+_IDENT_KEYS = frozenset({"id", "model", "type", "role", "tool_use_id", "tool_call_id", "call_id", "media_type",
+                         "stop_reason", "stop_sequence", "file_id"})
+
+
+def _looks_like_text(value) -> bool:
+    return isinstance(value, str) and ("@" in value or any(ch.isspace() for ch in value.strip()))
 
 _MSG, _DATA, _TOOLDEF = "msg", "data", "tooldef"
 # A field whose NAME says its value is a credential (finding 4).
@@ -194,7 +205,9 @@ def _skip(parent: dict, key: str, value, mode: str, depth: int) -> bool:
     if mode == _TOOLDEF:
         return key in TOOLDEF_KEEP and not isinstance(value, dict)
     if depth == 0 and key in TOP_KEYS:
-        return True
+        return not (key == "model" and _looks_like_text(value))
+    if key in _IDENT_KEYS:
+        return not _looks_like_text(value)
     return key in STRUCT_KEYS or _skip_in(parent, key, value)
 
 

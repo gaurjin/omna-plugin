@@ -395,3 +395,21 @@ def test_revert_removes_the_registry_key_from_the_keychain(monkeypatch, tmp_path
 
     assert res["key_removed"] is True
     assert store == {}
+
+
+def test_the_admin_batch_leaves_no_script_behind(tmp_path, monkeypatch, capsys):
+    # Security review 2026-11-11, delete list: setup.sh stayed in ~/.omna
+    # after setup — a script that had run as administrator.
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    (tmp_path / "setup.sh").write_text("left by an older version\n")
+    ran = []
+
+    def fake_run(cmd, **kw):
+        ran.append((cmd, kw.get("input")))
+        return type("R", (), {"returncode": 0})()
+
+    monkeypatch.setattr(setup.subprocess, "run", fake_run)
+    assert setup._run_batch(["echo one", "echo two"], "test") == 0
+    assert ran == [(["sudo", "sh", "-s"], "set -e\necho one\necho two\n")]
+    assert not (tmp_path / "setup.sh").exists()
+    assert "echo one" in capsys.readouterr()[0]          # still printed before it runs
