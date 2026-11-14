@@ -166,6 +166,12 @@ def _packed(prefix: str, payload: str, media: str, visit):
             if seen != payload:
                 return prefix + seen, None
         return prefix + payload, _media_word(media)
+    if len(payload) <= _SHORT_PAYLOAD:
+        # A plain value can be valid base64 of "text" by accident: the engine
+        # sees the raw characters first (hardening from /security-review).
+        seen = visit(payload)
+        if seen != payload:
+            return prefix + seen, None
     masked = visit(text)
     if masked == text:
         return prefix + payload, None
@@ -184,6 +190,8 @@ def _text_in_data_url(value: str, visit) -> str | None:
     text = _as_text(raw) if raw is not None else None
     if text is None:
         return None
+    if len(value) <= _SHORT_PAYLOAD and visit(value) != value:
+        return None        # the engine finds a value in the raw string: mask it as plain text
     masked = visit(text)
     prefix = _data_prefix(m, visit)
     if masked == text:
