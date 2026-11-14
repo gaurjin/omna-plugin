@@ -83,3 +83,28 @@ async def test_the_report_counts_chrome_records_and_their_distinct_values(c):
     assert rep["requests"] == 2
     assert "chrome" in str(rep)
     assert rep["distinct_secrets"] == 1 and rep["distinct_pii"] == 1, rep
+
+
+@pytest.mark.anyio
+async def test_a_file_chrome_could_not_read_is_recorded_as_sent_unread(c):
+    # Security review 2026-11-11, finding 7: a zip Omna for Chrome released as
+    # it is used to leave no trace; now it lands in the same report line as
+    # the curl command's own unread files.
+    r = await c.post("/omna/record", auth=EXT, json={"kind": "not_read", "site": "claude.ai", "finds": [], "not_read": "zip"})
+    assert r.status_code == 200
+    rec = receipts.tail(1)[0]
+    assert rec["kind"] == "not_read" and rec["note"] == "file-not-masked:zip" and rec["product"] == "chrome"
+    from omna_plugin import report
+    assert report.build(7)["not_masked"] == {"zip": 1}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("body", [
+    {"kind": "not_read", "site": "claude.ai", "finds": []},                                          # no word
+    {"kind": "not_read", "site": "claude.ai", "finds": [], "not_read": "Jane Doe SSN 402-99-1234"},   # free text
+    {"kind": "not_read", "site": "claude.ai", "finds": [], "not_read": 7},
+    {"kind": "typed", "site": "claude.ai", "finds": [], "not_read": "zip"},                           # word on another kind
+])
+async def test_a_not_read_record_carries_only_a_known_word(c, body):
+    r = await c.post("/omna/record", auth=EXT, json=body)
+    assert r.status_code == 400 and receipts.count() == 0

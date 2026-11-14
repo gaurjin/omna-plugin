@@ -33,6 +33,10 @@ class MaskStats:
     # A file the curl command recognised but cannot mask in place (PDF, old
     # binary Word/Excel, an image, PowerPoint): it went through as it is, and
     # the receipt says so (MASTER #160 step 3, owner decision "A").
+    # Since the 2026-11-11 security review (finding 7) EVERYTHING Omna could
+    # not read is named here, comma-joined ("zip", "unknown", "office-hidden",
+    # "image" inside an agent's request …): never blocked, always on the
+    # report (owner decision). ``add_not_masked`` is the one way to add.
     not_masked: str = ""
     # The masking engine's (omna-pii-mask) L6 events, grouped
     # (receipts.finds_of): the record's totals are worked out from these (#184).
@@ -46,6 +50,21 @@ class MaskedBody:
     refused: str | None = None   # "unparseable" | "mask-failed" | None
 
 
+# The kinds that are a whole recognisable file Omna never masks in place. A
+# PIECE of a file sent in parts may pass only when it is one of these
+# (adapters/uploads._piece); "unknown" bytes in a piece are still refused.
+WHOLE_FILE_KINDS = frozenset({"pdf", "old-office", "image", "pptx"})
+
+
+def add_not_masked(stats: MaskStats, *kinds: str) -> None:
+    """Name something that went out unread, once each, in first-seen order."""
+    have = [k for k in stats.not_masked.split(",") if k]
+    for k in kinds:
+        if k and k not in have:
+            have.append(k)
+    stats.not_masked = ",".join(have)
+
+
 def _merge(total: MaskStats, st: MaskStats) -> None:
     for k, v in st.counts.items():
         total.counts[k] = total.counts.get(k, 0) + v
@@ -56,7 +75,7 @@ def _merge(total: MaskStats, st: MaskStats) -> None:
     for k, v in st.by_layer.items():
         total.by_layer[k] = total.by_layer.get(k, 0) + v
     total.tokens = sorted(set(total.tokens) | set(st.tokens))
-    total.not_masked = total.not_masked or st.not_masked
+    add_not_masked(total, *st.not_masked.split(","))
     if st.finds:
         total.finds = receipts.merge_finds(total.finds, st.finds)
 
@@ -79,6 +98,7 @@ class Pipeline:
             pii=c.pop("_pii", 0),
             validated=c.pop("_validated", 0),
             finds=c.pop("_finds", []),
+            not_masked=",".join(c.pop("_not_read", [])),
             by_layer=by_layer,
             counts=c,
             mask_ms=int((time.time() - t0) * 1000),
@@ -182,7 +202,8 @@ class Pipeline:
         return self._mask_file(data, content_type, style, same_size=True)
 
     def _mask_file(self, data: bytes, content_type: str, style: str, same_size: bool) -> tuple[bytes | None, MaskStats]:
-        if office.kind(data) is not None:
+        doc = office.kind(data)
+        if doc is not None:
             total = MaskStats()
 
             def mask(text: str) -> str:
@@ -194,8 +215,12 @@ class Pipeline:
             except office.SizeChanged:
                 return None, total
             if out is not None:
+                # Places that are not masked (formulas, sheet names, links,
+                # pictures inside …): the file still goes, the receipt says so.
+                add_not_masked(total, *office.not_read(out, self._detect))
                 return out, total
-            return data, MaskStats()
+            # Locked with a password, damaged, or too big to open.
+            return data, MaskStats(not_masked=doc)
         if office.is_rtf(data):
             total = MaskStats()
 
@@ -231,9 +256,11 @@ class Pipeline:
             if done is not None:
                 out, spans = done
                 st = picture.stats_of(spans)
+                # A painted page loses its comments and the file its
+                # properties; pages left as they were keep theirs.
                 return out, MaskStats(counts=st["counts"], secrets=st["secrets"], pii=st["pii"],
                                       validated=st["validated"], by_layer=st["by_layer"],
-                                      finds=st["finds"])
+                                      finds=st["finds"], not_masked=",".join(pdf.not_read(data, out, self._detect)))
         if kind:
             return data, MaskStats(not_masked=kind)
         ct = (content_type or "").lower()
@@ -241,12 +268,18 @@ class Pipeline:
             out = self.mask_bytes(data, ct, style)
             if out.refused is None:
                 return out.body, out.stats
-        if b"\x00" in data:
+        if not data:
             return data, MaskStats()
+        if data.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+            return data, MaskStats(not_masked="zip")       # a zip, or an Office file too damaged to open
+        if data.startswith((b"\x1f\x8b", b"BZh", b"\xfd7zXZ\x00", b"7z\xbc\xaf\x27\x1c", b"Rar!", b"\x28\xb5\x2f\xfd")):
+            return data, MaskStats(not_masked="compressed")
+        if b"\x00" in data:
+            return data, MaskStats(not_masked="unknown")   # not text: nothing Omna can read
         try:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
-            return data, MaskStats()
+            return data, MaskStats(not_masked="unknown")   # text in another encoding, or binary
         masked, stats = self.mask_text(text, style)
         return masked.encode("utf-8"), stats
 

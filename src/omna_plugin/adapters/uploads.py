@@ -5,7 +5,7 @@ import json
 import re
 from urllib.parse import parse_qs, urlsplit
 
-from ..pipeline import MaskStats, Pipeline
+from ..pipeline import WHOLE_FILE_KINDS, MaskStats, Pipeline
 from ..style import TOKENS
 from .base import MaskOutcome, RequestView, ResponseMode
 
@@ -29,7 +29,7 @@ def _piece(stats: MaskStats) -> MaskOutcome:
     review, MASTER #177). Now it is refused — unless it is recognisably a kind
     Omna never masks anyway (a picture, a PDF), which goes as a whole file of
     that kind would, marked "file NOT masked" in the receipt."""
-    if stats.not_masked:
+    if stats.not_masked and set(stats.not_masked.split(",")) <= WHOLE_FILE_KINDS:
         return MaskOutcome(None, stats)
     return MaskOutcome(None, stats, refused="unmaskable-chunk")
 

@@ -42,6 +42,11 @@ class GenericAdapter:
                 out = pipeline.mask_bytes(req.body, req.content_type, style, careful=True)
                 if out.refused is None:
                     return MaskOutcome(out.body, out.stats)
+                if out.refused == "mask-failed":
+                    # The masking engine failed on it. Owner decision (finding
+                    # 7): not a prompt, so never blocked — but the receipt
+                    # must say it went out unmasked, and why.
+                    return MaskOutcome(None, MaskStats(not_masked="engine-error"), passthrough=True)
             return MaskOutcome(None, MaskStats(), passthrough=True)
         if not req.body:
             return MaskOutcome(None, MaskStats(), passthrough=True)

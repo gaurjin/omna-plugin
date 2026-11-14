@@ -329,3 +329,44 @@ def summary(records: list[dict]) -> dict[str, int]:
         for k, v in (r.get("masked") or {}).items():
             out[k] = out.get(k, 0) + v
     return out
+
+
+# What each "file-not-masked:" word means, in plain words — one list for
+# `omna log`, the report and the dashboard (security review, finding 7).
+NOT_MASKED_WORDS = {
+    "pdf": "a PDF",
+    "image": "a picture",
+    "old-office": "an old Word/Excel/PowerPoint file",
+    "pptx": "a PowerPoint file",
+    "zip": "a zip file",
+    "compressed": "a compressed file",
+    "unknown": "a file type Omna cannot read",
+    "docx": "a Word file that could not be opened",
+    "xlsx": "an Excel file that could not be opened",
+    "odt": "a LibreOffice text file that could not be opened",
+    "ods": "a LibreOffice spreadsheet that could not be opened",
+    "office-hidden": "a value in a hidden place of a Word/Excel file (formula, sheet name, link, property)",
+    "office-pictures": "pictures inside a Word/Excel file",
+    "office-embedded": "a file inside a Word/Excel file",
+    "office-unchecked": "hidden places of a Word/Excel file (not checked)",
+    "pdf-scanned-pages": "scanned pages of a PDF",
+    "pdf-hidden": "a value in a PDF's properties, comments or form fields",
+    "pdf-unchecked": "a PDF's properties and comments (not checked)",
+    "audio": "audio",
+    "video": "video",
+    "encoded-data": "encoded data",
+    "engine-error": "a request the masking engine failed on",
+    "too-large": "a file too large to read",
+}
+
+
+def not_masked_kinds(note: str | None) -> list[str]:
+    """The words after ``file-not-masked:`` in a receipt's note, else []."""
+    note = str(note or "")
+    if not note.startswith("file-not-masked:"):
+        return []
+    return [k for k in note.split(":", 1)[1].split(",") if k]
+
+
+def not_masked_words(note: str | None) -> str:
+    return ", ".join(NOT_MASKED_WORDS.get(k, k) for k in not_masked_kinds(note))

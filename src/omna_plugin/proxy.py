@@ -39,8 +39,9 @@ from .style import style_for_door, style_for_extension
 from .system_door import EXT_HEADER
 
 # What Omna for Chrome may record (#184): text it hid in a box, a file it
-# masked, a picture it blacked out.
-CHROME_RECORD_KINDS = ("typed", "file", "picture")
+# masked, a picture it blacked out — and a file it could NOT read, which went
+# as it is ("not_read", security review finding 7: always a report line).
+CHROME_RECORD_KINDS = ("typed", "file", "picture", "not_read")
 _SITE_RE = re.compile(r"[a-z0-9][a-z0-9.-]{0,252}")
 
 
@@ -87,9 +88,14 @@ _DROP_RESP = {"content-length", "content-encoding", "connection", "keep-alive",
 _LOCAL_ORIGIN_RE = __import__("re").compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$", __import__("re").I)
 
 
-def _note(passthrough: bool, mstats: MaskStats) -> str | None:
+def _note(passthrough: bool | str, mstats: MaskStats) -> str | None:
+    """What the receipt says about a request that was not (fully) masked.
+    ``passthrough``: True, or the reason as a word ("compressed",
+    "unparseable") — written as ``passthrough:<reason>``."""
     if mstats.not_masked:
         return f"file-not-masked:{mstats.not_masked}"
+    if isinstance(passthrough, str):
+        return f"passthrough:{passthrough}"
     return "passthrough" if passthrough else None
 
 
@@ -316,6 +322,10 @@ def create_app(
         kind, site, engine = body.get("kind"), body.get("site"), body.get("engine", "")
         finds = receipts.valid_finds(body.get("finds"))
         unlisted = body.get("unlisted", 0)
+        not_read = body.get("not_read")
+        if (kind == "not_read") != (not_read is not None) or (
+                not_read is not None and not (isinstance(not_read, str) and not_read in receipts.NOT_MASKED_WORDS)):
+            return JSONResponse({"error": "not a valid record"}, status_code=400)
         if (kind not in CHROME_RECORD_KINDS or finds is None
                 or not isinstance(site, str) or not _SITE_RE.fullmatch(site)
                 or not isinstance(engine, str) or len(engine) > 64
@@ -331,6 +341,10 @@ def create_app(
         if unlisted:
             # Found by the Mac app, which reports a count but no L6 list.
             rec["unlisted"] = unlisted
+        if not_read:
+            # Same note the curl command's own doors write, so the report
+            # counts both products' unread files in one line.
+            rec["note"] = f"file-not-masked:{not_read}"
         try:
             await run_in_threadpool(receipts.append, rec)
         except OSError:
@@ -500,7 +514,9 @@ def create_app(
         passthrough = False
         ctype = request.headers.get("content-type", "")
         is_inference = any(path.startswith(pfx) for pfx in INFERENCE_PREFIXES)
-        if body and request.method in ("POST", "PUT", "PATCH"):
+        # Any method: a GET or DELETE can carry a body too, and it used to go
+        # out unread with nothing in the receipt (security review, finding 7).
+        if body:
             if "json" in ctype and not request.headers.get("content-encoding"):
                 out = await run_in_threadpool(pipeline.mask_bytes, body, ctype, api_style.style)
                 if out.refused is None:
@@ -522,18 +538,20 @@ def create_app(
                     _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note=out.refused)
                     return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": "omna could not parse this request as JSON; refused rather than sent unmasked"}}, status_code=400)
                 else:
-                    passthrough = True
+                    passthrough = "unparseable"   # not a prompt route, not readable as JSON: sent as it is
             elif is_inference:
                 _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note="unparseable")
                 return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": f"omna only forwards JSON to {path} (got content-type {ctype!r}, content-encoding {request.headers.get('content-encoding')!r}); refused rather than sent unmasked"}}, status_code=400)
             elif request.headers.get("content-encoding"):
-                passthrough = True  # compressed and not a prompt route: forwarded as-is, marked in the receipt
+                passthrough = "compressed"  # compressed and not a prompt route: forwarded as-is, marked in the receipt
             elif "multipart/form-data" in ctype.lower():
                 # An upload form (/v1/files): its file parts are masked like an
                 # attached file at the system door; the other parts stay
                 # byte-for-byte. Used to go out exactly as it came in
                 # (architecture review, MASTER #178). Unreadable: refused.
-                out = await run_in_threadpool(pipeline.mask_upload_form, body, ctype, api_style.style)
+                # Every part, not only the files: a text field of the form
+                # (a transcription's "prompt") is yours too (finding 7).
+                out = await run_in_threadpool(pipeline.mask_bytes, body, ctype, api_style.style)
                 if out.body is None:
                     _receipt(request, path, upstream_host, 400, MaskStats(), len(body), time.time(), stream=False, note=out.refused)
                     return JSONResponse({"type": "error", "error": {"type": "omna_refused", "message": "omna could not read this upload form; refused rather than sent unmasked"}}, status_code=400)

@@ -717,7 +717,7 @@ def test_log_says_when_a_file_was_not_masked(capsys):
     receipts.append({"door": "system", "route": "/files/abc/raw", "host": "x.oaiusercontent.com", "status": 201,
                      "masked": {}, "ms": 5, "note": "file-not-masked:pdf"})
     assert main(["log"]) == 0
-    assert "file NOT masked (pdf)" in capsys.readouterr()[0]
+    assert "NOT masked: a PDF" in capsys.readouterr()[0]
 
 
 def test_status_says_what_files_are_masked_and_how_to_turn_on_smart(capsys, monkeypatch):

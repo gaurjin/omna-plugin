@@ -525,8 +525,11 @@ def cmd_log(a) -> int:
         ts = str(r.get("ts", ""))[:19].replace("T", " ")
         what = _fmt_counts(r.get('masked') or {})
         note = str(r.get("note") or "")
-        if note.startswith("file-not-masked:"):     # a PDF / image / old Office file went as it is (#160)
-            what = f"file NOT masked ({note.split(':', 1)[1]})"
+        if note.startswith("file-not-masked:"):     # something went out unread (#160, finding 7)
+            said = "NOT masked: " + receipts.not_masked_words(note)
+            what = said if what == "-" or not what else f"{what}  ·  {said}"
+        elif note.startswith(("passthrough", "passthrough-nonprompt")):
+            what = (what + "  ·  " if what and what != "-" else "") + "sent as it is (not a prompt Omna can read)"
         print(f"{ts:<20} {str(r.get('route',''))[:28]:<28} {r.get('status',''):>3} {r.get('ms',''):>6}  {what}")
     return 0
 

@@ -70,6 +70,10 @@ def build(days: int = 7) -> dict:
     distinct_pii: set = set()
     n_validated = 0
     by_layer: Counter = Counter()
+    # Requests that carried something Omna could not read, by what it was
+    # (security review 2026-11-11, finding 7: never blocked, always reported).
+    not_masked: Counter = Counter()
+    n_not_masked = 0
     for t, r in recs:
         for k, v in (r.get("masked") or {}).items():
             by_kind[k] += v
@@ -85,6 +89,10 @@ def build(days: int = 7) -> dict:
         # API door by definition, since it is the only door that existed then.
         by_door[r.get("door", "api")] += 1
         note = r.get("note")
+        kinds = receipts.not_masked_kinds(note)
+        if kinds or str(note or "").startswith("passthrough"):
+            n_not_masked += 1
+            not_masked.update(kinds or ["not-a-prompt"])
         if note == "bypassed-by-policy":
             bypassed += 1
             if r.get("app"):
@@ -145,6 +153,8 @@ def build(days: int = 7) -> dict:
         "requests_refused": refused,
         "requests_failed": failed,
         "requests_with_catch": requests_with_catch,
+        "requests_not_masked": n_not_masked,
+        "not_masked": dict(not_masked.most_common()),
         "sessions": len(sessions),
         "secrets_caught": n_secret,
         "pii_caught": n_pii,
@@ -175,6 +185,18 @@ def build(days: int = 7) -> dict:
     }
 
 
+def _not_masked_words(d: dict) -> str:
+    words = {**receipts.NOT_MASKED_WORDS, "not-a-prompt": "a request that is not a prompt Omna can read"}
+    return ", ".join(f"{words.get(k, k)} ×{v}" for k, v in (d.get("not_masked") or {}).items())
+
+
+def _not_masked_line(d: dict) -> str:
+    n = d.get("requests_not_masked", 0)
+    if not n:
+        return "nothing was sent unread"
+    return f"SENT UNREAD: {n} request(s) carried something Omna could not read — {_not_masked_words(d)}"
+
+
 def render_text(d: dict) -> str:
     lines = [
         f"Omna weekly report  ·  last {d['period_days']} days (since {d['since']})  ·  generated {d['generated']}",
@@ -184,6 +206,7 @@ def render_text(d: dict) -> str:
     ]
     if d["by_kind"]:
         lines.append("          by kind: " + ", ".join(f"{k} ×{v}" for k, v in d["by_kind"].items()))
+    lines.append("          " + _not_masked_line(d))
     apps_str = " · ".join(
         f"{k} {v}" + (" (bypassed)" if k in d["bypassed_apps"] else "") for k, v in d["by_app"].items()
     ) or "none seen"
@@ -224,7 +247,8 @@ def render_html(d: dict) -> str:
 h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:20px 0}} .cell{{border:1px solid #ddd;border-radius:8px;padding:12px}}
 .cell b{{display:block;font-size:26px}} table{{border-collapse:collapse;margin:8px 0}} td{{border-bottom:1px solid #eee;padding:4px 12px 4px 0}} .muted{{color:#666;font-size:13px}}</style></head><body>
 <h1>Omna weekly report <span class="muted">· last {d['period_days']} days · generated {e(d['generated'])}</span></h1>
-<p><b>THE UNLOCK.</b> Your team used AI on everything. {d['requests']} requests enabled, 0 blocked, every one masked on this machine before it left.</p>
+<p><b>THE UNLOCK.</b> Your team used AI on everything. {d['requests']} requests enabled, 0 blocked, masked on this machine before they left.</p>
+<p><b>{e(_not_masked_line(d))}.</b></p>
 <div class="grid">
 <div class="cell"><b>{d['requests']}</b>AI requests enabled · 0 blocked</div>
 <div class="cell"><b>{d['distinct_secrets']}</b>distinct secrets kept off the wire ({d['secrets_caught']} occurrences)</div>
@@ -253,7 +277,7 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 SHAREABLE_KEYS = (
     "period_days", "since", "engine",
     "requests", "requests_ok", "requests_refused", "requests_failed",
-    "requests_with_catch", "sessions",
+    "requests_with_catch", "requests_not_masked", "not_masked", "sessions",
     "secrets_caught", "pii_caught", "distinct_secrets", "distinct_pii",
     "avg_mask_ms", "avg_ms",
     "by_kind", "by_day", "by_door", "bypassed",
@@ -323,9 +347,10 @@ def merge(shares: list[dict]) -> dict:
         by_kind: Counter = Counter()
         by_day: Counter = Counter()
         by_door: Counter = Counter()
+        not_masked: Counter = Counter()
         acc = {k: 0 for k in (
             "requests", "requests_ok", "requests_refused", "requests_failed",
-            "requests_with_catch", "sessions", "secrets_caught", "pii_caught",
+            "requests_with_catch", "requests_not_masked", "sessions", "secrets_caught", "pii_caught",
             "distinct_secrets", "distinct_pii", "bypassed",
         )}
         for s in group:
@@ -334,6 +359,8 @@ def merge(shares: list[dict]) -> dict:
             by_kind.update(s.get("by_kind") or {})
             by_day.update(s.get("by_day") or {})
             by_door.update(s.get("by_door") or {})
+            not_masked.update(s.get("not_masked") or {})
+        acc["not_masked"] = dict(not_masked.most_common())
         acc["devices"] = len(group)
         acc["by_kind"] = dict(by_kind.most_common())
         acc["by_day"] = dict(sorted(by_day.items()))

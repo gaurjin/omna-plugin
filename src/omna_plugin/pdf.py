@@ -143,6 +143,55 @@ def redact(data: bytes, detect: Callable[[str], list[dict]]) -> tuple[bytes, lis
         return None
 
 
+# The document properties a person fills in. Producer, creator program and
+# the dates are the software's, and a date reads like a phone number.
+_PERSON_ATTRS = ("Title", "Author", "Subject", "Keywords")
+
+
+def not_read(original: bytes, sent: bytes, detect: Callable[[str], list[dict]]) -> list[str]:
+    """What is in this PDF that Omna did not read, as receipt words (security
+    review 2026-11-11, finding 7 — never block, always leave a report line):
+
+    * "pdf-scanned-pages" — a page of ``original`` with no text layer (a scan,
+      a photo): its pixels were not read;
+    * "pdf-hidden" — a value sits in the properties (title, author, subject,
+      keywords), a comment or a form field of ``sent`` (the PDF as it goes
+      out: a painted page has lost its comments, an untouched one has not)."""
+    if not available():
+        return []
+    out: list[str] = []
+    try:
+        doc = _open(original)
+        if doc is None:
+            return []
+        if any(not (doc.pageAtIndex_(i).string() or "").strip() for i in range(doc.pageCount())):
+            out.append("pdf-scanned-pages")
+        doc = doc if sent == original else _open(sent)
+        if doc is None:
+            return out + ["pdf-unchecked"]
+        attrs = doc.documentAttributes() or {}
+        hidden = []
+        for k in _PERSON_ATTRS:
+            v = attrs.get(k)
+            if v:
+                hidden.append(" ".join(str(x) for x in v) if isinstance(v, (list, tuple)) else str(v))
+        for i in range(doc.pageCount()):
+            for a in doc.pageAtIndex_(i).annotations() or []:
+                for getter in ("contents", "widgetStringValue"):
+                    try:
+                        v = getattr(a, getter)()
+                    except Exception:  # noqa: BLE001 - not every annotation kind has every field
+                        v = None
+                    if v:
+                        hidden.append(str(v))
+        text = "\n".join(hidden)
+        if text.strip() and detect(text):
+            out.append("pdf-hidden")
+    except Exception:  # noqa: BLE001 - any PDFKit failure: say it was not checked
+        return ["pdf-unchecked"]
+    return out
+
+
 def render_page_png(data: bytes, index: int) -> bytes:
     """One page as a PNG (tests use it to look at what the AI would see)."""
     from Foundation import NSMutableData  # type: ignore[import-not-found]

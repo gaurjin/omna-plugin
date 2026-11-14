@@ -137,6 +137,82 @@ def unmaskable_kind(data: bytes) -> str:
     return ""
 
 
+# --- what is NOT read (security review 2026-11-11, finding 7) ----------------
+# A Word or Excel file keeps text in places this module does not mask: Excel
+# formulas, sheet names, named ranges, data connections, page headers; custom
+# properties, picture descriptions, links, customXml. Those places are not
+# rewritten (a formula or a link with a stand-in in it breaks the file), so
+# the file goes with them as they are — and the receipt must say so. Owner
+# decision: never block, always leave a report line.
+_PICTURE_EXT = (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".tif", ".tiff", ".emf", ".wmf", ".webp", ".heic", ".svg")
+_TEXT_PART_EXT = (".xml", ".rels", ".vml", ".txt", ".json", ".csv")
+_STRIP_RE = re.compile(r"<[^>]*>")
+_ATTR_RE = re.compile(r"""=\s*(?:"([^"]{6,})"|'([^']{6,})')""")
+_SCHEMA_ATTR_RE = re.compile(r"^(?:https?://(?:schemas\.|purl\.|www\.w3\.org)|urn:schemas)")
+_HIDDEN_SCAN_CHARS = 20_000_000     # scanned for left-over values; beyond this the note says "not checked"
+
+
+def _left_over_text(xml: str) -> str:
+    """Everything a reader could still get out of a part: the text between
+    its tags and its attribute values (formulas, names, descriptions, links)."""
+    attrs = [a or b for a, b in _ATTR_RE.findall(xml)]
+    attrs = [html.unescape(a) for a in attrs if not _SCHEMA_ATTR_RE.match(a)]
+    return html.unescape(_STRIP_RE.sub("\n", xml)) + "\n" + "\n".join(attrs)
+
+
+def not_read(data: bytes, detect: Callable[[str], list]) -> list[str]:
+    """What is still in this (already masked) Word / Excel / OpenDocument file
+    that Omna did not read, as receipt words:
+
+    * "office-hidden"   — a value was found in a place that is not masked
+      (formula, sheet name, named range, connection, custom property, link …);
+    * "office-pictures" — it holds pictures, and their pixels were not read;
+    * "office-embedded" — it holds another file (a PDF, a slide deck, an old
+      Word file) that was not opened;
+    * "office-unchecked" — too big to check for left-over values.
+
+    ``detect(text)`` returns the values found (never mints a stand-in)."""
+    out: list[str] = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            scanned = 0
+            for info in z.infolist():
+                name = info.filename.lower()
+                if name.endswith("/"):
+                    continue
+                if name.endswith(_PICTURE_EXT):
+                    if "office-pictures" not in out:
+                        out.append("office-pictures")
+                    continue
+                if not name.endswith(_TEXT_PART_EXT):
+                    if "/embeddings/" in name and name.endswith((".xlsx", ".docx")):
+                        continue                    # masked as a file of its own (mask_office)
+                    if "office-embedded" not in out and name != "mimetype":
+                        out.append("office-embedded")
+                    continue
+                if "office-hidden" in out:
+                    continue
+                if scanned + info.file_size > _HIDDEN_SCAN_CHARS:
+                    if "office-unchecked" not in out:
+                        out.append("office-unchecked")
+                    continue
+                scanned += info.file_size
+                try:
+                    text = _left_over_text(z.read(info).decode("utf-8"))
+                except UnicodeDecodeError:
+                    if "office-unchecked" not in out:
+                        out.append("office-unchecked")
+                    continue
+                for i in range(0, len(text), _BATCH_CHARS):
+                    # Overlap, so a value cut by the batch edge is still seen.
+                    if detect(text[max(0, i - 200):i + _BATCH_CHARS]):
+                        out.append("office-hidden")
+                        break
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, ValueError, KeyError, OSError, EOFError, NotImplementedError):
+        return ["office-unchecked"]
+    return out
+
+
 def _rules_for(name: str, doc: str) -> _Rules | None:
     if doc in ("odt", "ods"):
         if name == "meta.xml":

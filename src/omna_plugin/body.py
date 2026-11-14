@@ -11,6 +11,8 @@ blob is skipped too.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import re
 
 from . import receipts
@@ -73,6 +75,65 @@ _BLOB_RE = re.compile(r"^[A-Za-z0-9+/=_\-]{256,}$")
 
 def _is_blob(s: str) -> bool:
     return len(s) >= 256 and _BLOB_RE.match(s) is not None
+
+
+_DATA_URL_RE = re.compile(r"^data:([\w.+\-]+/[\w.+\-]+)?((?:;[\w.+\-]+=[^;,]*)*)(;base64)?,", re.I)
+
+
+def _media_word(media: str) -> str:
+    """The receipt word for bytes Omna did not read (finding 7)."""
+    m = media.lower()
+    if m.startswith("image/"):
+        return "image"
+    if m == "application/pdf":
+        return "pdf"
+    if m.startswith("audio/"):
+        return "audio"
+    if m.startswith("video/"):
+        return "video"
+    return "encoded-data"
+
+
+def _b64_text(data: str) -> str | None:
+    """The text inside base64, or None when it is not UTF-8 text."""
+    try:
+        raw = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if b"\x00" in raw:
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _media(parent: dict | None, key: str | None, value: str, visit):
+    """Bytes carried inside a request (a picture, a PDF, a file as base64 or a
+    ``data:`` address). Returns (replacement, receipt word or None).
+
+    A TEXT file is text: decoded, masked like any other text, packed again
+    (it used to go out as it was — security review 2026-11-11, finding 7).
+    Anything else stays byte-identical, and the receipt names it."""
+    m = _DATA_URL_RE.match(value)
+    if m:
+        media, b64, payload = (m[1] or "text/plain"), bool(m[3]), value[m.end():]
+        if media.lower().startswith("text/") and b64:
+            text = _b64_text(payload)
+            if text is not None:
+                return value[:m.end()] + base64.b64encode(visit(text).encode("utf-8")).decode("ascii"), None
+        return value, _media_word(media)
+    media = str((parent or {}).get("media_type") or (parent or {}).get("mime_type") or "")
+    if media.lower().startswith("text/"):
+        text = _b64_text(value)
+        if text is not None:
+            return base64.b64encode(visit(text).encode("utf-8")).decode("ascii"), None
+    if not media and key in ("image_url", "b64_json"):
+        media = "image/"
+    return value, _media_word(media)
+
+
+_MEDIA_KEYS = frozenset({"data", "url", "image_url", "b64_json", "file_data"})
 
 
 def _skip_in(parent: dict, key: str, value) -> bool:
@@ -143,23 +204,31 @@ def _child_mode(parent: dict, key: str, mode: str, depth: int = 1) -> str:
     return _MSG
 
 
-def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, in_tool: bool = False):
+def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, in_tool: bool = False,
+          media=None):
     """Visit every string that is someone's content; ``visit(s, key, in_tool)``
     returns its replacement. ``in_tool``: the string is part of a tool CALL
     (finding 2). One walker for masking and restoring, so whatever is masked
-    can be put back."""
+    can be put back.
+
+    ``media(parent, key, value)`` (masking only) is handed every string that
+    is BYTES, not prose — base64 media, a ``data:`` address, a long opaque
+    run — and returns what to send in its place (finding 7)."""
     if isinstance(obj, str):
-        return obj if _is_blob(obj) else visit(obj, key, in_tool)
+        if _is_blob(obj) or (media is not None and _DATA_URL_RE.match(obj)):
+            return media(None, key, obj) if media is not None else obj
+        return visit(obj, key, in_tool)
     if isinstance(obj, list):
-        return [_walk(item, visit, mode, key, depth + 1, in_tool) for item in obj]
+        return [_walk(item, visit, mode, key, depth + 1, in_tool, media) for item in obj]
     if isinstance(obj, dict):
         here = in_tool or is_tool_call(obj)
         out = {}
         for k, v in obj.items():
             if _skip(obj, k, v, mode, depth):
-                out[k] = v
+                out[k] = media(obj, k, v) if media is not None and k in _MEDIA_KEYS and isinstance(v, str) and v else v
             else:
-                out[k] = _walk(v, visit, _child_mode(obj, k, mode, depth), k, depth + 1, here or k in _TOOL_KEYS)
+                out[k] = _walk(v, visit, _child_mode(obj, k, mode, depth), k, depth + 1,
+                               here or k in _TOOL_KEYS, media)
         return out
     return obj
 
@@ -169,8 +238,9 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
 
     ``counts`` maps entity name -> occurrences and carries reserved keys that
     the receipt writer pops off: ``_secrets`` / ``_pii`` (totals by layer),
-    ``_validated`` (catches a checksum actually proved), ``_layer_L1`` etc.
-    and ``_finds`` (the masking engine's L6 events, grouped — #184).
+    ``_validated`` (catches a checksum actually proved), ``_layer_L1`` etc.,
+    ``_finds`` (the masking engine's L6 events, grouped — #184) and
+    ``_not_read`` (pictures, PDFs and other bytes that went out unread).
 
     ``labels`` are the numbered token names minted for this body ("EMAIL_1"),
     whatever the style. Receipts count those, so the audit trail is the same
@@ -214,7 +284,17 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
             c[k] = c.get(k, 0) + n
         return masked
 
-    masked = _walk(obj, fn)
+    not_read: list[str] = []
+
+    def media(parent: dict | None, key: str | None, value: str) -> str:
+        out, word = _media(parent, key, value, lambda text: fn(text, key))
+        if word and word not in not_read:
+            not_read.append(word)
+        return out
+
+    masked = _walk(obj, fn, media=media)
+    if not_read:
+        counts["_not_read"] = not_read  # type: ignore[assignment]
     if finds:
         counts["_finds"] = receipts.merge_finds(*finds)  # type: ignore[assignment]
     return masked, counts, sorted(set(labels))
