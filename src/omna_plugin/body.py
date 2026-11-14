@@ -88,7 +88,18 @@ def _is_blob(s: str) -> bool:
     return len(s) >= 256 and _BLOB_RE.match(s) is not None
 
 
-_DATA_URL_RE = re.compile(r"^data:([\w.+\-]+/[\w.+\-]+)?((?:;[\w.+\-]+=[^;,]*)*)(;base64)?,", re.I)
+# data:<type>/<subtype>[;name=value…][;base64],  — parameter values are plain
+# words only: anything with a space, an "@" or a line break in it is not a
+# parameter but somebody's text, and then the string is not a data: address.
+_DATA_URL_RE = re.compile(r"^data:([\w.+\-]+/[\w.+\-]+)?((?:;[\w.+\-]+=[\w.+\-%]*)*)(;base64)?,", re.I)
+
+
+def _data_prefix(m: re.Match, visit) -> str:
+    """The part of a data: address before its payload, with its PARAMETERS
+    masked: ``;name=402-99-1234.pdf`` is a file name (/security-review round
+    2, 2026-11-14). The type and ``;base64`` are words Omna matched itself."""
+    params = visit(m[2]) if m[2] else ""
+    return "data:" + (m[1] or "") + params + (m[3] or "") + ","
 
 
 def _media_word(media: str) -> str:
@@ -105,12 +116,25 @@ def _media_word(media: str) -> str:
     return "encoded-data"
 
 
-def _b64_text(data: str) -> str | None:
-    """The text inside base64, or None when it is not UTF-8 text."""
+def _b64_bytes(data: str) -> bytes | None:
+    """What strict base64 decodes to, or None when the string is not base64.
+    Line breaks are allowed only the way real wrapped base64 has them (every
+    line but the last at least 60 characters): "4111 1111 1111 1111" is
+    base64 characters and spaces, and it is a card number."""
+    lines = data.strip("\r\n").splitlines()
+    if len(lines) > 1 and any(len(ln) < 60 for ln in lines[:-1]):
+        return None
+    packed = "".join(lines)
+    if not packed or len(packed) % 4 or any(ch.isspace() for ch in packed):
+        return None
     try:
-        raw = base64.b64decode(data, validate=True)
+        return base64.b64decode(packed, validate=True)
     except (binascii.Error, ValueError):
         return None
+
+
+def _as_text(raw: bytes) -> str | None:
+    """The bytes as UTF-8 text, or None when they are not text."""
     if b"\x00" in raw:
         return None
     try:
@@ -119,54 +143,74 @@ def _b64_text(data: str) -> str | None:
         return None
 
 
-_B64_CHARS_RE = re.compile(r"[A-Za-z0-9+/=\s]*")
+_SHORT_PAYLOAD = 512
 
 
-def _masked_b64(prefix: str, payload: str, visit) -> str | None:
-    """``payload`` is base64 of plain text: the same text masked and packed
-    again — or exactly as it was when nothing in it needed masking. None
-    when it is not base64 of text (a picture, a PDF: real bytes)."""
-    text = _b64_text(payload)
+def _packed(prefix: str, payload: str, media: str, visit):
+    """``payload`` claims to be base64. (replacement, receipt word or None):
+
+    * not base64 at all  -> it is readable text: masked as text;
+    * base64 of text     -> decoded, masked, packed again (byte-identical
+                            when nothing in it needed masking);
+    * base64 of bytes    -> left exactly as it is, and named in the receipt."""
+    raw = _b64_bytes(payload)
+    if raw is None:
+        return prefix + visit(payload), None
+    text = _as_text(raw)
+    if text is None:
+        if len(payload) <= _SHORT_PAYLOAD:
+            # Too short to be a file, and many plain values are valid base64
+            # by accident (a card number, a key): let the engine look at it.
+            seen = visit(payload)
+            if seen != payload:
+                return prefix + seen, None
+        return prefix + payload, _media_word(media)
+    masked = visit(text)
+    if masked == text:
+        return prefix + payload, None
+    return prefix + base64.b64encode(masked.encode("utf-8")).decode("ascii"), None
+
+
+def _text_in_data_url(value: str, visit) -> str | None:
+    """For a string that is NOT in a file-carrying place: if it is a
+    ``data:…;base64,`` address whose payload is base64 of plain text, the same
+    address with that text masked; else None (the caller masks the string as
+    ordinary text, as it always did)."""
+    m = _DATA_URL_RE.match(value)
+    if not m or not m[3]:
+        return None
+    raw = _b64_bytes(value[m.end():])
+    text = _as_text(raw) if raw is not None else None
     if text is None:
         return None
     masked = visit(text)
+    prefix = _data_prefix(m, visit)
     if masked == text:
-        return prefix + payload
+        return prefix + value[m.end():]
     return prefix + base64.b64encode(masked.encode("utf-8")).decode("ascii")
 
 
 def _media(parent: dict | None, key: str | None, value: str, visit):
-    """Bytes carried inside a request (a picture, a PDF, a file as base64 or a
-    ``data:`` address). Returns (replacement, receipt word or None).
+    """A value in a place that carries a FILE (a picture, a PDF, a file as
+    base64 or a ``data:`` address). Returns (replacement, receipt word or None).
 
-    Only REAL bytes are left alone: base64 that does not decode to text. The
-    label is never trusted — a ``data:`` prefix or a media type in front of
-    readable text is still readable text, and it is masked:
+    Only real bytes are left alone — base64 that does not decode to text. The
+    label is never trusted: a ``data:`` prefix or a media type in front of
+    readable text is still readable text, and it is masked (``_packed``).
 
-    * base64 of plain text (whatever type it claims) is decoded, masked and
-      packed again; byte-identical when nothing was found;
-    * anything after a ``data:…,`` prefix that is not base64 at all is masked
-      as the text it is.
-
-    (The first version of this function believed the prefix: any string that
-    merely STARTED with ``data:a/b,`` went out unmasked, which the released
-    version did not do — found by /security-review, 2026-11-14.)"""
+    (The first version believed the prefix: any string that merely STARTED
+    with ``data:a/b,`` went out unmasked, which the released version did not
+    do — found by /security-review, 2026-11-14.)"""
     m = _DATA_URL_RE.match(value)
     if m:
-        media, b64, prefix, payload = (m[1] or "text/plain"), bool(m[3]), value[:m.end()], value[m.end():]
-        if not b64 or not _B64_CHARS_RE.fullmatch(payload):
-            return prefix + visit(payload), None
-        out = _masked_b64(prefix, payload, visit)
-        return (out, None) if out is not None else (value, _media_word(media))
+        media, prefix, payload = (m[1] or "text/plain"), _data_prefix(m, visit), value[m.end():]
+        if not m[3]:
+            return prefix + visit(payload), None          # "data:text/plain,the text itself"
+        return _packed(prefix, payload, media, visit)
     media = str((parent or {}).get("media_type") or (parent or {}).get("mime_type") or "")
-    if not _B64_CHARS_RE.fullmatch(value) and not _is_blob(value):
-        return visit(value), None             # labelled as bytes, but it is readable text
-    out = _masked_b64("", value, visit)
-    if out is not None:
-        return out, None
     if not media and key in ("image_url", "b64_json"):
         media = "image/"
-    return value, _media_word(media)
+    return _packed("", value, media, visit)
 
 
 _MEDIA_KEYS = frozenset({"data", "url", "image_url", "b64_json", "file_data"})
@@ -265,8 +309,20 @@ def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, 
     is BYTES, not prose — base64 media, a ``data:`` address, a long opaque
     run — and returns what to send in its place (finding 7)."""
     if isinstance(obj, str):
-        if _is_blob(obj) or (media is not None and _DATA_URL_RE.match(obj)):
+        if _is_blob(obj):
+            # A long run of base64 characters. Skipped as it always was when
+            # restoring; when masking it is opened: text inside is masked.
             return media(None, key, obj) if media is not None else obj
+        if media is not None and _DATA_URL_RE.match(obj):
+            if key in _MEDIA_KEYS:
+                return media(None, key, obj)      # a file handed over as a data: address
+            # Elsewhere a data: address is opened only when it is base64 of
+            # plain text (masked inside); anything else is somebody's text
+            # and goes to the engine below, whatever it starts with — exactly
+            # as before this function knew about media.
+            opened = _text_in_data_url(obj, lambda t: visit(t, key, in_tool))
+            if opened is not None:
+                return opened
         return visit(obj, key, in_tool)
     if isinstance(obj, list):
         return [_walk(item, visit, mode, key, depth + 1, in_tool, media) for item in obj]

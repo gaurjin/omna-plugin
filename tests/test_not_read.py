@@ -352,3 +352,50 @@ def test_real_bytes_and_clean_text_stay_byte_identical(pipe):
         {"type": "image_url", "image_url": {"url": "data:image/png;base64," + PNG}}]}]}
     masked, st = pipe.mask_json(body)
     assert masked == body and st.not_masked == "image"
+
+
+@pytest.mark.parametrize("payload", [
+    "4111 1111 1111 1111",                       # only base64 characters and spaces — but not base64
+    "call me on 212 555 0147 please",
+    "data:a/b;base64,4111 1111 1111 1111",
+    "DATA:image/png;base64,4111 1111 1111 1111",
+    "  data:a/b,4111 1111 1111 1111",
+])
+def test_text_that_only_looks_like_base64_is_still_masked(pipe, payload):
+    for body in ({"model": "m", "messages": [{"role": "user", "content": payload}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [
+                     {"type": "input_file", "file_data": payload}]}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [
+                     {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": payload}}]}]}):
+        sent = json.dumps(pipe.mask_json(body)[0])
+        assert "4111 1111 1111 1111" not in sent and "212 555 0147" not in sent, body
+
+
+def test_ordinary_text_goes_to_the_engine_whatever_it_starts_with(pipe, monkeypatch):
+    # By construction: a string that is not under a file-carrying key and is
+    # not a long base64 run is handed to the engine exactly as on main.
+    seen = []
+    real = pipe.session.mask_text
+    monkeypatch.setattr(pipe.session, "mask_text", lambda s, **k: (seen.append(s), real(s, **k))[1])
+    for text in ("data:a/b,hello there", "data:image/png;base64,/9j/4AAQSkZJRg==", "data:,x y z", "data:a/b;x=some words,rest"):
+        pipe.mask_json({"model": "m", "messages": [{"role": "user", "content": text}]})
+        assert text in seen, text
+
+
+@pytest.mark.parametrize("text", [
+    "data:application/pdf;name=Jane Doe SSN 536-22-8841.pdf;base64,JVBERi0xLjQK",
+    "data:application/pdf;name=536-22-8841.pdf;base64,JVBERi0xLjQK",
+    f"data:a/b;x=DB_PASSWORD=hunter2\nowner {EMAIL}\nkey {TOKEN},",
+    f"DATA:a/b;x={EMAIL},rest",
+    f"data:text/plain;base64,Jane Doe card 4111 1111 1111 1111 mail {EMAIL}",
+    f"data:a/b;base64,aws secret access key = {TOKEN}",
+    "data:text/plain;base64,4111111111111111",
+])
+def test_round_two_of_the_review_a_data_address_hides_nothing(pipe, text):
+    for body in ({"model": "m", "messages": [{"role": "user", "content": text}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": text}]}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [{"type": "input_file", "file_data": text}]}]},
+                 {"model": "m", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": text}}]}]}):
+        sent = json.dumps(pipe.mask_json(body)[0])
+        for value in (EMAIL, TOKEN, "536-22-8841", "4111 1111 1111 1111", "4111111111111111"):
+            assert value not in sent, (value, body)
