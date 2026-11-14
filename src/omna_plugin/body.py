@@ -95,11 +95,12 @@ _DATA_URL_RE = re.compile(r"^data:([\w.+\-]+/[\w.+\-]+)?((?:;[\w.+\-]+=[\w.+\-%]
 
 
 def _data_prefix(m: re.Match, visit) -> str:
-    """The part of a data: address before its payload, with its PARAMETERS
-    masked: ``;name=402-99-1234.pdf`` is a file name (/security-review round
-    2, 2026-11-14). The type and ``;base64`` are words Omna matched itself."""
-    params = visit(m[2]) if m[2] else ""
-    return "data:" + (m[1] or "") + params + (m[3] or "") + ","
+    """The part of a data: address before its payload, shown to the engine
+    WHOLE — type, parameters and all. Nothing in it is taken on trust:
+    ``;name=402-99-1234.pdf`` is a file name, and ``data:a/ghp_…;base64,``
+    carries a key where the type should be (/security-review rounds 2 and 3,
+    2026-11-14). A real prefix (``data:image/png;base64,``) comes back as it was."""
+    return visit(m[0])
 
 
 def _media_word(media: str) -> str:
@@ -143,7 +144,7 @@ def _as_text(raw: bytes) -> str | None:
         return None
 
 
-_SHORT_PAYLOAD = 512
+_SHORT_PAYLOAD = 8192
 
 
 def _packed(prefix: str, payload: str, media: str, visit):

@@ -390,6 +390,11 @@ def test_ordinary_text_goes_to_the_engine_whatever_it_starts_with(pipe, monkeypa
     f"data:text/plain;base64,Jane Doe card 4111 1111 1111 1111 mail {EMAIL}",
     f"data:a/b;base64,aws secret access key = {TOKEN}",
     "data:text/plain;base64,4111111111111111",
+    # round 3: a value where the TYPE should be
+    f"data:a/{TOKEN};base64,aGk=",
+    "data:536-22-8841/4111-1111-1111-1111;base64,aGk=",
+    f"data:x/{TOKEN},",
+    f"data:a/b;base64,{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}/{TOKEN}xx",
 ])
 def test_round_two_of_the_review_a_data_address_hides_nothing(pipe, text):
     for body in ({"model": "m", "messages": [{"role": "user", "content": text}]},
@@ -397,5 +402,5 @@ def test_round_two_of_the_review_a_data_address_hides_nothing(pipe, text):
                  {"model": "m", "messages": [{"role": "user", "content": [{"type": "input_file", "file_data": text}]}]},
                  {"model": "m", "messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": text}}]}]}):
         sent = json.dumps(pipe.mask_json(body)[0])
-        for value in (EMAIL, TOKEN, "536-22-8841", "4111 1111 1111 1111", "4111111111111111"):
+        for value in (EMAIL, TOKEN, "536-22-8841", "4111 1111 1111 1111", "4111111111111111", "4111-1111-1111-1111"):
             assert value not in sent, (value, body)
