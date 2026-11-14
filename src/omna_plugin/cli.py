@@ -766,10 +766,53 @@ def cmd_menubar(a) -> int:
     return menubar.run(a.port)
 
 
+def _remove_local_state() -> str | None:
+    """Stop the proxy and delete everything Omna keeps on this computer
+    (registry, receipts, settings, keys). Used where there is no Mac set-up
+    to revert: uninstall used to leave all of it — the proxy still running,
+    and registry.json with its real values still on disk — on Linux and
+    Windows. Returns an error text when the folder could not be deleted."""
+    from . import vault
+
+    try:
+        pid = int(config.pid_path().read_text().strip() or 0)
+    except (OSError, ValueError):
+        pid = 0
+    if pid:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, PermissionError):
+                break
+            time.sleep(0.05)
+    error = None
+    home = config.home()
+    if home.exists():
+        try:
+            shutil.rmtree(home)
+        except OSError as e:
+            error = str(e)
+    vault.delete_key(vault.ACCOUNT)
+    vault.delete_key(vault.RECEIPTS_ACCOUNT)
+    return error
+
+
 def cmd_uninstall(a) -> int:
-    path = claude_code.settings_file("project" if a.project else "user")
-    ch = claude_code.uninstall(path)
-    print(f"omna: removed {'env var ' if ch['env'] else ''}{'hook ' if ch['hook'] else ''}{'backup file ' if ch['backup'] else ''}from {path}" if any(ch.values()) else f"omna: nothing to remove in {path}")
+    # Both places `omna init` can have wired (it is run once per user, and
+    # again with --project in a repo): un-wiring only the one named on this
+    # command line left the other pointing at a proxy that is about to go.
+    paths = [claude_code.settings_file("user")]
+    project = claude_code.settings_file("project")
+    if project not in paths and (a.project or project.exists() or project.with_name(project.name + ".omna-backup").exists()):
+        paths.append(project)
+    for path in paths:
+        ch = claude_code.uninstall(path)
+        print(f"omna: removed {'env var ' if ch['env'] else ''}{'hook ' if ch['hook'] else ''}{'backup file ' if ch['backup'] else ''}from {path}" if any(ch.values()) else f"omna: nothing to remove in {path}")
     ach = aider.uninstall()
     if ach["openai_base"] or ach["anthropic_base"]:
         print(f"omna: removed aider's Omna settings from {aider.conf_file()} / {aider.env_file()}")
@@ -790,6 +833,16 @@ def cmd_uninstall(a) -> int:
         if not res.get("home_removed", True):
             print(f"      Mac: WARNING — could not delete {config.home()} ({res['home_error']}); "
                   f"registry/receipts may still hold real values, remove it by hand.")
+    else:
+        err = _remove_local_state()
+        if err:
+            print(f"omna: WARNING — could not delete {config.home()} ({err}); "
+                  f"registry/receipts may still hold real values, remove it by hand.")
+        else:
+            print(f"omna: stopped, and {config.home()} (registry, receipts, settings) deleted.")
+    # The one thing this command cannot do is delete the program it is.
+    print("omna: Omna no longer masks anything on this computer. To remove the program itself: "
+          "`brew uninstall omna` if you installed it with Homebrew, otherwise `uv tool uninstall omna-plugin`.")
     return 0
 
 

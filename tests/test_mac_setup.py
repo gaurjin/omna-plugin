@@ -173,10 +173,57 @@ def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monk
 
     setup.revert()
 
-    assert calls == [
+    # (The look at the network settings is a read: is Omna's routing file still set?)
+    assert [c for c in calls if c[:2] != ("networksetup", "-getautoproxyurl")] == [
         ("omna", "stop"), launchd.LABEL, launchd.MENUBAR_LABEL,
         "disable_login_item", "remove_app_bundle", "remove_deep_redirector_app",
     ]
+
+
+def test_revert_still_turns_the_system_proxy_off_when_the_certificate_file_is_gone(monkeypatch, tmp_path):
+    # Security review 2026-11-11 ("not checked: omna uninstall reverses
+    # everything"): with ~/.omna deleted by hand, uninstall skipped the whole
+    # administrator step — the Mac kept sending browsers to a routing file
+    # that no longer exists, and kept trusting Omna's certificate.
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path / "gone")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi", "Ethernet"])
+    monkeypatch.setattr(setup.netproxy, "current_pac",
+                        lambda s: ("http://127.0.0.1:7788/omna/proxy.pac", True) if s == "Wi-Fi" else ("", False))
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+    batches = []
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: batches.append(lines) or 0)
+
+    setup.revert()
+
+    assert len(batches) == 1
+    assert batches[0] == [
+        'networksetup -setautoproxystate "Wi-Fi" off',
+        'networksetup -setautoproxyurl "Wi-Fi" ""',
+        f'security delete-certificate -c "{setup.certs.CA_NAME}" {setup.certs.SYSTEM_KEYCHAIN} || true',
+    ]
+
+
+def test_revert_asks_for_no_password_when_nothing_of_omnas_is_set(monkeypatch, tmp_path):
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path / "gone")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup.netproxy, "current_pac", lambda s: ("http://corp.example/proxy.pac", True))
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: (_ for _ in ()).throw(AssertionError("no admin step needed")))
+    setup.revert()          # a company's own proxy file is never touched
 
 
 def test_revert_deletes_all_local_state_so_nothing_is_left_behind(monkeypatch, tmp_path):

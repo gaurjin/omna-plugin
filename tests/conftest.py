@@ -29,3 +29,14 @@ def _never_touch_the_real_browsers(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(extension_auth, "_browser_roots", lambda: [])
     nowhere = tmp_path_factory.mktemp("no-mac-app") / "dev_extension_ids"
     monkeypatch.setattr(extension_auth, "_mac_app_dev_ids", lambda: nowhere)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_home_folder(monkeypatch, tmp_path_factory):
+    """Every tool Omna wires keeps its settings under the person's home folder
+    (~/.claude, ~/.codex, ~/.aider.conf.yml, ~/.continue). A test that runs
+    `omna uninstall` or `omna init` without replacing each of those by hand
+    would edit the developer's REAL files — one such test existed
+    (found 2026-11-14 while checking that uninstall reverses everything).
+    The whole suite now has a throwaway home folder."""
+    monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))

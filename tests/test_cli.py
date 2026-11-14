@@ -894,3 +894,49 @@ def test_the_default_is_unchanged_secrets_are_restored_locally(monkeypatch):
     spawned = _spawn_recorder(monkeypatch)
     assert main(["start", "-d"]) == 0 and main(["ensure"]) == 0
     assert spawned == [False, False] and Policy.load().restore_secrets is True
+
+
+# --- security review 2026-11-11, "not checked: omna uninstall reverses everything"
+def test_uninstall_off_a_mac_stops_the_proxy_and_deletes_what_omna_kept(monkeypatch, home, capsys):
+    from pathlib import Path
+
+    from omna_plugin import config
+
+    monkeypatch.setattr("sys.platform", "linux")
+    (home / "registry.json").write_text('{"tokens": {"[EMAIL_1]": "jane.doe@example.com"}}')
+    (home / "receipts.jsonl").write_text("")
+    config.pid_path().write_text("4242")
+    killed = []
+
+    def fake_kill(pid, sig):
+        killed.append((pid, sig))
+        if sig == 0:
+            raise ProcessLookupError
+
+    monkeypatch.setattr("os.kill", fake_kill)
+    assert Path.home() != Path("~").expanduser() or str(Path.home()).startswith(("/private/var", "/var", "/tmp"))
+    assert main(["uninstall"]) == 0
+    assert killed and killed[0][0] == 4242, "the proxy must not be left running"
+    assert not home.exists(), "registry.json holds real values: it must not be left on disk"
+    out = capsys.readouterr()[0]
+    assert "deleted" in out and "uv tool uninstall omna-plugin" in out and "brew uninstall omna" in out
+
+
+def test_uninstall_unwires_claude_code_in_both_places(monkeypatch, tmp_path, capsys):
+    import json
+    from pathlib import Path
+
+    from omna_plugin import claude_code
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("os.kill", lambda pid, sig: None)
+    monkeypatch.chdir(tmp_path)
+    user, project = claude_code.settings_file("user"), claude_code.settings_file("project")
+    assert str(user).startswith(str(Path.home())) and project != user
+    claude_code.init(user, 7788)
+    claude_code.init(project, 7788)
+    assert "7788" in user.read_text() and "7788" in project.read_text()
+    assert main(["uninstall"]) == 0           # no --project: both are still un-wired
+    for p in (user, project):
+        assert "7788" not in (p.read_text() if p.exists() else ""), p
+        assert "ANTHROPIC_BASE_URL" not in json.dumps(json.loads(p.read_text()) if p.exists() else {})

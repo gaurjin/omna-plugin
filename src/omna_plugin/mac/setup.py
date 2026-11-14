@@ -94,6 +94,15 @@ def _wait_for_daemon_exit(pid: int, timeout: float = 2.0) -> None:
         time.sleep(0.05)
 
 
+def _points_at_omna(service: str) -> bool:
+    """Does this network service still use Omna's routing file?"""
+    try:
+        url, _on = netproxy.current_pac(service)
+    except Exception:  # noqa: BLE001 - cannot tell: leave the network settings alone
+        return False
+    return "/omna/proxy.pac" in (url or "")
+
+
 def revert() -> dict:
     cert = config.ca_dir() / "mitmproxy-ca-cert.pem"
     services = netproxy.list_services()
@@ -120,7 +129,18 @@ def revert() -> dict:
     # it actually touches, same as aider/codex/continue_dev's uninstall().
     vscode.revert_proxy_setting()
     vscode.disable_node_ca_trust(cert)
-    rc = _run_batch(revert_plan(services=services, cert=cert), "remove certificate + system proxy") if cert.exists() else 0
+    if cert.exists():
+        rc = _run_batch(revert_plan(services=services, cert=cert), "remove certificate + system proxy")
+    else:
+        # The certificate FILE is gone (somebody deleted ~/.omna by hand) but
+        # this Mac may still send its browsers to Omna's routing file and
+        # still trust Omna's certificate. Uninstall used to skip both in that
+        # case and call it done (security review 2026-11-11, "not checked:
+        # omna uninstall reverses everything"). Only asks for the password
+        # when something of Omna's is really still set.
+        left = [s for s in services if _points_at_omna(s)]
+        rc = _run_batch([*netproxy.pac_off_commands(left), certs.untrust_commands(cert)[-1]],
+                        "remove certificate + system proxy") if left else 0
     # Leave no trace: the cert is untrusted above, but the files themselves —
     # registry, receipts, policy, ruleset, the CA on disk, logs, pidfile — all
     # live under config.home() and survive that. Delete the whole directory so
