@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, quote, unquote, urlencode
 
 from . import office, pdf, picture, receipts
+from . import ruleset as ruleset_file
 from . import smart as smart_models
 from .body import ONLY_IN_IDS, is_id_key, mask_body, restore_body
 from .engine import MaskingSession, ToolView
@@ -450,6 +451,10 @@ class Pipeline:
             "validated": stats.validated,
             "mask_ms": stats.mask_ms, "tokens": stats.tokens, "bytes_in": nbytes, "ms": ms,
             "app": app, "style": style,
+            # Which ruleset (allowlist, custom rules, switched-off categories)
+            # was in force: a change to what is NOT masked is on the record
+            # (security review 2026-11-11, finding 15).
+            "ruleset": ruleset_file.fingerprint(),
         }
         if note:
             rec["note"] = note

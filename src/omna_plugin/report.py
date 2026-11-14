@@ -74,6 +74,7 @@ def build(days: int = 7) -> dict:
     # (security review 2026-11-11, finding 7: never blocked, always reported).
     not_masked: Counter = Counter()
     n_not_masked = 0
+    rulesets: list[str] = []          # ruleset fingerprints, in the order first seen (finding 15)
     for t, r in recs:
         for k, v in (r.get("masked") or {}).items():
             by_kind[k] += v
@@ -89,6 +90,9 @@ def build(days: int = 7) -> dict:
         # API door by definition, since it is the only door that existed then.
         by_door[r.get("door", "api")] += 1
         note = r.get("note")
+        rs = r.get("ruleset")
+        if isinstance(rs, str) and rs and rs not in rulesets:
+            rulesets.append(rs)
         kinds = receipts.not_masked_kinds(note)
         if kinds or str(note or "").startswith("passthrough"):
             n_not_masked += 1
@@ -155,6 +159,7 @@ def build(days: int = 7) -> dict:
         "requests_with_catch": requests_with_catch,
         "requests_not_masked": n_not_masked,
         "not_masked": dict(not_masked.most_common()),
+        "rulesets": rulesets,
         "sessions": len(sessions),
         "secrets_caught": n_secret,
         "pii_caught": n_pii,
@@ -190,6 +195,18 @@ def _not_masked_words(d: dict) -> str:
     return ", ".join(f"{words.get(k, k)} ×{v}" for k, v in (d.get("not_masked") or {}).items())
 
 
+def _ruleset_line(d: dict) -> str:
+    """One ruleset for the whole period is the calm case; more than one means
+    somebody changed what is NOT masked, and when is in the receipts."""
+    rs = d.get("rulesets") or []
+    if not rs:
+        return "rules: no ruleset recorded in this period"
+    if len(rs) == 1:
+        return f"rules: one ruleset in force the whole period (fingerprint {rs[0]})"
+    return (f"RULES CHANGED: {len(rs)} different rulesets were in force in this period "
+            f"(fingerprints {', '.join(rs)}) — `omna log --json` shows which request used which")
+
+
 def _not_masked_line(d: dict) -> str:
     n = d.get("requests_not_masked", 0)
     if not n:
@@ -207,6 +224,7 @@ def render_text(d: dict) -> str:
     if d["by_kind"]:
         lines.append("          by kind: " + ", ".join(f"{k} ×{v}" for k, v in d["by_kind"].items()))
     lines.append("          " + _not_masked_line(d))
+    lines.append("          " + _ruleset_line(d))
     apps_str = " · ".join(
         f"{k} {v}" + (" (bypassed)" if k in d["bypassed_apps"] else "") for k, v in d["by_app"].items()
     ) or "none seen"
@@ -249,6 +267,7 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 <h1>Omna weekly report <span class="muted">· last {d['period_days']} days · generated {e(d['generated'])}</span></h1>
 <p><b>THE UNLOCK.</b> Your team used AI on everything. {d['requests']} requests enabled, 0 blocked, masked on this machine before they left.</p>
 <p><b>{e(_not_masked_line(d))}.</b></p>
+<p>{e(_ruleset_line(d))}.</p>
 <div class="grid">
 <div class="cell"><b>{d['requests']}</b>AI requests enabled · 0 blocked</div>
 <div class="cell"><b>{d['distinct_secrets']}</b>distinct secrets kept off the wire ({d['secrets_caught']} occurrences)</div>

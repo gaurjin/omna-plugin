@@ -52,6 +52,7 @@ except ImportError:  # Windows: no shared lock; one program at a time, as before
     fcntl = None  # type: ignore[assignment]
 
 from . import config, fakes, receipts, vault
+from . import ruleset as ruleset_file
 from . import smart as smart_models
 from .style import REALISTIC, TOKENS
 
@@ -652,7 +653,9 @@ class MaskingSession:
     def _ensure_default_ruleset(self) -> None:
         p = config.ruleset_path()
         if not p.exists():
-            p.write_text(json.dumps({"allowlist": DEFAULT_ALLOWLIST, "custom_rules": []}, indent=2) + "\n")
+            ruleset_file.write({"allowlist": DEFAULT_ALLOWLIST, "custom_rules": []})
+        else:
+            ruleset_file.secure()      # 0644 before 0.6.21: readable by other users of the Mac (finding 15)
 
     def _ruleset_arg(self) -> str | None:
         p = config.ruleset_path()
@@ -671,7 +674,7 @@ class MaskingSession:
         pat = re.escape(value)
         if pat not in data["allowlist"]:
             data["allowlist"].append(pat)
-        p.write_text(json.dumps(data, indent=2) + "\n")
+        ruleset_file.write(data)
         with self._lock:
             self._cache.clear()
 

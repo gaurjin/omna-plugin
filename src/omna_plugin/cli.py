@@ -446,10 +446,9 @@ def cmd_categories(a) -> int:
             return 2
         off = sorted(set(off) | set(wanted)) if a.action == "off" else [c for c in off if c not in wanted]
         data["mask_off"] = off
-        config.ensure_home()
-        p = config.ruleset_path()
-        p.write_text(json.dumps(data, indent=2) + "\n")
-        os.chmod(p, 0o600)
+        from . import ruleset as ruleset_file
+
+        ruleset_file.write(data)
         _restart_daemon(a)
     for key, what in CATEGORIES.items():
         print(f"{'OFF' if key in off else 'on ':<4} {key:<11} {what}")
@@ -480,6 +479,10 @@ def cmd_status(a) -> int:
         print("files:        text, code, Word, Excel, RTF, ODT masked; pictures and PDFs: "
               + ("values blacked out" if both else "go as they are (needs macOS)")
               + "; the receipt says which")
+    from . import ruleset as ruleset_file
+
+    for line in ruleset_file.status_lines():
+        print(line)
     cc = claude_code.status(claude_code.settings_file("user"))
     wired = cc["base_url"] == config.base_url(a.port)
     print(f"claude code:  {'wired' if wired else 'not wired'} ({cc['file']}){'  hook ok' if cc['hook'] else ''}{'' if wired else '  → `omna init`'}")

@@ -35,6 +35,7 @@ from . import config, crashlog, ext_l3, extension_auth, mappings, ocr, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .policy import Policy, live_policy
+from . import ruleset as ruleset_file
 from .style import style_for_door, style_for_extension
 from .system_door import EXT_HEADER
 
@@ -229,6 +230,9 @@ def create_app(
                 # Omna for Chrome sends screenshots to /omna/ocr only when true.
                 "ocr": ocr.available(),
                 "restore_secrets": session.restore_secrets,
+                # What is NOT masked is decided by one file (finding 15): its
+                # fingerprint, sizes, and any allowlist entry the engine refused.
+                "ruleset": ruleset_file.summary(),
                 # What goes back into an agent's tool calls (finding 2).
                 "tool_calls": dict(live_policy().tool_calls),
                 "secrets_held_in_memory": session.secrets_held,
