@@ -165,3 +165,17 @@ async def test_a_stand_in_in_the_thinking_notes_does_not_stop_restore(home):
                               {"role": "user", "content": "save it to contact.txt"}])
     assert up.calls[-1]["json"]["messages"][1]["content"][0]["thinking"] == f"User's address is {email_1}."
     assert b2["content"][0]["input"]["content"] == f"email={EMAIL}\n", "the stand-in must not be written into the file"
+
+
+def test_a_password_inside_a_web_address_is_a_secret_never_kept_on_disk(home):
+    # Found re-running the 2026-11-11 security review: "https://deploy:PASSWORD@
+    # git.example/r.git" was read as an e-mail address ("PASSWORD@git.example"),
+    # so the password went into registry.json and back into agents' commands.
+    pw = "Tr0ub4dor" + "2wrpP7mD"
+    s = MaskingSession()
+    out = s.mask_text(f"git clone https://deploy:{pw}@git.internal.example/r.git")
+    assert pw not in out.masked and out.secrets == 1
+    assert "PASSWORD" in " ".join(out.labels)
+    for root, _, files in os.walk(home):
+        for name in files:
+            assert pw.encode() not in open(os.path.join(root, name), "rb").read(), name
