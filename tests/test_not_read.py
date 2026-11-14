@@ -292,3 +292,12 @@ def test_every_word_a_receipt_can_carry_has_plain_words():
                  "old-office", "audio", "video", "encoded-data", "engine-error"):
         assert word in receipts.NOT_MASKED_WORDS, word
     assert receipts.not_masked_words("file-not-masked:zip,image") == "a zip file, a picture"
+
+
+def test_plain_text_behind_a_data_address_is_masked(pipe):
+    # Row 19 re-run: {"url": "data:text/plain,<a Slack token>"} went out as it was.
+    masked, st = pipe.mask_json({"model": "m", "messages": [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": f"data:text/plain,key {TOKEN} mail {EMAIL}"}}]}]})
+    url = masked["messages"][0]["content"][0]["image_url"]["url"]
+    assert url.startswith("data:text/plain,key ") and TOKEN not in url and EMAIL not in url
+    assert st.not_masked == ""

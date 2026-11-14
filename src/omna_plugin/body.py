@@ -133,6 +133,9 @@ def _media(parent: dict | None, key: str | None, value: str, visit):
             text = _b64_text(payload)
             if text is not None:
                 return value[:m.end()] + base64.b64encode(visit(text).encode("utf-8")).decode("ascii"), None
+        if media.lower().startswith("text/") and not b64:
+            # "data:text/plain,the text itself": plain text behind a prefix.
+            return value[:m.end()] + visit(payload), None
         return value, _media_word(media)
     media = str((parent or {}).get("media_type") or (parent or {}).get("mime_type") or "")
     if media.lower().startswith("text/"):
@@ -205,7 +208,9 @@ def _skip(parent: dict, key: str, value, mode: str, depth: int) -> bool:
     if mode == _TOOLDEF:
         return key in TOOLDEF_KEEP and not isinstance(value, dict)
     if depth == 0 and key in TOP_KEYS:
-        return not (key == "model" and _looks_like_text(value))
+        # A setting holds a word ("auto", a model name, an id) or an object;
+        # a sentence under a setting's name is somebody's text.
+        return not _looks_like_text(value)
     if key in _IDENT_KEYS:
         return not _looks_like_text(value)
     return key in STRUCT_KEYS or _skip_in(parent, key, value)

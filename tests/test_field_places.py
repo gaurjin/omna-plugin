@@ -163,7 +163,7 @@ def test_text_under_an_identifier_name_is_masked_on_a_chat_website(tmp_path, mon
     pipe = Pipeline(MaskingSession())
     token = "ghp_" + "fgYFNmLOZlhOWtmhi0EwWcTCEsLvKQdOrH3k"
     text = f"my email is priya.raman@northwind-traders.co, token {token}"
-    for key in ("id", "type", "model", "role", "file_id", "media_type"):
+    for key in ("id", "type", "model", "role", "file_id", "media_type", "container", "stream", "tool_choice", "service_tier"):
         masked, _ = pipe.mask_json({key: text, "note": "x"})
         assert "priya.raman" not in masked[key] and token not in masked[key], key
     masked, _ = pipe.mask_json({"messages": [{"role": "user", "id": "jane.doe@example.com", "content": "hi"}]})
