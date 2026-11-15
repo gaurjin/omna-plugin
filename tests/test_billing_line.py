@@ -80,7 +80,9 @@ def test_anthropic_safety_check_and_claude_code_ids_go_as_they_are():
     assert out["messages"][0]["content"] == "[X]"
 
 
-def test_any_other_user_id_is_masked():
+def test_any_metadata_goes_as_it_is():
+    # Owner rule 2026-11-15: only the conversation is the data; the request's
+    # metadata is the app's, whatever it holds.
     for uid in ("jane.doe@example.com", ID.replace("}", ',"name":"Jane Doe"}'), ID[:-2] + 'x"}'):
         out, _, _ = mask_body(MaskAll(), {**body(LINE), "metadata": {"user_id": uid}})
-        assert out["metadata"]["user_id"] == "[X]", uid
+        assert out["metadata"]["user_id"] == uid, uid

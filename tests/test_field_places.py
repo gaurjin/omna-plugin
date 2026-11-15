@@ -111,7 +111,6 @@ def test_restore_puts_back_what_masking_masked_and_never_writes_into_thinking(se
 
 @pytest.mark.parametrize("body", [
     # request fields that were masked before finding 4 and must stay masked
-    {"model": "m", "input": "hi", "prompt_cache_key": GH},
     # a web link under image_url (only embedded picture bytes are skipped)
     {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"https://x.example/a.png?token={GH}"}}]}]},
     {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": f"https://x.example/a.png?token={GH}"}]}]},

@@ -402,7 +402,10 @@ def _billing_blocks(obj) -> list[int]:
 # the CLAUDE.md files, the account context, the commit-attribution note).
 # Before this, the whole request was checked: never an owner decision; it
 # made most false alarms (tool words read as names) and a ~25 s wait.
-_APP_KEYS = frozenset({"system", "tools", "functions", "mcp_servers", "output_config", "response_format"})
+# Where the data lives in an AI API request: the conversation. Everything
+# outside it (system prompt, tools, connectors, schemas, settings, ids) is
+# the app's and goes as it is.
+_CONVERSATION_KEYS = frozenset({"messages", "input", "contents", "prompt"})
 _APP_ROLES = frozenset({"system", "developer"})
 _APP_NOTES = (
     "<system-reminder>\nCodebase and user instructions are shown below",
@@ -420,13 +423,9 @@ def _app_parts(obj):
     if not (isinstance(obj, dict) and ("contents" in obj or (isinstance(obj.get("model"), str)
                                                             and any(k in obj for k in ("messages", "input"))))):
         return obj, lambda m: m
-    keys = set(_APP_KEYS)
-    if "input" in obj:
-        keys.add("instructions")
-        if isinstance(obj.get("text"), dict) and "format" in obj["text"]:
-            keys.add("text")
-    if "contents" in obj:
-        keys |= {"systemInstruction", "system_instruction", "toolConfig", "tool_config"}
+    # The conversation is the data; every other field of the request is the
+    # app's (owner 2026-11-15: "skip everything except the data").
+    keys = {k for k in obj if k not in _CONVERSATION_KEYS}
     view = {k: (None if k in keys else v) for k, v in obj.items()}
     aside_msgs: dict[int, object] = {}
     aside_blocks: dict[tuple[int, int], object] = {}
