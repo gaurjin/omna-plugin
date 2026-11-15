@@ -110,16 +110,14 @@ def test_a_hex_dump_with_a_private_value_becomes_its_masked_text(session, dump):
     assert "REGION=us-east-1" in out          # the rest of the file reads as it was
 
 
-def test_a_hex_dump_with_nothing_private_is_left_exactly_as_it_is(session):
-    import binascii
-    data = b"hello world, this is a plain file with nothing private in it at all.\n"
-    lines = []
-    for off in range(0, len(data), 16):
-        chunk = data[off:off + 16]
-        hx = " ".join(binascii.hexlify(chunk[i:i + 2]).decode() for i in range(0, len(chunk), 2))
-        lines.append(f"{off:08x}: {hx:<39}  " + "".join(chr(b) if 32 <= b < 127 else "." for b in chunk))
-    dump = "\n".join(lines) + "\n"
-    assert session.mask_text(dump).masked == dump
+def test_a_card_list_shaped_like_a_dump_is_still_masked(session):
+    # Security review 2026-11-15: a date, then a card number in groups of four,
+    # looks like a hex dump line. It must reach the masking engine like any text.
+    ledger = ("Ledger:\n20261115 4111 1111 1111 1111\n"
+              "20261116 5500 0000 0000 0004\n20261117 212 555 0123\nend\n")
+    out = session.mask_text(ledger).masked
+    for value in ("4111 1111 1111 1111", "5500 0000 0000 0004", "212 555 0123"):
+        assert value not in out
 
 
 def test_a_crafted_dump_cannot_carry_a_key_in_its_side_column(session):

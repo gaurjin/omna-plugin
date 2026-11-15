@@ -781,22 +781,11 @@ class MaskingSession:
             version = (len(self._value_to_token), len(self._secret_value_to_token), self._known_epoch)
             self._finder.compile(known, version)
         text, used = self._finder.find(text)
-        # 4. The masking engine, as always — except on a hex dump left after
-        #    step 1: its text was read and holds nothing private, and the
-        #    engine would only read its hex as bank and phone numbers.
-        clean = [(a, b) for a, b in disguise.dump_blocks(text)
-                 if not self._finds_any(disguise.side_text(text[a:b]), style, only)]
-        if clean:
-            parts, pos = [], 0
-            for start, end in clean + [(len(text), len(text))]:
-                if start > pos:
-                    parts.append(self._mask_plain(text[pos:start], style, only))
-                if end > start:
-                    parts.append(MaskResult(text[start:end]))
-                pos = end
-            result = _join_results(parts)
-        else:
-            result = self._mask_plain(text, style, only)
+        # 4. The masking engine, on everything — a dump included. (Skipping a
+        #    "clean" dump was tried and removed before release: a card number
+        #    in groups of four after a date looks exactly like a dump line, and
+        #    went out unmasked — security review 2026-11-15.)
+        result = self._mask_plain(text, style, only)
         if not used and not dumps:
             return result
         counts, labels = dict(result.counts), list(result.labels)
@@ -820,12 +809,6 @@ class MaskingSession:
             by_layer["DISGUISE"] = by_layer.get("DISGUISE", 0) + 1
         return MaskResult(result.masked, counts, secrets, pii, by_layer,
                           result.validated, labels, result.finds)
-
-    def _finds_any(self, text: str, style: str, only) -> bool:
-        """Does masking find anything in ``text``? A dump is left as it is only
-        when its side column holds nothing either: a crafted "dump" whose hex
-        reads as harmless could otherwise carry a real key in that column."""
-        return bool(text.strip()) and self._mask_plain(text, style, only).masked != text
 
     def _mask_plain(self, text: str, style: str = TOKENS, only: frozenset[str] | None = None) -> MaskResult:
         if len(text) < 3:
@@ -1134,22 +1117,6 @@ def _secret_fingerprint(value: str) -> str:
     nothing about the secret, and it differs on every computer."""
     return hmac.new(receipts.fingerprint_key(), b"omna-secret-number-v1\x00" + value.encode("utf-8", "surrogatepass"),
                     hashlib.sha256).hexdigest()[:32]
-
-
-def _join_results(parts: list[MaskResult]) -> MaskResult:
-    """Pieces of one text masked one by one (disguise step 4), as one result."""
-    out = MaskResult("".join(p.masked for p in parts))
-    for p in parts:
-        for k, n in p.counts.items():
-            out.counts[k] = out.counts.get(k, 0) + n
-        for k, n in p.by_layer.items():
-            out.by_layer[k] = out.by_layer.get(k, 0) + n
-        out.secrets += p.secrets
-        out.pii += p.pii
-        out.validated += p.validated
-        out.labels += p.labels
-        out.finds += p.finds
-    return out
 
 
 def _spans_in_chars(text: str, spans: list[dict]) -> list[dict]:

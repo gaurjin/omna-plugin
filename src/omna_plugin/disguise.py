@@ -141,24 +141,6 @@ def dump_blocks(text: str) -> list[tuple[int, int]]:
     return blocks
 
 
-def side_text(block: str) -> str:
-    """What a dump block holds besides its offsets and hex: the text column."""
-    out = []
-    for line in block.splitlines():
-        m = _ROW.match(line)
-        rest = line[m.end():] if m else line
-        if m:
-            digits, keep = 0, 0
-            for g in re.finditer(r"[ \t]+([0-9a-fA-F]{2,8})", m.group(1)):
-                if digits + len(g.group(1)) > 32:
-                    break
-                digits += len(g.group(1))
-                keep = g.end()
-            rest = m.group(1)[keep:] + rest
-        out.append(rest.strip(" \t|"))
-    return "\n".join(out)
-
-
 def rewrite_dumps(text: str, mask) -> tuple[str, list]:
     """Each hex dump that hides a private value becomes its own text, masked.
 
