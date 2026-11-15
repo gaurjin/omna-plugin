@@ -1,0 +1,9 @@
+0000000    #       S   e   t   t   i   n   g   s       f   o   r       t
+0000020    h   e       b   i   l   l   i   n   g       s   e   r   v   i
+0000040    c   e  \n   C   U   S   T   O   M   E   R   _   E   M   A   I
+0000060    L   =   j   a   n   e   .   d   o   e   @   e   x   a   m   p
+0000100    l   e   .   c   o   m  \n   D   B   _   P   A   S   S   W   O
+0000120    R   D   =   T   r   0   u   b   4   d   o   r   -   B   l   u
+0000140    e   -   7   7  \n   R   E   G   I   O   N   =   u   s   -   e
+0000160    a   s   t   -   1  \n                                        
+0000166

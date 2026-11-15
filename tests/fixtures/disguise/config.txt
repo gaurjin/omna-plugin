@@ -1,0 +1,4 @@
+# Settings for the billing service
+CUSTOMER_EMAIL=jane.doe@example.com
+DB_PASSWORD=Tr0ub4dor-Blue-77
+REGION=us-east-1

@@ -31,6 +31,11 @@ TOP_KEYS = frozenset({
     "context_management", "container", "modalities",
     "previous_response_id", "store", "include", "truncation", "parallel_tool_calls",
     "reasoning", "background",
+    # Anthropic's own safety check on what an agent may run ("dangerous_tool_use"):
+    # Claude Code tells it the permission mode and folders. It is the AI
+    # company's security layer, not the person's message, so it goes as it is
+    # (2026-11-15: smart masking edited 57 values in it in one request).
+    "safeguards",
     # NOT here: "prompt_cache_key" (often a user id or email); and the output
     # SCHEMAS — "text" (Responses), "response_format" (OpenAI chat),
     # "output_config" (Anthropic) — read like a tool definition below.
@@ -348,6 +353,43 @@ def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, 
     return obj
 
 
+# Claude Code's billing line: a system block of its own, exactly
+# "x-anthropic-billing-header: name=value; name=value;". Anthropic checks it
+# and refuses the whole request if it was edited (400 "x-anthropic-billing-header
+# is a reserved keyword"). Found 2026-11-15: the compact smart model read "cc_"
+# and "cli" in it as names, and Claude Code stopped working through Omna. It is
+# the AI company's billing check, not anything the person typed, so it goes
+# byte-for-byte — only as its own system block, and only while it holds
+# nothing but settings (a word, "=", a value of letters, digits, ".", "_", "-").
+_BILLING_LINE = re.compile(r"x-anthropic-billing-header:(?: [a-z][a-z0-9_]*=[A-Za-z0-9._-]*;)+")
+
+
+# Claude Code's identity for Anthropic: metadata.user_id is exactly
+# {"device_id": 64 hex, "account_uuid": uuid, "session_id": uuid} (2026-11-15:
+# smart masking read pieces of the ids as secrets). Random ids, no person's
+# text; Anthropic uses them for its own limits and abuse checks. Spared only in
+# exactly that shape — any other user_id (an email, a name) is masked.
+_HEX = "[0-9a-f]"
+_UUID = f"{_HEX}{{8}}-{_HEX}{{4}}-{_HEX}{{4}}-{_HEX}{{4}}-{_HEX}{{12}}"
+_CLAUDE_CODE_USER_ID = re.compile(
+    r'\{"device_id":"' + _HEX + r'{64}","account_uuid":"(?:' + _UUID + r')?","session_id":"' + _UUID + r'"\}')
+
+
+def _claude_code_user_id(obj) -> bool:
+    meta = obj.get("metadata") if isinstance(obj, dict) else None
+    uid = meta.get("user_id") if isinstance(meta, dict) else None
+    return isinstance(uid, str) and bool(_CLAUDE_CODE_USER_ID.fullmatch(uid))
+
+
+def _billing_blocks(obj) -> list[int]:
+    system = obj.get("system") if isinstance(obj, dict) else None
+    if not isinstance(system, list):
+        return []
+    return [i for i, b in enumerate(system)
+            if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)
+            and _BILLING_LINE.fullmatch(b["text"])]
+
+
 def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool = False):
     """Return (masked_copy, counts, labels). ``obj`` is not modified.
 
@@ -367,6 +409,7 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
     counts: dict[str, int] = {}
     labels: list[str] = []
     finds: list[list[dict]] = []
+    obj_system = obj.get("system") if isinstance(obj, dict) else None
 
     c = counts
 
@@ -407,7 +450,17 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
             not_read.append(word)
         return out
 
+    spared = _billing_blocks(obj)
+    if spared:
+        obj = {**obj, "system": [None if i in spared else b for i, b in enumerate(obj["system"])]}
+    user_id = obj["metadata"]["user_id"] if _claude_code_user_id(obj) else None
+    if user_id is not None:
+        obj = {**obj, "metadata": {**obj["metadata"], "user_id": None}}
     masked = _walk(obj, fn, media=media)
+    for i in spared:
+        masked["system"][i] = obj_system[i]
+    if user_id is not None:
+        masked["metadata"]["user_id"] = user_id
     if not_read:
         counts["_not_read"] = not_read  # type: ignore[assignment]
     if finds:

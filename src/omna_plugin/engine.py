@@ -51,7 +51,7 @@ try:
 except ImportError:  # Windows: no shared lock; one program at a time, as before
     fcntl = None  # type: ignore[assignment]
 
-from . import config, fakes, receipts, vault
+from . import config, disguise, fakes, receipts, vault
 from . import ruleset as ruleset_file
 from . import smart as smart_models
 from .style import REALISTIC, TOKENS
@@ -168,6 +168,9 @@ class MaskingSession:
         self._secret_sites: dict[str, set[str]] = {}
         self._fake_kind: dict[str, str] = {}       # fake -> KIND, to find its registry key
         self._stamp: tuple[int, int] | None = None  # the file as we last read or wrote it
+        # Known values in disguise (spread out, backwards, hex): disguise.py.
+        self._finder = disguise.Finder()
+        self._known_epoch = 0   # bumped whenever a known value is dropped
         self._flock_depth = 0
         self._restore_re: re.Pattern | None = None
         # At-rest state (#131), surfaced by `omna status` and /omna/health.
@@ -565,6 +568,7 @@ class MaskingSession:
         self._fake_salt = b""
         self._restore_re = None
         self._cache.clear()
+        self._known_epoch += 1
 
     @property
     def registry_size(self) -> int:
@@ -642,6 +646,7 @@ class MaskingSession:
             # A cached MaskResult for identical future text would otherwise
             # hand back the just-deleted token/fake (see `allow()`, same fix).
             self._cache.clear()
+            self._known_epoch += 1
             self._save_registry()
             return True
 
@@ -754,7 +759,75 @@ class MaskingSession:
 
     def mask_text(self, text: str, style: str = TOKENS, only: frozenset[str] | None = None) -> MaskResult:
         """``only``: mask just secrets and these entities (``{"EMAIL"}`` for a
-        field a site names as one of its own identifiers — body.py)."""
+        field a site names as one of its own identifiers — body.py).
+
+        Then values Omna knows are looked for in disguise — spread out one
+        character at a time, backwards, as hex, web-encoded — and replaced
+        too (disguise.py; found 2026-11-15, an agent re-read a masked file
+        with ``od -c``). A dump in ``text`` is read back to plain text first,
+        so the values it hides become known before the search."""
+        if len(text) < disguise.MIN_LEN:
+            return self._mask_plain(text, style, only)
+        # 1. A hex dump that hides a value becomes its masked text.
+        text, dumps = disguise.rewrite_dumps(text, lambda t: self._mask_plain(t, style, only))
+        # 2. A character dump (od -c) is read back and masked, so what it hides is known.
+        for view in disguise.views(text):
+            self._mask_plain(view, style, only)
+        # 3. Known values in disguise, found BEFORE the engine runs: the engine
+        #    reads runs of hex as bank or phone numbers and breaks them up.
+        with self._lock:
+            known = {v.split("\x00", 1)[1]: t for v, t in self._value_to_token.items()}
+            known.update({v.split("\x00", 1)[1]: t for v, t in self._secret_value_to_token.items()})
+            version = (len(self._value_to_token), len(self._secret_value_to_token), self._known_epoch)
+            self._finder.compile(known, version)
+        text, used = self._finder.find(text)
+        # 4. The masking engine, as always — except on a hex dump left after
+        #    step 1: its text was read and holds nothing private, and the
+        #    engine would only read its hex as bank and phone numbers.
+        clean = [(a, b) for a, b in disguise.dump_blocks(text)
+                 if not self._finds_any(disguise.side_text(text[a:b]), style, only)]
+        if clean:
+            parts, pos = [], 0
+            for start, end in clean + [(len(text), len(text))]:
+                if start > pos:
+                    parts.append(self._mask_plain(text[pos:start], style, only))
+                if end > start:
+                    parts.append(MaskResult(text[start:end]))
+                pos = end
+            result = _join_results(parts)
+        else:
+            result = self._mask_plain(text, style, only)
+        if not used and not dumps:
+            return result
+        counts, labels = dict(result.counts), list(result.labels)
+        secrets, pii = result.secrets, result.pii
+        by_layer = dict(result.by_layer)
+        for r in dumps:
+            for k, n in r.counts.items():
+                counts[k] = counts.get(k, 0) + n
+            labels += r.labels
+            secrets, pii = secrets + r.secrets, pii + r.pii
+            by_layer["DISGUISE"] = by_layer.get("DISGUISE", 0) + r.secrets + r.pii
+        for tok in used:
+            m = TOKEN_RE.fullmatch(tok)
+            kind = m.group(1) if m else "VALUE"
+            if kind.startswith(SECRET_PREFIX):
+                kind, secrets = kind[len(SECRET_PREFIX):], secrets + 1
+            else:
+                pii += 1
+            counts[kind] = counts.get(kind, 0) + 1
+            labels.append(tok[1:-1])
+            by_layer["DISGUISE"] = by_layer.get("DISGUISE", 0) + 1
+        return MaskResult(result.masked, counts, secrets, pii, by_layer,
+                          result.validated, labels, result.finds)
+
+    def _finds_any(self, text: str, style: str, only) -> bool:
+        """Does masking find anything in ``text``? A dump is left as it is only
+        when its side column holds nothing either: a crafted "dump" whose hex
+        reads as harmless could otherwise carry a real key in that column."""
+        return bool(text.strip()) and self._mask_plain(text, style, only).masked != text
+
+    def _mask_plain(self, text: str, style: str = TOKENS, only: frozenset[str] | None = None) -> MaskResult:
         if len(text) < 3:
             return MaskResult(text)
         # The style is part of the cache key: the same text masks to two
@@ -1061,6 +1134,22 @@ def _secret_fingerprint(value: str) -> str:
     nothing about the secret, and it differs on every computer."""
     return hmac.new(receipts.fingerprint_key(), b"omna-secret-number-v1\x00" + value.encode("utf-8", "surrogatepass"),
                     hashlib.sha256).hexdigest()[:32]
+
+
+def _join_results(parts: list[MaskResult]) -> MaskResult:
+    """Pieces of one text masked one by one (disguise step 4), as one result."""
+    out = MaskResult("".join(p.masked for p in parts))
+    for p in parts:
+        for k, n in p.counts.items():
+            out.counts[k] = out.counts.get(k, 0) + n
+        for k, n in p.by_layer.items():
+            out.by_layer[k] = out.by_layer.get(k, 0) + n
+        out.secrets += p.secrets
+        out.pii += p.pii
+        out.validated += p.validated
+        out.labels += p.labels
+        out.finds += p.finds
+    return out
 
 
 def _spans_in_chars(text: str, spans: list[dict]) -> list[dict]:
