@@ -265,3 +265,19 @@ def test_a_value_in_the_address_path_never_reaches_the_receipt(tmp_path, monkeyp
     assert receipts.tail(1)[0]["route"] == "/v1/messages"
     # ...and no stand-in was minted for it: nothing was "sent".
     assert pipe.session.registry_size == 0 and pipe.session.secrets_held == 0
+
+
+def test_an_api_address_stays_readable_with_smart_masking_on(tmp_path, monkeypatch):
+    # 2026-11-15: with smart masking on, "/v1/messages?beta=true" was written to
+    # the log as a personal link. The address is checked with fast masking.
+    from omna_plugin import smart
+    from omna_plugin.engine import MaskingSession
+    from omna_plugin.pipeline import Pipeline
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    asked = []
+    real = smart.detect
+    monkeypatch.setattr(smart, "detect", lambda t, s, r=None, **k: asked.append(s) or real(t, False, r))
+    pipe = Pipeline(MaskingSession(smart=True))
+    assert pipe.safe_route("/v1/messages?beta=true") == "/v1/messages?beta=true"
+    assert asked == [False]

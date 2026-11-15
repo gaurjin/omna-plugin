@@ -490,6 +490,22 @@ mask goes as it is, `omna log` says `NOT masked: ...`, and `omna report` counts 
 | Linux: pictures and PDFs | Not yet | — | goes as it is, logged |
 | Smart masking through Omna for Chrome | Yes, when smart masking is on | 64 KB of text per message | longer text gets fast masking |
 
+**A value written in disguise.** An agent that sees a stand-in where it expected a value may try
+another way to read it: one character at a time (`od -c`), as hex (`xxd`, `hexdump -C`), backwards.
+Omna reads those dumps back to text, so what they hide is masked; a hex dump that holds a private value
+is shown to the AI as its own text, masked, with a one-line note saying so. And every value Omna has
+already masked is also found spread out, backwards, as hex or web-encoded, and replaced by its stand-in.
+What still gets through: a disguise Omna has no reader for — real encryption, or a value the agent's
+own code cuts up some other way — and `od -x` (bytes printed in swapped pairs) is read for the values
+it hides but not rewritten itself. A harmless hex dump may still have some numbers in it masked as
+bank or phone numbers: untidy, never unsafe.
+
+**What Omna leaves exactly as it is in a Claude Code request:** Claude Code's billing line
+(`x-anthropic-billing-header`, its own block, settings only), Anthropic's safety-check context
+(`safeguards`) and Claude Code's random device and session ids (`metadata.user_id`, that exact shape
+only). They are the AI company's own checks, not anything you wrote; editing the billing line made
+Anthropic refuse every request.
+
 ChatGPT checks that an uploaded file is exactly the size it announced. Omna keeps the masked file at
 exactly that size when it can (a shorter one is padded); when the masked file would be larger, the
 upload is refused — it fails, it never goes unmasked.

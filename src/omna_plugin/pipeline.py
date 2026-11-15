@@ -448,7 +448,11 @@ class Pipeline:
         if len(route) >= 8:
             try:
                 text = unquote(route)
-                spans = sorted(self._detect(text), key=lambda sp: sp["start"], reverse=True)
+                # Fast masking only (rules + checksums): it finds the keys,
+                # emails and ids an address can carry; the smart models read
+                # an API path ("/v1/messages") as a personal link (2026-11-15).
+                found = smart_models.detect(text, False, self.session._ruleset_arg())
+                spans = sorted(found, key=lambda sp: sp["start"], reverse=True)
                 raw = text.encode("utf-8")
                 for sp in spans:      # the engine's spans are BYTE offsets
                     raw = raw[:sp["start"]] + f"[{sp.get('entity') or 'VALUE'}]".encode() + raw[sp["end"]:]
