@@ -80,3 +80,24 @@ def test_earlier_turns_are_checked_again(monkeypatch, tmp_path):
     out, _, _ = mb(s, body)
     assert "jane.doe@example.com" not in str(out["messages"])
     assert out["system"] == "You help."
+
+
+def test_a_background_agents_report_in_a_system_turn_is_masked(monkeypatch, tmp_path):
+    """Security review 2026-11-15: Claude Code 2.1.325 sends a background
+    agent's final report as a role "system" turn. It is the agent's data and
+    is masked; hook text and tool additions in system turns are the app's."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin.body import mask_body as mb
+    card, gh = "4111 1111 1111 1111", "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+    hook = "SessionStart hook additional context: Jane Doe wrote this plugin."
+    addition = {"type": "tool_addition", "tool": {"type": "tool_definition",
+                "definition": {"name": "crm", "description": "Ask Jane Doe"}}}
+    body = {"model": "x", "system": [{"type": "text", "text": "You help."}], "messages": [
+        {"role": "user", "content": "go"},
+        {"role": "system", "content": [{"type": "text", "text": hook}, addition]},
+        {"role": "system", "content": [{"type": "text", "text":
+            "[SYSTEM NOTIFICATION - NOT USER INPUT]\n<task-notification><result>"
+            f"customer Mary Major card {card} {gh}</result></task-notification>"}]}]}
+    out, _, _ = mb(MaskingSession(), body)
+    assert card not in str(out) and gh not in str(out)
+    assert out["messages"][1] == body["messages"][1]

@@ -411,7 +411,18 @@ _APP_NOTES = (
     "<system-reminder>\nCodebase and user instructions are shown below",
     "<system-reminder>\nAs you answer the user's questions, you can use the following context",
     "<system-reminder>\nAttribution for git commits",
+    # Claude Code also sends notes as role "system" turns inside the chat
+    # (2.1.325). Only these are its own: hook/plugin text and the notice of
+    # newly loaded tools. Other system turns carry the agent's data — a
+    # background agent's report arrives as "[SYSTEM NOTIFICATION …
+    # <task-notification> … <result>…" (security review 2026-11-15: a card
+    # number and a token in it went out) — and are masked.
+    "SessionStart hook additional context",
+    "The following deferred tools are now available",
+    "The following tools just became available",
 )
+# A tool definition handed over mid-chat is the app's, like the tool list.
+_APP_BLOCK_TYPES = frozenset({"tool_addition"})
 
 
 def _app_parts(obj):
@@ -434,8 +445,11 @@ def _app_parts(obj):
         msgs = []
         for i, m in enumerate(obj[mkey]):
             c = m.get("content") if isinstance(m, dict) else None
-            if isinstance(m, dict) and (m.get("role") in _APP_ROLES
-                                        or (isinstance(c, str) and c.startswith(_APP_NOTES))):
+            # Anthropic's instructions live in the top-level "system" key, so
+            # there a system turn inside the chat is judged by what it holds;
+            # in OpenAI's shapes a system/developer message IS the instructions.
+            app_role = isinstance(m, dict) and m.get("role") in _APP_ROLES and "system" not in obj
+            if app_role or (isinstance(c, str) and c.startswith(_APP_NOTES)):
                 aside_msgs[i] = m
                 msgs.append(None)
                 continue
@@ -443,7 +457,8 @@ def _app_parts(obj):
                 blocks = list(c)
                 for j, b in enumerate(c):
                     t = b.get("text") if isinstance(b, dict) and b.get("type") in ("text", "input_text") else None
-                    if isinstance(t, str) and t.startswith(_APP_NOTES):
+                    if (isinstance(t, str) and t.startswith(_APP_NOTES)) or (
+                            m.get("role") == "system" and isinstance(b, dict) and b.get("type") in _APP_BLOCK_TYPES):
                         aside_blocks[(i, j)] = b
                         blocks[j] = None
                 if blocks != c:
