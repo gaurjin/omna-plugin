@@ -74,6 +74,21 @@ def request(chars: int):
         _long_request.reset(token)
 
 
+# Set by ``rules_only``: no smart model, fast masking (L1 + L2) only.
+_rules_only: contextvars.ContextVar[bool] = contextvars.ContextVar("omna_rules_only", default=False)
+
+
+@contextlib.contextmanager
+def rules_only():
+    """While masking text Omna cannot tell apart from the app's own notes:
+    fast masking only (owner 2026-11-15)."""
+    token = _rules_only.set(True)
+    try:
+        yield
+    finally:
+        _rules_only.reset(token)
+
+
 _ready = {"compact": threading.Event(), "privacy-filter": threading.Event()}
 _failed: dict[str, str] = {}
 
@@ -109,7 +124,7 @@ def ready_models() -> list[str]:
 def _choice(chrome_text: str | None = None) -> str | None:
     """The engine's smart_model value for a text, or None = no model ready yet."""
     ready = ready_models()
-    if not ready:
+    if not ready or (chrome_text is None and _rules_only.get()):
         return None
     if ready == [COMPACT]:
         return COMPACT

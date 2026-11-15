@@ -107,3 +107,19 @@ def test_a_background_agents_report_in_a_system_turn_is_masked(monkeypatch, tmp_
         f"GITHUB_TOKEN={gh}"}]}]}
     out, _, _ = mb(MaskingSession(), glued)
     assert gh not in str(out)
+
+
+def test_claude_code_system_turns_get_fast_masking(monkeypatch, tmp_path):
+    """Owner 2026-11-15: text Omna cannot tell apart from app notes gets fast
+    masking (rules), not the smart models; the conversation gets smart."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    _both_ready(monkeypatch)
+    used = []
+    real = smart.mask
+    monkeypatch.setattr(smart, "mask", lambda t, on, r=None: used.append((t[:12], smart._choice())) or real(t, False, r))
+    body = {"model": "x", "system": "You help.", "messages": [
+        {"role": "user", "content": "hello Jane"},
+        {"role": "system", "content": [{"type": "text", "text": "SessionStart hook additional context: skills"}]}]}
+    mask_body(MaskingSession(smart=True), body)
+    assert ("hello Jane", smart.BOTH) in used
+    assert ("SessionStart", None) in used

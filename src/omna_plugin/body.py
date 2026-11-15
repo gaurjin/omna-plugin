@@ -419,7 +419,8 @@ _APP_NOTES = (
 # one block, so an app note can carry data behind it (security review
 # 2026-11-15, two rounds). Omna cannot cut such a block apart safely, so the
 # rule's tiebreaker applies: when it cannot tell data from app text, it is
-# data. Those turns are checked; only a pure tool definition is skipped.
+# data. Those turns are checked (fast masking, see mask_body); only a pure
+# tool definition is skipped.
 # A tool definition handed over mid-chat is the app's, like the tool list.
 _APP_BLOCK_TYPES = frozenset({"tool_addition"})
 
@@ -432,13 +433,14 @@ def _app_parts(obj):
     # Gemini names the model in the address, not the body: "contents" alone.
     if not (isinstance(obj, dict) and ("contents" in obj or (isinstance(obj.get("model"), str)
                                                             and any(k in obj for k in ("messages", "input"))))):
-        return obj, lambda m: m
+        return obj, (lambda m, _u=None: m), {}
     # The conversation is the data; every other field of the request is the
     # app's (owner 2026-11-15: "skip everything except the data").
     keys = {k for k in obj if k not in _CONVERSATION_KEYS}
     view = {k: (None if k in keys else v) for k, v in obj.items()}
     aside_msgs: dict[int, object] = {}
     aside_blocks: dict[tuple[int, int], object] = {}
+    unsure: dict[int, object] = {}
     mkey = next((k for k in ("messages", "input") if isinstance(obj.get(k), list)), None)
     if mkey:
         msgs = []
@@ -462,14 +464,20 @@ def _app_parts(obj):
                         blocks[j] = None
                 if blocks != c:
                     m = {**m, "content": blocks}
+            if isinstance(m, dict) and m.get("role") == "system" and "system" in obj:
+                unsure[i] = m        # masked apart, with fast masking (mask_body)
+                msgs.append(None)
+                continue
             msgs.append(m)
         view[mkey] = msgs
 
-    def put_back(masked):
+    def put_back(masked, unsure_masked=None):
         out = {k: (obj[k] if k in keys and k in obj else masked[k]) for k in obj}
-        if mkey and (aside_msgs or aside_blocks):
+        if mkey and (aside_msgs or aside_blocks or unsure_masked):
             msgs = list(out[mkey])
             for i, m in aside_msgs.items():
+                msgs[i] = m
+            for i, m in (unsure_masked or {}).items():
                 msgs[i] = m
             for (i, j), b in aside_blocks.items():
                 content = list(msgs[i]["content"])
@@ -478,7 +486,7 @@ def _app_parts(obj):
             out[mkey] = msgs
         return out
 
-    return view, put_back
+    return view, put_back, unsure
 
 
 def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool = False):
@@ -541,7 +549,7 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
             not_read.append(word)
         return out
 
-    obj, put_back = _app_parts(obj)
+    obj, put_back, unsure = _app_parts(obj)
     spared = _billing_blocks(obj)
     if spared:
         obj = {**obj, "system": [None if i in spared else b for i, b in enumerate(obj["system"])]}
@@ -558,7 +566,13 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
         masked["system"][i] = obj_system[i]
     if user_id is not None:
         masked["metadata"]["user_id"] = user_id
-    masked = put_back(masked)
+    # Text Omna cannot tell apart (Claude Code's system turns: its own notes
+    # glued to data) gets fast masking — the rules for secrets, emails, cards,
+    # phones and values Omna already knows — not the smart models, which read
+    # its plugin text as names (owner 2026-11-15: fewer false alarms).
+    with smart_models.rules_only():
+        unsure_masked = {i: _walk(m, fn, media=media) for i, m in unsure.items()}
+    masked = put_back(masked, unsure_masked)
     if not_read:
         counts["_not_read"] = not_read  # type: ignore[assignment]
     if finds:
