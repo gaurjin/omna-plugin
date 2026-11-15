@@ -35,9 +35,8 @@ def test_short_request_gets_both_models(monkeypatch, tmp_path):
 def test_long_request_gets_compact_alone(monkeypatch, tmp_path):
     monkeypatch.setenv("OMNA_HOME", str(tmp_path))
     _both_ready(monkeypatch)
-    tools = [{"name": f"t{i}", "description": "Reads a file and returns its lines. " * 20} for i in range(20)]
-    body = {"model": "x", "tools": tools,
-            "messages": [{"role": "user", "content": "Email jane.doe@example.com about Friday"}]}
+    pasted = "Row: Jane Doe, 12 Main St, jane.doe@example.com\n" * 200
+    body = {"model": "x", "messages": [{"role": "user", "content": pasted}]}
     assert _models_used(monkeypatch, body) == {smart.COMPACT}
 
 
@@ -61,3 +60,23 @@ def test_cached_answer_is_per_model(monkeypatch, tmp_path):
         s.mask_text("call Jane Doe tomorrow")
     s.mask_text("call Jane Doe tomorrow")
     assert calls == [smart.COMPACT, smart.BOTH]
+
+
+def test_earlier_turns_are_checked_again(monkeypatch, tmp_path):
+    """Owner rule 2026-11-15: message 5 carries messages 1-4. The AI's earlier
+    reply holds the real value (Omna put it back for the person), and the
+    agent's own earlier turns are data too: both are masked when resent."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin.body import mask_body as mb
+    s = MaskingSession()
+    body = {"model": "x", "system": "You help.", "messages": [
+        {"role": "user", "content": "my email is jane.doe@example.com"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Noted: jane.doe@example.com"},
+                                          {"type": "tool_use", "id": "t1", "name": "Bash",
+                                           "input": {"command": "grep jane.doe@example.com crm.csv"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1",
+                                      "content": "jane.doe@example.com,Gold"}]},
+        {"role": "user", "content": "thanks"}]}
+    out, _, _ = mb(s, body)
+    assert "jane.doe@example.com" not in str(out["messages"])
+    assert out["system"] == "You help."

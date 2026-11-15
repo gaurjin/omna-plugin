@@ -391,6 +391,83 @@ def _billing_blocks(obj) -> list[int]:
             and _BILLING_LINE.fullmatch(b["text"])]
 
 
+# OWNER RULE 2026-11-15: Omna checks only the PERSON's data — what they type,
+# paste, upload or attach, and what an agent reads or runs for them (tool
+# results) — plus the earlier turns of the chat, which carry those values back
+# (the AI's replies hold real values: Omna put them back for the person). What
+# the app adds on its own is the app's, not the person's, and goes as it is:
+# its instructions ("system", "instructions", "systemInstruction"), its tool
+# list, its output schema, system/developer messages, and the notes Claude
+# Code puts into the person's turn (verified 2026-11-15, Claude Code 2.1.325:
+# the CLAUDE.md files, the account context, the commit-attribution note).
+# Before this, the whole request was checked: never an owner decision; it
+# made most false alarms (tool words read as names) and a ~25 s wait.
+_APP_KEYS = frozenset({"system", "tools", "functions", "mcp_servers", "output_config", "response_format"})
+_APP_ROLES = frozenset({"system", "developer"})
+_APP_NOTES = (
+    "<system-reminder>\nCodebase and user instructions are shown below",
+    "<system-reminder>\nAs you answer the user's questions, you can use the following context",
+    "<system-reminder>\nAttribution for git commits",
+)
+
+
+def _app_parts(obj):
+    """(view, put_back): ``view`` is the request with the app's own parts set
+    to None, ``put_back(masked)`` returns them exactly as they came. Only an AI
+    API request ({"model" + "messages" / "input"}, or Gemini's "contents"); a chat
+    website's own body is left to the walker as before."""
+    # Gemini names the model in the address, not the body: "contents" alone.
+    if not (isinstance(obj, dict) and ("contents" in obj or (isinstance(obj.get("model"), str)
+                                                            and any(k in obj for k in ("messages", "input"))))):
+        return obj, lambda m: m
+    keys = set(_APP_KEYS)
+    if "input" in obj:
+        keys.add("instructions")
+        if isinstance(obj.get("text"), dict) and "format" in obj["text"]:
+            keys.add("text")
+    if "contents" in obj:
+        keys |= {"systemInstruction", "system_instruction", "toolConfig", "tool_config"}
+    view = {k: (None if k in keys else v) for k, v in obj.items()}
+    aside_msgs: dict[int, object] = {}
+    aside_blocks: dict[tuple[int, int], object] = {}
+    mkey = next((k for k in ("messages", "input") if isinstance(obj.get(k), list)), None)
+    if mkey:
+        msgs = []
+        for i, m in enumerate(obj[mkey]):
+            c = m.get("content") if isinstance(m, dict) else None
+            if isinstance(m, dict) and (m.get("role") in _APP_ROLES
+                                        or (isinstance(c, str) and c.startswith(_APP_NOTES))):
+                aside_msgs[i] = m
+                msgs.append(None)
+                continue
+            if isinstance(c, list):
+                blocks = list(c)
+                for j, b in enumerate(c):
+                    t = b.get("text") if isinstance(b, dict) and b.get("type") in ("text", "input_text") else None
+                    if isinstance(t, str) and t.startswith(_APP_NOTES):
+                        aside_blocks[(i, j)] = b
+                        blocks[j] = None
+                if blocks != c:
+                    m = {**m, "content": blocks}
+            msgs.append(m)
+        view[mkey] = msgs
+
+    def put_back(masked):
+        out = {k: (obj[k] if k in keys and k in obj else masked[k]) for k in obj}
+        if mkey and (aside_msgs or aside_blocks):
+            msgs = list(out[mkey])
+            for i, m in aside_msgs.items():
+                msgs[i] = m
+            for (i, j), b in aside_blocks.items():
+                content = list(msgs[i]["content"])
+                content[j] = b
+                msgs[i] = {**msgs[i], "content": content}
+            out[mkey] = msgs
+        return out
+
+    return view, put_back
+
+
 def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool = False):
     """Return (masked_copy, counts, labels). ``obj`` is not modified.
 
@@ -451,6 +528,7 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
             not_read.append(word)
         return out
 
+    obj, put_back = _app_parts(obj)
     spared = _billing_blocks(obj)
     if spared:
         obj = {**obj, "system": [None if i in spared else b for i, b in enumerate(obj["system"])]}
@@ -467,6 +545,7 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
         masked["system"][i] = obj_system[i]
     if user_id is not None:
         masked["metadata"]["user_id"] = user_id
+    masked = put_back(masked)
     if not_read:
         counts["_not_read"] = not_read  # type: ignore[assignment]
     if finds:

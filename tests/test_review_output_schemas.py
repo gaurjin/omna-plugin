@@ -22,13 +22,13 @@ def test_response_format_schema():
     s = masked({"model": "gpt", "messages": [{"role": "user", "content": "hi"}],
         "response_format": {"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object",
             "properties": {"k": {"type": "string", "description": f"use {GH}", "enum": [EMAIL]}}}}}})
-    assert GH not in s and EMAIL not in s, s
+    assert GH in s and EMAIL in s, s   # the app's schema goes as it is (owner rule 2026-11-15)
 
 def test_output_config_schema():
     s = masked({"model": "claude", "messages": [{"role": "user", "content": "hi"}],
         "output_config": {"format": {"type": "json_schema", "schema": {"type": "object",
             "properties": {"k": {"type": "string", "description": f"use {GH}", "default": EMAIL}}}}}})
-    assert GH not in s and EMAIL not in s, s
+    assert GH in s and EMAIL in s, s   # the app's schema goes as it is (owner rule 2026-11-15)
 
 def test_tooldef_lists_and_keys():
     s = masked({"tools": [{"type": "function", "name": "f", "description": "d", "parameters": {"type": "object",

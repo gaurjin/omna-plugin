@@ -44,45 +44,26 @@ def test_a_tool_calls_input_is_masked_whatever_its_field_names(session):
     assert block["id"] == "toolu_1" and block["name"] == "crm" and block["type"] == "tool_use"
 
 
-def test_a_tools_definition_keeps_its_names_and_masks_its_prose(session):
-    tools = [{"name": "deploy", "description": f"Deploys. Token {GH}, notify {EMAIL}.",
-              "input_schema": {"type": "object", "required": ["db"],
-                               "properties": {"db": {"type": "string", "default": PG, "enum": [PG],
-                                                     "description": f"owner {EMAIL}"}}}}]
-    body = {"model": "m", "tools": tools, "messages": [{"role": "user", "content": "hi"}]}
-    masked, _, _ = mask_body(session, body)
-    t = masked["tools"][0]
-    assert GH not in str(t) and EMAIL not in str(t) and "Tr0ub4dorXq9zW" not in str(t)
-    assert t["name"] == "deploy"
-    s = t["input_schema"]
-    assert s["type"] == "object" and s["required"] == ["db"] and s["properties"]["db"]["type"] == "string"
-
-
-def test_openai_functions_and_responses_mcp_tools_are_masked(session):
-    body = {"model": "m",
-            "tools": [{"type": "function", "function": {"name": "deploy", "description": f"token {GH}",
-                                                        "parameters": {"type": "object", "properties": {"db": {"default": PG}}}}},
+def test_the_apps_tool_list_and_connector_settings_go_as_they_are(session):
+    """Owner rule 2026-11-15: only what the person sends is checked. A tool's
+    definition, an MCP connector's address and token and the app's output
+    schema are the app's (a developer put them there on purpose): they go
+    exactly as they came. (Security review 2026-11-11 finding 4 had them
+    masked; reversed by the owner.) The person's own message is still masked."""
+    body = {"model": "m", "input": f"mail {EMAIL}",
+            "instructions": f"key {GH}",
+            "tools": [{"type": "function", "name": "f", "description": f"token {GH}",
+                       "parameters": {"type": "object", "properties": {"db": {"default": PG}}}},
                       {"type": "mcp", "server_label": "crm", "server_url": f"https://mcp.example/sse?api_key={STRIPE}",
                        "headers": {"Authorization": f"Bearer {GH}"}}],
             "functions": [{"name": "old", "description": f"key {STRIPE}"}],
-            "input": "hi"}
+            "mcp_servers": [{"type": "url", "url": f"https://mcp.example/sse?key={STRIPE}", "name": "m",
+                             "authorization_token": GH}]}
+    original = copy.deepcopy(body)
     masked, _, _ = mask_body(session, body)
-    s = str(masked)
-    for real in (GH, STRIPE, "Tr0ub4dorXq9zW"):
-        assert real not in s, real
-    assert masked["tools"][0]["function"]["name"] == "deploy" and masked["tools"][0]["type"] == "function"
-    assert masked["tools"][1]["server_label"] == "crm" and masked["functions"][0]["name"] == "old"
-
-
-def test_anthropic_mcp_servers_token_and_url_are_masked(session):
-    body = {"model": "m", "mcp_servers": [{"type": "url", "name": "crm", "url": f"https://mcp.example/sse?key={STRIPE}",
-                                           "authorization_token": GH}],
-            "container": {"id": "c_1", "skills": []}, "messages": [{"role": "user", "content": "hi"}]}
-    masked, _, _ = mask_body(session, body)
-    m = masked["mcp_servers"][0]
-    assert STRIPE not in m["url"] and GH not in m["authorization_token"]
-    assert m["type"] == "url" and m["name"] == "crm"
-    assert masked["container"] == {"id": "c_1", "skills": []}          # a request setting, left alone
+    for k in ("instructions", "tools", "functions", "mcp_servers"):
+        assert masked[k] == original[k], k
+    assert EMAIL not in masked["input"]
 
 
 def test_request_settings_and_block_structure_stay_byte_identical(session):
@@ -129,14 +110,8 @@ def test_restore_puts_back_what_masking_masked_and_never_writes_into_thinking(se
 # ---- found by /security-review of the finding-4 fix (2026-11-12) ----
 
 @pytest.mark.parametrize("body", [
-    # a schema PROPERTY named like a keep-word is a definition, not a value
-    {"tools": [{"name": "t", "input_schema": {"type": "object", "properties": {
-        "name": {"type": "string", "description": f"use {GH}"}}}}]},
-    {"tools": [{"name": "t", "input_schema": {"type": "object", "properties": {
-        "q": {"type": "string", "pattern": GH}}}}]},
     # request fields that were masked before finding 4 and must stay masked
     {"model": "m", "input": "hi", "prompt_cache_key": GH},
-    {"model": "m", "input": "hi", "text": {"format": {"type": "json_schema", "name": "x", "schema": {"description": f"key {GH}"}}}},
     # a web link under image_url (only embedded picture bytes are skipped)
     {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"https://x.example/a.png?token={GH}"}}]}]},
     {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": f"https://x.example/a.png?token={GH}"}]}]},

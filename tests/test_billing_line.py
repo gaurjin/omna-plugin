@@ -41,25 +41,15 @@ def test_billing_line_is_sent_unchanged():
     assert out["system"][0]["text"] == LINE
 
 
-def test_the_rest_of_the_system_prompt_and_messages_are_still_masked():
-    out, counts, _ = mask_body(Mangler(), body(LINE))
-    assert out["system"][1]["text"] == f"Notes: the customer is {P2}."
-    assert out["messages"][0]["content"] == f"hi {P2}"
-    assert counts["PERSON"] == 2
-
-
-def test_a_lookalike_carrying_more_than_settings_is_masked():
-    # Anything that is not exactly "name=value;" settings is somebody's text.
-    for text in (LINE + " my friend Jane Doe", "x-anthropic-billing-header: note=Jane Doe;",
-                 "Jane Doe\n" + LINE):
-        out, _, _ = mask_body(Mangler(), body(text))
-        assert "Jane Doe" not in out["system"][0]["text"], text
-
-
-def test_the_line_is_spared_only_as_its_own_system_block():
-    # Inside a longer system string it is masked with the rest.
-    out, _, _ = mask_body(Mangler(), {**body(LINE), "system": LINE + "\nYou help Jane Doe."})
-    assert "Jane Doe" not in out["system"]
+def test_the_system_prompt_goes_as_it_is_and_the_message_is_masked():
+    # Owner rule 2026-11-15: the app's instructions are the app's; only what
+    # the person sends is checked.
+    for first in (LINE, LINE + " my friend Jane Doe", "Jane Doe\n" + LINE):
+        b = body(first)
+        out, counts, _ = mask_body(Mangler(), b)
+        assert out["system"] == b["system"]
+        assert out["messages"][0]["content"] == f"hi {P2}"
+        assert counts["PERSON"] == 1
 
 
 def test_only_the_system_prompt_is_spared():
