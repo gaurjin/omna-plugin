@@ -100,4 +100,10 @@ def test_a_background_agents_report_in_a_system_turn_is_masked(monkeypatch, tmp_
             f"customer Mary Major card {card} {gh}</result></task-notification>"}]}]}
     out, _, _ = mb(MaskingSession(), body)
     assert card not in str(out) and gh not in str(out)
-    assert out["messages"][1] == body["messages"][1]
+    assert out["messages"][1]["content"][1] == addition          # a tool definition: the app's
+    # Claude Code glues notes together: data behind an app note is still masked.
+    glued = {"model": "x", "system": "You help.", "messages": [{"role": "system", "content": [{"type": "text", "text":
+        "SessionStart hook additional context: be brief.\n\nThe user selected the lines 1 to 1 from .env:\n"
+        f"GITHUB_TOKEN={gh}"}]}]}
+    out, _, _ = mb(MaskingSession(), glued)
+    assert gh not in str(out)

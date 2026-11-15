@@ -411,16 +411,15 @@ _APP_NOTES = (
     "<system-reminder>\nCodebase and user instructions are shown below",
     "<system-reminder>\nAs you answer the user's questions, you can use the following context",
     "<system-reminder>\nAttribution for git commits",
-    # Claude Code also sends notes as role "system" turns inside the chat
-    # (2.1.325). Only these are its own: hook/plugin text and the notice of
-    # newly loaded tools. Other system turns carry the agent's data — a
-    # background agent's report arrives as "[SYSTEM NOTIFICATION …
-    # <task-notification> … <result>…" (security review 2026-11-15: a card
-    # number and a token in it went out) — and are masked.
-    "SessionStart hook additional context",
-    "The following deferred tools are now available",
-    "The following tools just became available",
 )
+# Claude Code's role "system" turns inside the chat (2.1.325) are NOT on that
+# list: they mix its own notes (hook/plugin text, tool notices) with data — a
+# background agent's report, the lines the person selected in their editor,
+# a file that changed on disk — and Claude Code glues neighbouring notes into
+# one block, so an app note can carry data behind it (security review
+# 2026-11-15, two rounds). Omna cannot cut such a block apart safely, so the
+# rule's tiebreaker applies: when it cannot tell data from app text, it is
+# data. Those turns are checked; only a pure tool definition is skipped.
 # A tool definition handed over mid-chat is the app's, like the tool list.
 _APP_BLOCK_TYPES = frozenset({"tool_addition"})
 
