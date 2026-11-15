@@ -21,10 +21,18 @@ Which run (``models_here()``):
   check it is not used — text gets fast masking (L1/L2) meanwhile.
 - **Omna for Chrome** (``/omna/detect-l3``, it waits at send): both up to
   ``BOTH_UP_TO_CHARS``, the compact model alone above (64 KB ~2.5 s).
+- **The curl command**: the same rule, on the WHOLE request (``request``).
+  Found 2026-11-15: Claude Code's first request is ~100 pieces of text (its
+  instructions, its tool list, the person's instruction files), and the
+  OpenAI privacy filter costs ~80 ms a piece however short — 22.7 s with both
+  models, 1.8 s with the compact model alone; Claude Code looked stuck. A
+  short request (a chat message from a desktop app) still gets both.
 """
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import os
 import subprocess
 import sys
@@ -48,6 +56,22 @@ COMPACT = "compact"
 PRIVACY_FILTER = "privacy-filter"
 # What a user reads (`omna verify-model`): each model by its publisher.
 SHOWN_AS = {PRIVACY_FILTER: "openai-privacy-filter", COMPACT: "compact"}
+
+
+# Set by ``request`` while one request is masked: True = a long request,
+# read by the compact model alone.
+_long_request: contextvars.ContextVar[bool] = contextvars.ContextVar("omna_long_request", default=False)
+
+
+@contextlib.contextmanager
+def request(chars: int):
+    """While masking one request of ``chars`` characters of text: the
+    compact model alone above ``BOTH_UP_TO_CHARS`` (see the top of this file)."""
+    token = _long_request.set(chars > BOTH_UP_TO_CHARS)
+    try:
+        yield
+    finally:
+        _long_request.reset(token)
 
 
 _ready = {"compact": threading.Event(), "privacy-filter": threading.Event()}
@@ -93,6 +117,8 @@ def _choice(chrome_text: str | None = None) -> str | None:
         return PRIVACY_FILTER
     if chrome_text is not None and len(chrome_text) > BOTH_UP_TO_CHARS:
         return COMPACT
+    if chrome_text is None and _long_request.get():
+        return COMPACT
     return BOTH
 
 
@@ -105,6 +131,13 @@ def mode(smart: bool) -> str:
     if not smart:
         return "fast"
     return "smart" if _choice() is not None else "fast-smart-not-ready"
+
+
+def model_now(smart: bool) -> str | None:
+    """Which smart model ``mask`` would use right now (None = rules only):
+    part of a cached answer's key, so a long request's compact-only answer is
+    never reused for a short one."""
+    return _choice() if smart else None
 
 
 class EngineCrashed(ValueError):

@@ -16,6 +16,7 @@ import binascii
 import re
 
 from . import receipts
+from . import smart as smart_models
 from .engine import MaskingSession
 from .style import TOKENS
 
@@ -456,7 +457,12 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
     user_id = obj["metadata"]["user_id"] if _claude_code_user_id(obj) else None
     if user_id is not None:
         obj = {**obj, "metadata": {**obj["metadata"], "user_id": None}}
-    masked = _walk(obj, fn, media=media)
+    # How much text the request holds decides which smart model reads it
+    # (smart.request: a long agent request gets the compact model alone).
+    size = [0]
+    _walk(obj, lambda t, _k, _i: size.__setitem__(0, size[0] + len(t)) or t)
+    with smart_models.request(size[0]):
+        masked = _walk(obj, fn, media=media)
     for i in spared:
         masked["system"][i] = obj_system[i]
     if user_id is not None:

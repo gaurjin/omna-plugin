@@ -816,7 +816,7 @@ class MaskingSession:
         # The style is part of the cache key: the same text masks to two
         # different things, and handing one style the other's answer would send
         # a realistic fake value to a door that refused it.
-        key = style + "\x00" + ",".join(sorted(only or ())) + "\x00" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+        key = style + "\x00" + ",".join(sorted(only or ())) + "\x00" + str(smart_models.model_now(self.smart)) + "\x00" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
         with self._lock:
             if self._stamp_now() != self._stamp:
                 # Another program changed the file (a forget clears the cache):
