@@ -112,9 +112,25 @@ SITES: tuple[Site, ...] = (
         ("chatgpt.com", r"^/backend-api/f/conversation/prepare$", ()),
     ), security=(
         ("chatgpt.com", r"^/backend-api/sentinel/"),   # ChatGPT's anti-abuse check before each message
+        # The ChatGPT desktop app 26.1106 proving it runs on a real Mac
+        # (Apple's device token). Found live 2026-11-16: the token was read
+        # as a secret and edited, and the app refused the message ("Unusual
+        # activity has been detected from your device").
+        ("chatgpt.com", r"^/backend-api/devicecheck$"),
+        # Signing in (same day, same app): the app's own sign-in token
+        # ("auth_token") was edited and OpenAI refused it (403). Not data
+        # sent to the AI — the company's security layer, like claude.ai's.
+        ("chatgpt.com", r"^/api/auth/"),
+        # The app registering this Mac for push notifications: its token was
+        # read as a secret and edited (same day). The app's own registration.
+        ("chatgpt.com", r"^/backend-api/notifications/subscription/register$"),
     ), reports=(
         ("chatgpt.com", r"/events/statsc/"),
         ("chatgpt.com", r"^/ces/"),
+        ("chat.openai.com", r"^/ces/"),   # the same reports, sent here by the ChatGPT desktop app (live 2026-11-16)
+        # The app asking which of its features are switched on (Statsig):
+        # device ids and the account's own email, no typed text (live 2026-11-16).
+        ("ab.chatgpt.com", r"^/v1/(?:initialize|rgstr)$"),
         ("chatgpt.com", r"^/realtime/wm$"),   # device codes + numbers, no text (purpose not public)
     ),
         # Recorded live 2026-11-15 (one typed message, signed in): "parts" is

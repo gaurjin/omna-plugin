@@ -10,6 +10,9 @@ from omna_plugin import hands_off
     ("www.perplexity.ai", "/search?q=x&__cf_chl_f_tk=abc"),
     # ChatGPT's own anti-abuse check before each message
     ("chatgpt.com", "/backend-api/sentinel/chat-requirements"),
+    ("chatgpt.com", "/backend-api/devicecheck"),        # ChatGPT desktop app: Apple's device token
+    ("chatgpt.com", "/api/auth/link-session"),          # ChatGPT desktop app: its own sign-in token
+    ("chatgpt.com", "/backend-api/notifications/subscription/register"),   # its push-notification token
     # claude.ai's sign-in (found live 2026-11-15, Claude desktop app): the
     # sign-in email and Anthropic's own "client_attestation" token were
     # masked, and the app answered "Invalid email address". Signing in is
@@ -35,6 +38,8 @@ def test_security_checks_are_hands_off(host, path):
     ("claude.ai", "/api/event_logging/v2/batch"),
     ("chatgpt.com", "/unauth-mweb/events/statsc/flush"),
     ("chatgpt.com", "/ces/v1/t"),
+    ("chat.openai.com", "/ces/v1/telemetry/intake"),    # the ChatGPT desktop app reports here
+    ("ab.chatgpt.com", "/v1/initialize"),               # the app asking which features are switched on
     ("grok.com", "/monitoring?o=1"),
     ("grok.com", "/ht/v1/track"),
     ("gemini.google.com", "/_/BardChatUi/jserror?bl=x"),
