@@ -256,3 +256,24 @@ def test_the_door_restores_the_desktop_apps_plain_reply(tmp_path, monkeypatch):
     assert fl.response.stream is False
     addon.response(fl)
     assert fl.response.content == f(1, f(3, f"mail {EMAIL} today"))
+
+
+@pytest.mark.parametrize("text", [
+    "log \x1b[32mOK\x1b[0m key mail bob.reyes@corpmail.example",
+    "page1\x0cpage2 write to bob.reyes@corpmail.example",
+])
+def test_text_with_a_control_character_is_still_masked(text):
+    """Security review 2026-11-16: readable UTF-8 holding a control character
+    (colour codes in a pasted log, a form feed) was copied out unread."""
+    raw = text.encode()
+    body = bytes([0x0A, len(raw)]) + raw          # field 1, length-delimited
+    out = protobuf.rewrite(body, lambda t: t.replace("bob.reyes@corpmail.example", "[" + "EMAIL_1]"))
+    assert b"bob.reyes@corpmail.example" not in out
+    assert b"[" + b"EMAIL_1]" in out
+    assert (b"\x1b" in out) == (b"\x1b" in raw) and (b"\x0c" in out) == (b"\x0c" in raw)
+
+
+def test_raw_bytes_with_controls_are_untouched_when_nothing_is_found():
+    raw = b"\x00\x01id\x02\x03"
+    body = bytes([0x0A, len(raw)]) + raw
+    assert protobuf.rewrite(body, lambda t: t) is body

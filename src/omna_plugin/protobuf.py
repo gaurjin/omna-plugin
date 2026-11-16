@@ -17,6 +17,8 @@ and are never touched. Whatever was not changed is copied byte for byte.
 
 from __future__ import annotations
 
+import re
+
 import gzip
 import struct
 from typing import Callable
@@ -92,6 +94,33 @@ def _text(raw: bytes) -> str | None:
     return s
 
 
+_CONTROLS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]+")
+
+
+def _mask_around_controls(raw: bytes, visit: Visit) -> bytes | None:
+    """Readable UTF-8 that holds a control character (a pasted log with
+    colour codes, a form-feed page break) was copied out unread: a real key or
+    email in it reached the provider (security review 2026-11-16). The text
+    between the control characters is masked; the control characters stay.
+    None when nothing changed or the bytes are not UTF-8 (raw bytes are never
+    touched)."""
+    try:
+        s = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    pieces = _CONTROLS.split(s)
+    if not any(p.strip() for p in pieces):
+        return None
+    controls = _CONTROLS.findall(s)
+    out = []
+    for i, piece in enumerate(pieces):
+        out.append(visit(piece) if piece.strip() else piece)
+        if i < len(controls):
+            out.append(controls[i])
+    joined = "".join(out)
+    return None if joined == s else joined.encode("utf-8")
+
+
 def _rewrite(data: bytes, visit: Visit, depth: int) -> bytes | None:
     fields = _fields(data)
     if fields is None:
@@ -112,6 +141,10 @@ def _rewrite(data: bytes, visit: Visit, depth: int) -> bytes | None:
                 masked = visit(text)
                 if masked != text:
                     new = masked.encode("utf-8")
+            else:
+                masked = _mask_around_controls(value, visit)
+                if masked is not None:
+                    new = masked
         if new is None:
             continue
         tag_end = start
