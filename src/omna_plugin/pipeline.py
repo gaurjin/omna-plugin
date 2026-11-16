@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, quote, unquote, urlencode
 
-from . import office, pdf, picture, protobuf, receipts
+from . import batchexecute, office, pdf, picture, protobuf, receipts, webchannel
 from . import ruleset as ruleset_file
 from . import smart as smart_models
 from .body import ONLY_IN_IDS, _looks_like_text, is_api_request, is_id_key, mask_body, restore_body
@@ -168,7 +168,16 @@ class Pipeline:
         gets fast masking (owner rule 2026-11-15, the tiebreaker). Raw bytes
         are never touched. Refused, never forwarded, when it cannot be read."""
         total = MaskStats()
+        visit = self._proto_visit(total, style)
+        try:
+            out = (protobuf.rewrite_frames if protobuf.is_framed(content_type) else protobuf.rewrite)(body, visit)
+        except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
+            return MaskedBody(None, MaskStats(), refused="mask-failed")
+        if out is None:
+            return MaskedBody(None, MaskStats(), refused="unparseable")
+        return MaskedBody(out, total)
 
+    def _proto_visit(self, total: MaskStats, style: str) -> protobuf.Visit:
         def visit(text: str) -> str:
             if _looks_like_text(text):
                 masked, st = self.mask_text(text, style)
@@ -177,14 +186,35 @@ class Pipeline:
                     masked, st = self.mask_text(text, style)
             _merge(total, st)
             return masked
+        return visit
 
+    def mask_channel(self, body: bytes, style: str = TOKENS) -> MaskedBody:
+        """Mask a message sent through Google's channel format
+        (``webchannel.py``: the Gemini website since 2026-11). The text
+        inside is treated exactly as in ``mask_proto``. Refused, never
+        forwarded, when a value in it cannot be read."""
+        total = MaskStats()
+        visit = self._proto_visit(total, style)
         try:
-            out = (protobuf.rewrite_frames if protobuf.is_framed(content_type) else protobuf.rewrite)(body, visit)
+            out = webchannel.rewrite_form(body, lambda packed: protobuf.rewrite(packed, visit))
         except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
             return MaskedBody(None, MaskStats(), refused="mask-failed")
         if out is None:
             return MaskedBody(None, MaskStats(), refused="unparseable")
         return MaskedBody(out, total)
+
+    def mask_batch(self, body: bytes, style: str = TOKENS) -> MaskedBody | None:
+        """Mask a Google "batchexecute" form (``batchexecute.py``: the Gemini
+        website's own calls). Each string is treated as in ``mask_proto``;
+        Google's function names and the page's anti-forgery token go as they
+        are. None when the body is not that format — the caller masks it the
+        way it did before."""
+        total = MaskStats()
+        try:
+            out = batchexecute.rewrite_form(body, self._proto_visit(total, style))
+        except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError, RecursionError):
+            return MaskedBody(None, MaskStats(), refused="mask-failed")
+        return None if out is None else MaskedBody(out, total)
 
     def mask_file_name(self, name: str, style: str = TOKENS) -> tuple[str, MaskStats]:
         """A file's name with its values masked and its extension kept
@@ -478,6 +508,11 @@ class Pipeline:
         """The same for a framed reply that streams in (the Claude desktop
         app's …/StreamTimeline)."""
         return protobuf.FrameReader(lambda t: self.restore_text(t, site=site))
+
+    def channel_restorer(self, site: str | None = None) -> webchannel.ReplyReader:
+        """The same for replies on Google's channel format (the Gemini website)."""
+        return webchannel.ReplyReader(
+            lambda packed: protobuf.rewrite(packed, lambda t: self.restore_text(t, site=site)))
 
     def sse_restorer(self, minted: list[str] | None = None, site: str | None = None) -> StreamRestorer:
         """For Anthropic / OpenAI shaped SSE (the API door's formats, and the

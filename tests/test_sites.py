@@ -15,7 +15,7 @@ HOSTS_BEFORE = [
     'bolt.new', 'chai-research.com', 'character.ai', 'chat.deepseek.com', 'chat.mistral.ai', 'chat.openai.com',
     'chat.qwen.ai', 'chatglm.cn', 'chatgpt.com', 'claude.ai', 'copilot.com', 'copilot.microsoft.com', 'copy.ai',
     'deepai.org', 'devin.ai', 'doubao.com', 'duck.ai', 'elevenlabs.io', 'elicit.org', 'fireflies.ai',
-    'gemini.google.com', 'generativelanguage.googleapis.com', 'glean.com', 'grok.com', 'harvey.ai', 'heygen.com',
+    'gemini.google.com', 'geminiweb-pa.clients6.google.com', 'generativelanguage.googleapis.com', 'glean.com', 'grok.com', 'harvey.ai', 'heygen.com',
     'huggingface.co', 'hunyuan.tencent.com', 'ideogram.ai', 'janitorai.com', 'jasper.ai', 'jenni.ai',
     'khanmigo.khanacademy.org', 'kimi.com', 'leonardo.ai', 'lmarena.ai', 'lovable.dev', 'manus.im', 'meta.ai',
     'midjourney.com', 'minimax.io', 'muse.ai', 'my.microsoftpersonalcontent.com', 'nabla.com', 'oaiusercontent.com',

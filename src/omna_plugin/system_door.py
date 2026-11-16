@@ -349,6 +349,21 @@ class OmnaAddon:
         if self._skip_restore(flow):
             return
         adapter = flow.metadata.get("omna_adapter") or for_host(flow.request.pretty_host)
+        if sites.channel(flow.request.pretty_host, flow.request.path):
+            # The Gemini website's replies: Google's channel format, restored
+            # piece by piece as they stream in.
+            channel = self.pipeline.channel_restorer(site=self._site(flow))
+
+            def cb_channel(chunk: bytes) -> bytes | list[bytes]:
+                if chunk == b"":
+                    self._receipt(flow, flow.response.status_code if flow.response else 0, stream=True)
+                    return channel.flush()
+                out = channel.feed(chunk)
+                return out if out else []   # never b"" mid-stream: see cb below
+
+            flow.response.stream = cb_channel
+            flow.metadata["omna_streamed"] = True
+            return
         if self._packed_reply(flow):
             # The Claude desktop app's replies (5.x): the packed binary
             # format. A streamed one is restored frame by frame; a plain one

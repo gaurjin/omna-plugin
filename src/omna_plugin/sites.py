@@ -51,6 +51,14 @@ class Site:
     # where recorded live: the same format on any other address is some
     # site's own traffic and is handled as before.
     packed: tuple[str, ...] = ()
+    # Addresses where the site sends its messages through Google's channel
+    # format (a form of base64 values, each one the packed binary format) —
+    # read by ``webchannel.py``. Listed only where recorded live.
+    channel: tuple[tuple[str, str], ...] = ()
+    # Addresses where the site sends its own calls as a Google "batchexecute"
+    # form (function names + arguments without field names) — read by
+    # ``batchexecute.py``. Listed only where recorded live.
+    batch: tuple[tuple[str, str], ...] = ()
 
 
 _COPILOT = ("copilot.com", "copilot.microsoft.com")
@@ -140,8 +148,19 @@ SITES: tuple[Site, ...] = (
     Site("Gemini", (
         "gemini.google.com",
         "push.clients6.google.com",   # Gemini -> Google's upload server (MASTER #157)
+        # Where the website sends the message since 2026-11 (found live
+        # 2026-11-16: until then it was not listed and the message went out
+        # unmasked through the curl command).
+        "geminiweb-pa.clients6.google.com",
     ), reports=(
         ("gemini.google.com", r"^/_/BardChatUi/(jserror|web-reports)\b"),
+    ), channel=(
+        ("geminiweb-pa.clients6.google.com", r"^/v1/processSession$"),
+    ), batch=(
+        # The website's own calls — list my chats, load one, rename one —
+        # recorded live 2026-11-16; before 2026-11 the message itself went to
+        # …/data/…/StreamGenerate in the same form.
+        ("gemini.google.com", r"^/_/BardChatUi/data/"),
     )),
     # Found by the live typing-leak test 2026-10-24 (MASTER #156) — each one
     # received what a person typed BEFORE pressing Send:
@@ -295,6 +314,18 @@ def packed(host: str, path: str) -> bool:
     """Is this an address where the site's app sends the packed binary format?"""
     s = _site(host)
     return s is not None and any(re.search(rx, (path or "").split("?", 1)[0]) for rx in s.packed)
+
+
+def channel(host: str, path: str) -> bool:
+    """Is this an address where the site talks through Google's channel format?"""
+    p = (path or "").split("?", 1)[0]
+    return any(on(host, h) and re.search(rx, p) for s in SITES for h, rx in s.channel)
+
+
+def batch(host: str, path: str) -> bool:
+    """Is this an address where the site sends a Google "batchexecute" form?"""
+    p = (path or "").split("?", 1)[0]
+    return any(on(host, h) and re.search(rx, p) for s in SITES for h, rx in s.batch)
 
 
 def compiled(attr: str) -> list[tuple]:

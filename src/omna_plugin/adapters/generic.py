@@ -30,6 +30,21 @@ class GenericAdapter:
     def mask(self, pipeline: Pipeline, req: RequestView, style: str = TOKENS) -> MaskOutcome:
         ct = (req.content_type or "").lower()
         maskable = any(m in ct for m in _MASKABLE)
+        if req.body and sites.channel(req.host, req.path):
+            # The Gemini website's messages (since 2026-11): Google's channel
+            # format. Read, masked and sent on — or refused, never sent unread.
+            out = pipeline.mask_channel(req.body, style)
+            if out.refused:
+                return MaskOutcome(None, MaskStats(), refused=out.refused)
+            return MaskOutcome(None if out.body is req.body or out.body == req.body else out.body, out.stats)
+        if req.body and "x-www-form-urlencoded" in ct and sites.batch(req.host, req.path):
+            # The Gemini website's own calls: only what a person could have
+            # typed is masked. Not that format after all → handled as before.
+            out = pipeline.mask_batch(req.body, style)
+            if out is not None:
+                if out.refused:
+                    return MaskOutcome(None, MaskStats(), refused=out.refused)
+                return MaskOutcome(None if out.body is req.body or out.body == req.body else out.body, out.stats)
         if req.body and protobuf.is_packed(ct) and sites.packed(req.host, req.path):
             # The Claude desktop app's messages (5.x): read, masked, and sent
             # on — or refused when they cannot be read, never sent unread.
