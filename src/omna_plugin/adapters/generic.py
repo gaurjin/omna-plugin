@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .. import protobuf, sites
 from ..pipeline import MaskStats, Pipeline
 from ..style import TOKENS
 from .base import ENDPOINT_RE, MaskOutcome, RequestView, ResponseMode
@@ -29,6 +30,13 @@ class GenericAdapter:
     def mask(self, pipeline: Pipeline, req: RequestView, style: str = TOKENS) -> MaskOutcome:
         ct = (req.content_type or "").lower()
         maskable = any(m in ct for m in _MASKABLE)
+        if req.body and protobuf.is_packed(ct) and sites.packed(req.host, req.path):
+            # The Claude desktop app's messages (5.x): read, masked, and sent
+            # on — or refused when they cannot be read, never sent unread.
+            out = pipeline.mask_proto(req.body, ct, style)
+            if out.refused:
+                return MaskOutcome(None, MaskStats(), refused=out.refused)
+            return MaskOutcome(None if out.body is req.body or out.body == req.body else out.body, out.stats)
         if not maskable and req.body and _is_file_label(ct):
             masked, stats = pipeline.mask_file(req.body, req.content_type, style)
             if masked == req.body:

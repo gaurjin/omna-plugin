@@ -13,11 +13,12 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextvars
 import re
 
-from . import receipts
+from . import receipts, sites
 from . import smart as smart_models
-from .engine import MaskingSession
+from .engine import MaskingSession, sending_site
 from .style import TOKENS
 
 # WHERE a field is skipped matters (security review 2026-11-11, finding 4).
@@ -313,8 +314,13 @@ def _child_mode(parent: dict, key: str, mode: str, depth: int = 1) -> str:
     return _MSG
 
 
+# Set while the walker is inside a field that holds the person's own text on
+# a chat website (``sites.Site.person_text``).
+_in_person_text: contextvars.ContextVar[bool] = contextvars.ContextVar("omna_in_person_text", default=False)
+
+
 def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, in_tool: bool = False,
-          media=None):
+          media=None, person: frozenset | None = None):
     """Visit every string that is someone's content; ``visit(s, key, in_tool)``
     returns its replacement. ``in_tool``: the string is part of a tool CALL
     (finding 2). One walker for masking and restoring, so whatever is masked
@@ -340,7 +346,7 @@ def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, 
                 return opened
         return visit(obj, key, in_tool)
     if isinstance(obj, list):
-        return [_walk(item, visit, mode, key, depth + 1, in_tool, media) for item in obj]
+        return [_walk(item, visit, mode, key, depth + 1, in_tool, media, person) for item in obj]
     if isinstance(obj, dict):
         here = in_tool or is_tool_call(obj)
         out = {}
@@ -348,8 +354,13 @@ def _walk(obj, visit, mode: str = _MSG, key: str | None = None, depth: int = 0, 
             if _skip(obj, k, v, mode, depth):
                 out[k] = media(obj, k, v) if media is not None and k in _MEDIA_KEYS and isinstance(v, str) and v else v
             else:
-                out[k] = _walk(v, visit, _child_mode(obj, k, mode, depth), k, depth + 1,
-                               here or k in _TOOL_KEYS, media)
+                tok = _in_person_text.set(True) if person and k in person else None
+                try:
+                    out[k] = _walk(v, visit, _child_mode(obj, k, mode, depth), k, depth + 1,
+                                   here or k in _TOOL_KEYS, media, person)
+                finally:
+                    if tok is not None:
+                        _in_person_text.reset(tok)
         return out
     return obj
 
@@ -412,6 +423,21 @@ _APP_NOTES = (
     "<system-reminder>\nAs you answer the user's questions, you can use the following context",
     "<system-reminder>\nAttribution for git commits",
 )
+_NOTE_END = "</system-reminder>"
+
+
+def _is_app_note(text) -> bool:
+    """One of Claude Code's own notes, and nothing else. A block that merely
+    STARTS with a note is not the app's: an editor selection or an @-file
+    glued behind it in the same block is the person's data (found 2026-11-15).
+    So the note's own closing tag must be the end of the text; anything after
+    it makes the whole block data (the rule's tiebreaker) and it is checked."""
+    if not (isinstance(text, str) and text.startswith(_APP_NOTES)):
+        return False
+    end = text.find(_NOTE_END)
+    return end >= 0 and not text[end + len(_NOTE_END):].strip()
+
+
 # Claude Code's role "system" turns inside the chat (2.1.325) are NOT on that
 # list: they mix its own notes (hook/plugin text, tool notices) with data — a
 # background agent's report, the lines the person selected in their editor,
@@ -425,14 +451,34 @@ _APP_NOTES = (
 _APP_BLOCK_TYPES = frozenset({"tool_addition"})
 
 
+def _is_api_request(obj) -> bool:
+    """An AI API request: {"model" + "messages" / "input"}. Gemini names the
+    model in the address, not the body: "contents" alone."""
+    return isinstance(obj, dict) and ("contents" in obj or (isinstance(obj.get("model"), str)
+                                                            and any(k in obj for k in ("messages", "input"))))
+
+
+def _site_tool_list(obj) -> bool:
+    """A chat website's own tool list: every entry a tool's definition — a
+    one-word name with its input schema, or with a one-word type (claude.ai's
+    built-in tools: {"type": "widget", "name": "weather_fetch"}). Anything
+    else under "tools" is somebody's text."""
+    def word(v) -> bool:
+        return isinstance(v, str) and bool(v) and not _looks_like_text(v)
+
+    tools = obj.get("tools") if isinstance(obj, dict) else None
+    return isinstance(tools, list) and bool(tools) and all(
+        isinstance(t, dict) and word(t.get("name"))
+        and ("input_schema" in t or "parameters" in t or (word(t.get("type")) and set(t) == {"name", "type"}))
+        for t in tools)
+
+
 def _app_parts(obj):
     """(view, put_back): ``view`` is the request with the app's own parts set
     to None, ``put_back(masked)`` returns them exactly as they came. Only an AI
     API request ({"model" + "messages" / "input"}, or Gemini's "contents"); a chat
     website's own body is left to the walker as before."""
-    # Gemini names the model in the address, not the body: "contents" alone.
-    if not (isinstance(obj, dict) and ("contents" in obj or (isinstance(obj.get("model"), str)
-                                                            and any(k in obj for k in ("messages", "input"))))):
+    if not _is_api_request(obj):
         return obj, (lambda m, _u=None: m), {}
     # The conversation is the data; every other field of the request is the
     # app's (owner 2026-11-15: "skip everything except the data").
@@ -450,7 +496,7 @@ def _app_parts(obj):
             # there a system turn inside the chat is judged by what it holds;
             # in OpenAI's shapes a system/developer message IS the instructions.
             app_role = isinstance(m, dict) and m.get("role") in _APP_ROLES and "system" not in obj
-            if app_role or (isinstance(c, str) and c.startswith(_APP_NOTES)):
+            if app_role or _is_app_note(c):
                 aside_msgs[i] = m
                 msgs.append(None)
                 continue
@@ -458,7 +504,7 @@ def _app_parts(obj):
                 blocks = list(c)
                 for j, b in enumerate(c):
                     t = b.get("text") if isinstance(b, dict) and b.get("type") in ("text", "input_text") else None
-                    if (isinstance(t, str) and t.startswith(_APP_NOTES)) or (
+                    if _is_app_note(t) or (
                             m.get("role") == "system" and isinstance(b, dict) and b.get("type") in _APP_BLOCK_TYPES):
                         aside_blocks[(i, j)] = b
                         blocks[j] = None
@@ -512,16 +558,31 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
 
     c = counts
 
+    # A chat website's own body (recorded live, ``sites.Site.person_text``):
+    # the person's fields get smart masking, the site's own fields fast
+    # masking, its tool list goes as it is (owner rule 2026-11-15; before
+    # this, 35 of claude.ai's own fields were edited in one request).
+    person = None if _is_api_request(obj) else sites.person_text(sending_site())
+    site_tools = obj["tools"] if person is not None and _site_tool_list(obj) else None
+    if site_tools is not None:
+        obj = {**obj, "tools": None}
+
+    def mask_text(text: str, only):
+        if person is not None and not _in_person_text.get():
+            with smart_models.rules_only():
+                return session.mask_text(text, style=style, only=only)
+        return session.mask_text(text, style=style, only=only)
+
     def fn(s: str, key: str | None = None, _in_tool: bool = False) -> str:
         only = ONLY_IN_IDS if careful and is_id_key(key) else None
-        r = session.mask_text(s, style=style, only=only)
+        r = mask_text(s, only)
         masked = r.masked
         if r.masked == s and key and _CRED_KEY.search(key) and s and not any(ch.isspace() for ch in s):
             # {"password": "S3cure-Horse-Battery-99"}: each value is masked on
             # its own, so the engine never saw the word that makes it a
             # password (finding 4). Ask again WITH its name, using the
             # engine's own rule (keyword + entropy floor), and keep the value.
-            r2 = session.mask_text(f"{key}={s}", style=style, only=only)
+            r2 = mask_text(f"{key}={s}", only)
             head = f"{key}="
             if r2.masked.startswith(head) and r2.masked[len(head):] != s:
                 r, masked = r2, r2.masked[len(head):]   # never edit r2: the engine caches it
@@ -561,7 +622,9 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
     size = [0]
     _walk(obj, lambda t, _k, _i: size.__setitem__(0, size[0] + len(t)) or t)
     with smart_models.request(size[0]):
-        masked = _walk(obj, fn, media=media)
+        masked = _walk(obj, fn, media=media, person=person)
+    if site_tools is not None:
+        masked["tools"] = site_tools
     for i in spared:
         masked["system"][i] = obj_system[i]
     if user_id is not None:

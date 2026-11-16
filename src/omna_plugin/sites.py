@@ -37,6 +37,20 @@ class Site:
     # — commands an agent runs, files it writes — so a secret is never put
     # back into them. The chat websites' tool calls run on the site's servers.
     api: bool = False
+    # The fields of the site's OWN request bodies that hold what the person
+    # typed, pasted or attached (owner rule 2026-11-15: Omna masks only the
+    # person's data). Those get smart masking; every other field is the
+    # site's — ids, settings, connector addresses — and gets fast masking
+    # (the rule's tiebreaker: what Omna cannot tell apart is checked with the
+    # rules); the site's tool list goes as it is. None = not recorded live
+    # yet: the whole body is masked as before. Fill it only from a real
+    # recorded request, never from memory.
+    person_text: tuple[str, ...] | None = None
+    # Addresses where the site's app sends its requests in the packed binary
+    # format (protobuf) — read and masked by ``protobuf.py``. Listed only
+    # where recorded live: the same format on any other address is some
+    # site's own traffic and is handled as before.
+    packed: tuple[str, ...] = ()
 
 
 _COPILOT = ("copilot.com", "copilot.microsoft.com")
@@ -44,7 +58,18 @@ _COPILOT = ("copilot.com", "copilot.microsoft.com")
 SITES: tuple[Site, ...] = (
     # ---- the public APIs: the API door already covers tools that use base
     # URLs; these are for apps that call the APIs directly through the system door
-    Site("Anthropic API", ("api.anthropic.com",), api=True),
+    Site("Anthropic API", ("api.anthropic.com",), api=True, security=(
+        # An app authorising itself with Anthropic (found live 2026-11-15,
+        # Claude desktop app): masking the redirect address, "state" and
+        # "code_challenge" got every attempt refused (400). The company's
+        # security layer, never the person's data.
+        ("api.anthropic.com", r"^/v1/oauth/"),
+        # The Claude desktop app registering this computer ("bridge": its
+        # name, its work folder, an id). Found live the same day: the folder
+        # "/cowork" was masked. The app's own registration with the company,
+        # never data sent to the AI.
+        ("api.anthropic.com", r"^/v1/environments/(?:[^/]+/)?bridge(?:/|$)"),
+    )),
     Site("OpenAI API", ("api.openai.com",), api=True),
     Site("Gemini API", ("generativelanguage.googleapis.com",), api=True),
     Site("Mistral API", ("api.mistral.ai",), api=True),
@@ -57,10 +82,27 @@ SITES: tuple[Site, ...] = (
     Site("Fireworks API", ("api.fireworks.ai",), api=True),
     Site("GitHub Copilot API", ("api.githubcopilot.com",), api=True),
     # ---- the chat websites
-    Site("Claude", ("claude.ai",), reports=(
+    Site("Claude", ("claude.ai",), security=(
+        # Signing in (found live 2026-11-15, Claude desktop app): masking the
+        # sign-in email and Anthropic's "client_attestation" token made the
+        # app refuse the sign-in ("Invalid email address"). Not data sent to
+        # the AI; the token is the company's own security layer.
+        ("claude.ai", r"^/api/auth/"),
+    ), reports=(
         ("claude.ai", r"^/api/v2/rum\b"),
         ("claude.ai", r"^/api/event_logging/"),
-    )),
+    ),
+        # Recorded live 2026-11-15 (one message, signed in): "prompt" is the
+        # message, "attachments" / "files" what was attached or pasted long,
+        # "message_content" / "recent_titles" the chat-title request; the
+        # rest are where a person types elsewhere on the site (a chat's or
+        # project's name, a project document).
+        person_text=("prompt", "attachments", "files", "message_content", "recent_titles",
+                     "content", "file_name", "name", "title", "text"),
+        # The Claude desktop app 5.1231.2 (recorded live 2026-11-15): the
+        # message goes to …ConversationService/PerformAction, the reply
+        # channel is …/StreamTimeline.
+        packed=(r"^/claudeai-rpc/",)),
     Site("ChatGPT", (
         "chatgpt.com", "chat.openai.com",
         # Found by the live upload test 2026-10-24 (MASTER #157): the raw file
@@ -220,6 +262,19 @@ def site_of(host: str) -> str:
         return s.name
     h = _bare(host)
     return next((e for e in OTHER_HOSTS if on(h, e)), h)
+
+
+def person_text(site_name: str | None) -> frozenset[str] | None:
+    """The person's-text fields of a site's own request bodies, or None when
+    the site has no table (see ``Site.person_text``)."""
+    s = next((x for x in SITES if x.name == site_name), None)
+    return frozenset(s.person_text) if s is not None and s.person_text is not None else None
+
+
+def packed(host: str, path: str) -> bool:
+    """Is this an address where the site's app sends the packed binary format?"""
+    s = _site(host)
+    return s is not None and any(re.search(rx, (path or "").split("?", 1)[0]) for rx in s.packed)
 
 
 def compiled(attr: str) -> list[tuple]:

@@ -10,10 +10,10 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, quote, unquote, urlencode
 
-from . import office, pdf, picture, receipts
+from . import office, pdf, picture, protobuf, receipts
 from . import ruleset as ruleset_file
 from . import smart as smart_models
-from .body import ONLY_IN_IDS, is_id_key, mask_body, restore_body
+from .body import ONLY_IN_IDS, _looks_like_text, is_id_key, mask_body, restore_body
 from .engine import MaskingSession, ToolView
 from .policy import Policy, live_tool_rule
 from .stream import StreamRestorer, TextRestorer
@@ -141,6 +141,32 @@ class Pipeline:
                                     validated=r.validated, by_layer=dict(r.by_layer),
                                     mask_ms=int((time.time() - t0) * 1000), tokens=list(r.labels),
                                     finds=list(r.finds))
+
+    def mask_proto(self, body: bytes, content_type: str, style: str = TOKENS) -> MaskedBody:
+        """Mask a body in the packed binary format (``protobuf.py``): the
+        Claude desktop app's messages since 5.x. Text that reads like writing
+        (it has a space or an "@") is the person's and gets smart masking;
+        a single word — an id, a model's or a tool's name — is the app's and
+        gets fast masking (owner rule 2026-11-15, the tiebreaker). Raw bytes
+        are never touched. Refused, never forwarded, when it cannot be read."""
+        total = MaskStats()
+
+        def visit(text: str) -> str:
+            if _looks_like_text(text):
+                masked, st = self.mask_text(text, style)
+            else:
+                with smart_models.rules_only():
+                    masked, st = self.mask_text(text, style)
+            _merge(total, st)
+            return masked
+
+        try:
+            out = (protobuf.rewrite_frames if protobuf.is_framed(content_type) else protobuf.rewrite)(body, visit)
+        except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
+            return MaskedBody(None, MaskStats(), refused="mask-failed")
+        if out is None:
+            return MaskedBody(None, MaskStats(), refused="unparseable")
+        return MaskedBody(out, total)
 
     def mask_file_name(self, name: str, style: str = TOKENS) -> tuple[str, MaskStats]:
         """A file's name with its values masked and its extension kept
@@ -419,6 +445,21 @@ class Pipeline:
                      tools_only: bool = False) -> str:
         r = self._restorer(None, site)
         return (self._tools(r) if tools_only else r).restore_text(text, json_escape=json_escape)
+
+    def restore_proto(self, body: bytes, site: str | None = None) -> bytes:
+        """A whole reply in the packed binary format, real values put back
+        (``site`` as in ``restore_json``). Returned as it came when it cannot
+        be read."""
+        try:
+            out = protobuf.rewrite(body, lambda t: self.restore_text(t, site=site))
+        except Exception:  # noqa: BLE001 — the person's reply must arrive
+            return body
+        return body if out is None else out
+
+    def proto_restorer(self, site: str | None = None) -> protobuf.FrameReader:
+        """The same for a framed reply that streams in (the Claude desktop
+        app's …/StreamTimeline)."""
+        return protobuf.FrameReader(lambda t: self.restore_text(t, site=site))
 
     def sse_restorer(self, minted: list[str] | None = None, site: str | None = None) -> StreamRestorer:
         """For Anthropic / OpenAI shaped SSE (the API door's formats, and the

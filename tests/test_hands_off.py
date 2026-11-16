@@ -10,6 +10,21 @@ from omna_plugin import hands_off
     ("www.perplexity.ai", "/search?q=x&__cf_chl_f_tk=abc"),
     # ChatGPT's own anti-abuse check before each message
     ("chatgpt.com", "/backend-api/sentinel/chat-requirements"),
+    # claude.ai's sign-in (found live 2026-11-15, Claude desktop app): the
+    # sign-in email and Anthropic's own "client_attestation" token were
+    # masked, and the app answered "Invalid email address". Signing in is
+    # not data sent to the AI, and the token is the company's security layer.
+    ("claude.ai", "/api/auth/send_magic_link"),
+    ("claude.ai", "/api/auth/verify_magic_link"),
+    # The Claude desktop app authorising itself with Anthropic (found live the
+    # same day): its redirect address, "state" and "code_challenge" were
+    # masked and Anthropic answered 400, again and again.
+    ("api.anthropic.com", "/v1/oauth/630406c5-9bb6-4069-98cc-2d585006c06a/authorize"),
+    # The Claude desktop app registering this computer with Anthropic (same
+    # day): its folder "/cowork" was read as a value and masked. The app's own
+    # registration, never data sent to the AI.
+    ("api.anthropic.com", "/v1/environments/bridge"),
+    ("api.anthropic.com", "/v1/environments/env_01AcxzTjbRVjRZht9r3hqko8/bridge/reconnect"),
 ])
 def test_security_checks_are_hands_off(host, path):
     assert hands_off.reason(host, path) == "passthrough-security-check"

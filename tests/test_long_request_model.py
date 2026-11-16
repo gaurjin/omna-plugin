@@ -2,6 +2,8 @@
 alone; a short one by both (smart.request). Found 2026-11-15: Claude Code's
 first request took ~25 s with both models and looked stuck."""
 
+import pytest
+
 from omna_plugin import smart
 from omna_plugin.body import mask_body
 from omna_plugin.engine import MaskingSession
@@ -123,3 +125,39 @@ def test_claude_code_system_turns_get_fast_masking(monkeypatch, tmp_path):
     mask_body(MaskingSession(smart=True), body)
     assert ("hello Jane", smart.BOTH) in used
     assert ("SessionStart", None) in used
+
+
+_CLAUDE_MD_NOTE = ("<system-reminder>\nCodebase and user instructions are shown below. Be sure to adhere to these "
+                   "instructions.\nContents of /w/CLAUDE.md:\nAsk Jane Doe before deploying.\n</system-reminder>")
+
+
+def test_claude_codes_own_notes_go_as_they_are(monkeypatch, tmp_path):
+    """Owner rule 2026-11-15: an instruction file (CLAUDE.md) is sent on
+    purpose by the developer; Claude Code's note that carries it is the app's
+    and goes exactly as it came. The person's message next to it is masked."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin.body import mask_body as mb
+    note = {"type": "text", "text": _CLAUDE_MD_NOTE + "\n"}
+    body = {"model": "x", "system": "You help.", "tools": [{"name": "Read"}], "messages": [
+        {"role": "user", "content": [note, {"type": "text", "text": "mail jane.doe@example.com"}]}]}
+    out, _, _ = mb(MaskingSession(), body)
+    assert out["messages"][0]["content"][0] == note
+    assert "jane.doe@example.com" not in str(out)
+
+
+@pytest.mark.parametrize("shape", ["block", "string"])
+def test_data_glued_behind_a_claude_code_note_is_masked(monkeypatch, tmp_path, shape):
+    """Found 2026-11-15 (new chat): a block was the app's if it merely STARTED
+    with one of Claude Code's notes, so an editor selection or an @-file glued
+    behind the note in the same block went out as it was. A note is the app's
+    only when the block holds nothing after the note's own closing tag."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin.body import mask_body as mb
+    card, gh = "4111 1111 1111 1111", "ghp_" + "abcdefghijklmnopqrstuvwxyz0123456789"
+    text = (_CLAUDE_MD_NOTE + "\n<system-reminder>\nThe user selected the lines 1 to 2 from /w/.env:\n"
+            f"CARD={card}\nGITHUB_TOKEN={gh}\n</system-reminder>")
+    content = text if shape == "string" else [{"type": "text", "text": text}, {"type": "text", "text": "fix it"}]
+    body = {"model": "x", "system": "You help.", "tools": [{"name": "Read"}],
+            "messages": [{"role": "user", "content": content}]}
+    out, _, _ = mb(MaskingSession(), body)
+    assert card not in str(out) and gh not in str(out)

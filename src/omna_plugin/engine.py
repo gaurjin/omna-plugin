@@ -67,6 +67,11 @@ SECRET_PREFIX = "SECRET_"
 # unset at the API door, so a value only Claude Code sent belongs to no site.
 # A context variable, not an attribute: mitmproxy masks many flows at once.
 _SENDING_TO: contextvars.ContextVar[str | None] = contextvars.ContextVar("omna_sending_to", default=None)
+
+
+def sending_site() -> str | None:
+    """The site the text being masked right now is going to (``sending_to``)."""
+    return _SENDING_TO.get()
 # A value saved before sites were recorded: put back on every site, as it
 # always was, so old chats do not fill up with tokens (owner "A", 2026-10-25).
 EVERYWHERE = "*"

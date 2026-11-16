@@ -23,7 +23,7 @@ from mitmproxy.certs import CertStore
 from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
 
-from . import config, hands_off, sites, while_typing
+from . import config, hands_off, protobuf, sites, while_typing
 from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
@@ -249,6 +249,14 @@ class OmnaAddon:
             return True
         return not self._fresh().restore_browser
 
+    @staticmethod
+    def _packed_reply(flow: http.HTTPFlow) -> bool:
+        """A reply in the packed binary format from an address where the
+        site's app uses it (``sites.Site.packed``)."""
+        return (flow.response is not None
+                and sites.packed(flow.request.pretty_host, flow.request.path)
+                and protobuf.is_packed(flow.response.headers.get("content-type", "")))
+
     def requestheaders(self, flow: http.HTTPFlow) -> None:
         flow.request.headers["accept-encoding"] = "identity"
         flow.metadata["omna_t0"] = time.time()
@@ -341,6 +349,23 @@ class OmnaAddon:
         if self._skip_restore(flow):
             return
         adapter = flow.metadata.get("omna_adapter") or for_host(flow.request.pretty_host)
+        if self._packed_reply(flow):
+            # The Claude desktop app's replies (5.x): the packed binary
+            # format. A streamed one is restored frame by frame; a plain one
+            # is small and is restored whole in `response`.
+            if protobuf.is_framed(flow.response.headers.get("content-type", "")):
+                reader = self.pipeline.proto_restorer(site=self._site(flow))
+
+                def cb_frames(chunk: bytes) -> bytes | list[bytes]:
+                    if chunk == b"":
+                        self._receipt(flow, flow.response.status_code if flow.response else 0, stream=True)
+                        return reader.flush()
+                    out = reader.feed(chunk)
+                    return out if out else []   # never b"" mid-stream: see cb below
+
+                flow.response.stream = cb_frames
+                flow.metadata["omna_streamed"] = True
+            return
         mode = adapter.response_mode(flow.response.headers.get("content-type", ""))
         if mode == "passthrough":
             # Nothing to restore, so don't hold the whole reply in memory first
@@ -421,7 +446,13 @@ class OmnaAddon:
         if self._skip_restore(flow):
             self._receipt(flow, flow.response.status_code, stream=False)
             return
-        if adapter.response_mode(flow.response.headers.get("content-type", "")) == "json" and flow.response.status_code < 400:
+        if self._packed_reply(flow):
+            if flow.response.status_code < 400:
+                body = flow.response.get_content() or b""
+                restored = self.pipeline.restore_proto(body, site=self._site(flow))
+                if restored != body:
+                    flow.response.set_content(restored)
+        elif adapter.response_mode(flow.response.headers.get("content-type", "")) == "json" and flow.response.status_code < 400:
             try:
                 obj = json.loads(flow.response.get_content() or b"null")
                 restored = self.pipeline.restore_json(obj, site=self._site(flow), tools_only=_agent_coarse(flow))
