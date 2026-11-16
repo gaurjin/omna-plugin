@@ -467,9 +467,19 @@ _APP_BLOCK_TYPES = frozenset({"tool_addition"})
 
 def _is_api_request(obj) -> bool:
     """An AI API request: {"model" + "messages" / "input"}. Gemini names the
-    model in the address, not the body: "contents" alone."""
+    model in the address, not the body: "contents" alone. Google's Code
+    Assist envelope (Antigravity CLI, recorded live 2026-11-16) wraps a
+    Gemini request under "request"."""
     return isinstance(obj, dict) and not _site_chat(obj) and (
-        "contents" in obj or (isinstance(obj.get("model"), str) and any(k in obj for k in ("messages", "input"))))
+        "contents" in obj or _code_assist(obj)
+        or (isinstance(obj.get("model"), str) and any(k in obj for k in ("messages", "input"))))
+
+
+def _code_assist(obj) -> bool:
+    """{"project", "model", "request": {"contents", …}}: every field outside
+    "request" is the app's (project, request id, model, its own name)."""
+    inner = obj.get("request") if isinstance(obj, dict) else None
+    return isinstance(inner, dict) and "contents" in inner and "contents" not in obj
 
 
 is_api_request = _is_api_request      # the system door asks this of a WebSocket message
@@ -507,6 +517,16 @@ def _app_parts(obj):
     website's own body is left to the walker as before."""
     if not _is_api_request(obj):
         return obj, (lambda m, _u=None: m), {}
+    if _code_assist(obj):
+        # The envelope's own fields are the app's; the Gemini request inside
+        # is judged by the same rule as one sent bare.
+        inner_view, inner_back, unsure = _app_parts(obj["request"])
+        view = {k: (inner_view if k == "request" else None) for k in obj}
+
+        def put_back_envelope(masked, unsure_masked=None):
+            return {k: (inner_back(masked[k], unsure_masked) if k == "request" else obj[k]) for k in obj}
+
+        return view, put_back_envelope, unsure
     # The conversation is the data; every other field of the request is the
     # app's (owner 2026-11-15: "skip everything except the data").
     keys = {k for k in obj if k not in _CONVERSATION_KEYS}

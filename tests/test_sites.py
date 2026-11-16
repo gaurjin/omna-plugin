@@ -13,7 +13,8 @@ HOSTS_BEFORE = [
     'api.cohere.com', 'api.deepseek.com', 'api.fireworks.ai', 'api.githubcopilot.com', 'api.groq.com',
     'api.mistral.ai', 'api.openai.com', 'api.together.xyz', 'api.x.ai', 'app.reka.ai', 'assistant.kagi.com',
     'bolt.new', 'chai-research.com', 'character.ai', 'chat.deepseek.com', 'chat.mistral.ai', 'chat.openai.com',
-    'chat.qwen.ai', 'chatglm.cn', 'chatgpt.com', 'claude.ai', 'copilot.com', 'copilot.microsoft.com', 'copy.ai',
+    'chat.qwen.ai', 'chatglm.cn', 'chatgpt.com', 'claude.ai', 'cloudcode-pa.googleapis.com',  # Antigravity CLI (2026-11-16)
+    'copilot.com', 'copilot.microsoft.com', 'copy.ai', 'daily-cloudcode-pa.googleapis.com',
     'deepai.org', 'devin.ai', 'doubao.com', 'duck.ai', 'elevenlabs.io', 'elicit.org', 'fireflies.ai',
     'gemini.google.com', 'geminiweb-pa.clients6.google.com', 'generativelanguage.googleapis.com', 'glean.com', 'grok.com', 'harvey.ai', 'heygen.com',
     'huggingface.co', 'hunyuan.tencent.com', 'ideogram.ai', 'janitorai.com', 'jasper.ai', 'jenni.ai',

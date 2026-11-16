@@ -90,6 +90,11 @@ SITES: tuple[Site, ...] = (
     )),
     Site("OpenAI API", ("api.openai.com",), api=True),
     Site("Gemini API", ("generativelanguage.googleapis.com",), api=True),
+    # Antigravity CLI (`agy`, Google's coding tool for personal accounts since
+    # 2026-06-18): its own log names daily-cloudcode-pa.googleapis.com
+    # (…/v1internal:streamGenerateContent carries the conversation), found
+    # 2026-11-16. Both names listed: a "daily-" prefix is not a subdomain.
+    Site("Antigravity", ("daily-cloudcode-pa.googleapis.com", "cloudcode-pa.googleapis.com"), api=True),
     Site("Mistral API", ("api.mistral.ai",), api=True),
     Site("Groq API", ("api.groq.com",), api=True),
     Site("DeepSeek API", ("api.deepseek.com",), api=True),

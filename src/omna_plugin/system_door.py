@@ -34,6 +34,11 @@ from .style import TOKENS, style_for_door
 # Provider APIs an agent may reach through this door (Claude Code with an
 # HTTPS proxy, an SDK): their streamed replies carry tool calls (finding 2).
 _AGENT_API_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
+# Agent APIs whose server-sent events the structured restorer also reads:
+# Gemini's (Antigravity CLI through Code Assist, live 2026-11-16 — a stand-in
+# cut between two events came back as a stand-in under the flat restorer).
+_GEMINI_SSE_HOSTS = frozenset({"generativelanguage.googleapis.com",
+                               "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"})
 
 
 def _agent_coarse(flow) -> bool:
@@ -394,7 +399,8 @@ class OmnaAddon:
         # Agent traffic not read part by part: every agent API but the two
         # whose SSE the structured restorer reads — and THEIR other streams
         # (x-ndjson, text/*) too.
-        coarse = sites.is_agent_api(host, flow.request.path) and not (host in _AGENT_API_HOSTS and is_sse)
+        structured = is_sse and (host in _AGENT_API_HOSTS or host in _GEMINI_SSE_HOSTS)
+        coarse = sites.is_agent_api(host, flow.request.path) and not structured
         if coarse:
             # Another agent API (OpenRouter, Groq, Gemini, Copilot, Codex via
             # chatgpt.com …): its stream is not read part by part, so the WHOLE
@@ -402,7 +408,7 @@ class OmnaAddon:
             # into it (finding 2; found by /security-review of the first fix).
             restorer = self.pipeline.text_restorer(json_escape=(mode == "stream-json"), site=self._site(flow),
                                                    tools_only=True)
-        elif host in _AGENT_API_HOSTS and is_sse:
+        elif structured:
             # An agent reaching a provider API through this door (finding 2):
             # its reply holds TOOL CALLS — commands it will run, files it will
             # write — and a secret must stay a stand-in there. The plain text

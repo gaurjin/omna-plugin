@@ -73,6 +73,7 @@ class StreamRestorer:
         self.tools = tools or session
         self._buf = b""
         self._text: dict[str, TextRestorer] = {}  # key -> holdback (per content block / choice)
+        self._gemini_wrap = False   # Code Assist's events carry Gemini's under "response"
 
     def _hb(self, key: str, json_escape: bool, tool: bool = False) -> TextRestorer:
         hb = self._text.get(key)
@@ -155,6 +156,13 @@ class StreamRestorer:
             # the block ended: anything still held back is plain text; release
             # it as a synthetic delta emitted just before this stop frame.
             return self._flush_block(evt, idx)
+        # ---- Gemini (streamGenerateContent?alt=sse); Google's Code Assist
+        # (Antigravity CLI, live 2026-11-16) wraps each event under "response".
+        g = evt.get("response") if isinstance(evt.get("response"), dict) else evt
+        if isinstance(g.get("candidates"), list):
+            if g is not evt:
+                self._gemini_wrap = True
+            return self._restore_gemini(g)
         # ---- OpenAI chat completions
         if "choices" in evt and isinstance(evt["choices"], list):
             changed = False
@@ -218,6 +226,39 @@ class StreamRestorer:
             return True
         return False
 
+    def _restore_gemini(self, g: dict) -> bool:
+        """Text parts are restored with hold-back per candidate (a stand-in
+        can be cut between two events); a ``functionCall`` is a tool call and
+        follows the tool-call rule (finding 2). Held text is released as one
+        more part of the event that finishes the candidate."""
+        changed = False
+        for ci, cand in enumerate(g["candidates"]):
+            if not isinstance(cand, dict):
+                continue
+            idx = str(cand.get("index", ci))
+            content = cand.get("content")
+            for p in (content.get("parts") if isinstance(content, dict) else None) or []:
+                if not isinstance(p, dict):
+                    continue
+                if isinstance(p.get("text"), str):
+                    key = f"g:{'thought' if p.get('thought') else 'text'}:{idx}"
+                    p["text"] = self._hb(key, False).feed(p["text"])
+                    changed = True
+                if isinstance(p.get("functionCall"), dict):
+                    p["functionCall"] = restore_body(self.tools, p["functionCall"], tools=self.tools)
+                    changed = True
+            if cand.get("finishReason"):
+                for kind in ("thought", "text"):
+                    hb = self._text.pop(f"g:{kind}:{idx}", None)
+                    rest = hb.flush() if hb else ""
+                    if rest:
+                        if not isinstance(content, dict):
+                            content = cand["content"] = {"role": "model"}
+                        content["parts"] = list(content.get("parts") or []) + [
+                            {"text": rest, **({"thought": True} if kind == "thought" else {})}]
+                        changed = True
+        return changed
+
     def _flush_block(self, stop_evt: dict, idx: str) -> bool:
         """On content_block_stop, release held-back text as an extra delta."""
         extra = b""
@@ -243,6 +284,11 @@ class StreamRestorer:
             return b"event: content_block_delta\ndata: " + json.dumps(evt, ensure_ascii=False).encode() + b"\n\n"
         if key.startswith("o:text:"):
             evt = {"choices": [{"index": int(key.rsplit(":", 1)[1]), "delta": {"content": text}}]}
+            return b"data: " + json.dumps(evt, ensure_ascii=False).encode() + b"\n\n"
+        if key.startswith("g:"):
+            part = {"text": text, **({"thought": True} if key.startswith("g:thought:") else {})}
+            g = {"candidates": [{"index": int(key.rsplit(":", 1)[1]), "content": {"role": "model", "parts": [part]}}]}
+            evt = {"response": g} if self._gemini_wrap else g
             return b"data: " + json.dumps(evt, ensure_ascii=False).encode() + b"\n\n"
         if key.startswith("r:"):
             t = key.split(":")[1]
