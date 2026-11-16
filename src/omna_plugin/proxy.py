@@ -156,6 +156,43 @@ def pick_upstream(request: Request, anthropic: str, openai: str) -> str:
     return openai
 
 
+def chatgpt_sign_in(request: Request) -> bool:
+    """Codex signed in with a ChatGPT account (recorded live 2026-11-16, Codex
+    0.169): every request carries this header, and belongs at
+    chatgpt.com/backend-api/codex/… — api.openai.com refuses its sign-in
+    ("Missing scopes")."""
+    return "chatgpt-account-id" in request.headers
+
+
+# Compressed request bodies the API door opens to mask (Codex sends zstd).
+_READABLE_ENCODINGS = frozenset({"gzip", "deflate", "br", "zstd"})
+# The opened body may not be larger than this: a small compressed body can
+# open into gigabytes.
+_MAX_OPENED = 64 * 1024 * 1024
+
+
+def _asked_to_stream(body: bytes) -> bool:
+    """Did this (masked, JSON) request ask for a streamed reply?"""
+    try:
+        obj = json.loads(body)
+    except ValueError:
+        return False
+    return isinstance(obj, dict) and obj.get("stream") is True
+
+
+def _open_compressed(body: bytes, enc: str) -> bytes | None:
+    """The body uncompressed, or None when omna cannot read it."""
+    if enc not in _READABLE_ENCODINGS:
+        return None
+    try:
+        from mitmproxy.net import encoding
+
+        out = encoding.decode(body, enc)
+    except Exception:  # noqa: BLE001 — unreadable is unreadable, whatever the decoder raised
+        return None
+    return out if isinstance(out, bytes) and len(out) <= _MAX_OPENED else None
+
+
 def _smart_models_ready() -> list[str]:
     from . import smart as smart_models
 
@@ -167,6 +204,7 @@ def create_app(
     *,
     anthropic_upstream: str = config.ANTHROPIC_UPSTREAM,
     openai_upstream: str = config.OPENAI_UPSTREAM,
+    chatgpt_upstream: str = config.CHATGPT_CODEX_UPSTREAM,
     client: httpx.AsyncClient | None = None,
     pipeline: Pipeline | None = None,
     policy: Policy | None = None,
@@ -553,8 +591,14 @@ def create_app(
                 "access-control-max-age": "600",
             })
         upstream = pick_upstream(request, anthropic_upstream, openai_upstream)
-        upstream_host = urlsplit(upstream).netloc
-        url = upstream.rstrip("/") + path
+        if upstream == openai_upstream and chatgpt_sign_in(request):
+            # "/v1/responses" here is "/responses" there; `path` stays what
+            # the tool asked for (the receipt's route, the prompt-route check).
+            upstream_host = urlsplit(chatgpt_upstream).netloc
+            url = chatgpt_upstream.rstrip("/") + (path[len("/v1"):] if path.startswith("/v1/") else path)
+        else:
+            upstream_host = urlsplit(upstream).netloc
+            url = upstream.rstrip("/") + path
         if request.url.query:
             url += "?" + request.url.query
 
@@ -563,10 +607,18 @@ def create_app(
         passthrough = False
         ctype = request.headers.get("content-type", "")
         is_inference = any(path.startswith(pfx) for pfx in INFERENCE_PREFIXES)
+        opened = False
+        enc = request.headers.get("content-encoding", "").strip().lower()
+        if body and enc and is_inference and "json" in ctype:
+            # A compressed prompt (Codex: zstd) is opened, masked and sent on
+            # plain. One omna cannot open is refused below, as before.
+            plain = await run_in_threadpool(_open_compressed, body, enc)
+            if plain is not None:
+                body, opened = plain, True
         # Any method: a GET or DELETE can carry a body too, and it used to go
         # out unread with nothing in the receipt (security review, finding 7).
         if body:
-            if "json" in ctype and not request.headers.get("content-encoding"):
+            if "json" in ctype and (opened or not request.headers.get("content-encoding")):
                 out = await run_in_threadpool(pipeline.mask_bytes, body, ctype, api_style.style)
                 if out.refused is None:
                     body = out.body
@@ -612,7 +664,8 @@ def create_app(
                 passthrough = masked == body and not mstats.counts
                 body = masked
 
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in _DROP_REQ}
+        headers = {k: v for k, v in request.headers.items()
+                   if k.lower() not in _DROP_REQ and not (opened and k.lower() == "content-encoding")}
         if headers.get("content-disposition"):
             # A raw upload names its file in its own headers (finding 12).
             cd, cd_stats = pipeline.mask_content_disposition(headers["content-disposition"].encode("utf-8", "surrogateescape"), api_style.style)
@@ -652,6 +705,12 @@ def create_app(
         # talking to the plugin needs ours (#137a). Ours win on conflict.
         resp_headers.update(cors)
         is_sse = "text/event-stream" in resp.headers.get("content-type", "")
+        if (not resp.headers.get("content-type") and is_inference and resp.status_code < 400
+                and _asked_to_stream(body)):
+            # chatgpt.com answers Codex's turn with an event stream and NO
+            # content-type (recorded live 2026-11-16): read as a plain reply,
+            # it reached Codex with the stand-ins still in it.
+            is_sse = True
 
         if is_sse:
             async def gen():

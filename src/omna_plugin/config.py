@@ -18,6 +18,8 @@ DEFAULT_HOST = "127.0.0.1"
 # test's fake upstream) can sit behind the plugin.
 ANTHROPIC_UPSTREAM = os.environ.get("OMNA_ANTHROPIC_UPSTREAM", "https://api.anthropic.com")
 OPENAI_UPSTREAM = os.environ.get("OMNA_OPENAI_UPSTREAM", "https://api.openai.com")
+# Where Codex signed in with a ChatGPT account talks to (its "/v1/…" paths map onto this).
+CHATGPT_CODEX_UPSTREAM = os.environ.get("OMNA_CHATGPT_CODEX_UPSTREAM", "https://chatgpt.com/backend-api/codex")
 
 
 def home() -> Path:
