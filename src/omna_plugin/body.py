@@ -424,6 +424,14 @@ _APP_NOTES = (
     "<system-reminder>\nAttribution for git commits",
 )
 _NOTE_END = "</system-reminder>"
+# Codex's own note at the start of a chat (recorded live 2026-11-16, Codex
+# 0.169): the work folder, the shell, today's date, the time zone — today's
+# date was masked as a birth date.
+_CODEX_NOTE = ("<environment_context>", "</environment_context>")
+# Codex's label block on every message of its conversation (same recording):
+# a turn id and what kind of text the message holds ("user.text") — never
+# the text itself.
+_MESSAGE_LABELS = "internal_chat_message_metadata_passthrough"
 
 
 def _is_app_note(text) -> bool:
@@ -432,10 +440,16 @@ def _is_app_note(text) -> bool:
     glued behind it in the same block is the person's data (found 2026-11-15).
     So the note's own closing tag must be the end of the text; anything after
     it makes the whole block data (the rule's tiebreaker) and it is checked."""
-    if not (isinstance(text, str) and text.startswith(_APP_NOTES)):
+    if not isinstance(text, str):
         return False
-    end = text.find(_NOTE_END)
-    return end >= 0 and not text[end + len(_NOTE_END):].strip()
+    if text.startswith(_CODEX_NOTE[0]):
+        close = _CODEX_NOTE[1]
+    elif text.startswith(_APP_NOTES):
+        close = _NOTE_END
+    else:
+        return False
+    end = text.find(close)
+    return end >= 0 and not text[end + len(close):].strip()
 
 
 # Claude Code's role "system" turns inside the chat (2.1.325) are NOT on that
@@ -456,6 +470,9 @@ def _is_api_request(obj) -> bool:
     model in the address, not the body: "contents" alone."""
     return isinstance(obj, dict) and not _site_chat(obj) and (
         "contents" in obj or (isinstance(obj.get("model"), str) and any(k in obj for k in ("messages", "input"))))
+
+
+is_api_request = _is_api_request      # the system door asks this of a WebSocket message
 
 
 def _site_chat(obj) -> bool:
@@ -497,10 +514,14 @@ def _app_parts(obj):
     aside_msgs: dict[int, object] = {}
     aside_blocks: dict[tuple[int, int], object] = {}
     unsure: dict[int, object] = {}
+    labels: dict[int, object] = {}
     mkey = next((k for k in ("messages", "input") if isinstance(obj.get(k), list)), None)
     if mkey:
         msgs = []
         for i, m in enumerate(obj[mkey]):
+            if isinstance(m, dict) and _MESSAGE_LABELS in m:
+                labels[i] = m[_MESSAGE_LABELS]
+                m = {**m, _MESSAGE_LABELS: None}
             c = m.get("content") if isinstance(m, dict) else None
             # Anthropic's instructions live in the top-level "system" key, so
             # there a system turn inside the chat is judged by what it holds;
@@ -529,7 +550,7 @@ def _app_parts(obj):
 
     def put_back(masked, unsure_masked=None):
         out = {k: (obj[k] if k in keys and k in obj else masked[k]) for k in obj}
-        if mkey and (aside_msgs or aside_blocks or unsure_masked):
+        if mkey and (aside_msgs or aside_blocks or unsure_masked or labels):
             msgs = list(out[mkey])
             for i, m in aside_msgs.items():
                 msgs[i] = m
@@ -539,6 +560,9 @@ def _app_parts(obj):
                 content = list(msgs[i]["content"])
                 content[j] = b
                 msgs[i] = {**msgs[i], "content": content}
+            for i, v in labels.items():       # last: a message set aside above was stored without them
+                if isinstance(msgs[i], dict):
+                    msgs[i] = {**msgs[i], _MESSAGE_LABELS: v}
             out[mkey] = msgs
         return out
 
