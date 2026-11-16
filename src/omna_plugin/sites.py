@@ -116,7 +116,11 @@ SITES: tuple[Site, ...] = (
         ("chatgpt.com", r"/events/statsc/"),
         ("chatgpt.com", r"^/ces/"),
         ("chatgpt.com", r"^/realtime/wm$"),   # device codes + numbers, no text (purpose not public)
-    )),
+    ),
+        # Recorded live 2026-11-15 (one typed message, signed in): "parts" is
+        # the message (messages[].content.parts); every other field of the
+        # request is the site's — ids, time zone, its own function names.
+        person_text=("parts",)),
     Site("Gemini", (
         "gemini.google.com",
         "push.clients6.google.com",   # Gemini -> Google's upload server (MASTER #157)

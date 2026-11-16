@@ -454,8 +454,18 @@ _APP_BLOCK_TYPES = frozenset({"tool_addition"})
 def _is_api_request(obj) -> bool:
     """An AI API request: {"model" + "messages" / "input"}. Gemini names the
     model in the address, not the body: "contents" alone."""
-    return isinstance(obj, dict) and ("contents" in obj or (isinstance(obj.get("model"), str)
-                                                            and any(k in obj for k in ("messages", "input"))))
+    return isinstance(obj, dict) and not _site_chat(obj) and (
+        "contents" in obj or (isinstance(obj.get("model"), str) and any(k in obj for k in ("messages", "input"))))
+
+
+def _site_chat(obj) -> bool:
+    """chatgpt.com's own message request (recorded live 2026-11-15): it has
+    "model" + "messages" like an API request, but each message names its
+    sender under "author", never "role" — the website's body, not the API's.
+    (Codex on the same site sends the real Responses shape.)"""
+    msgs = obj.get("messages")
+    return isinstance(msgs, list) and bool(msgs) and all(
+        isinstance(m, dict) and isinstance(m.get("author"), dict) and "role" not in m for m in msgs)
 
 
 def _site_tool_list(obj) -> bool:

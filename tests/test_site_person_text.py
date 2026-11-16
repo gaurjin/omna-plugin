@@ -100,3 +100,55 @@ def test_an_ai_api_request_is_not_a_website_body(monkeypatch, tmp_path):
     body = {"model": "x", "system": "You help.", "messages": [{"role": "user", "content": "hello Jane Doe"}]}
     _mask("Anthropic API", body)
     assert seen["hello Jane Doe"] is not None
+
+
+# ---- chatgpt.com. Recorded live 2026-11-15 (one message, signed in): the
+# message is "parts"; the body also has "model" + "messages", so it used to be
+# read as an AI API request — the smart models then edited the message's own
+# ids ("flow_id" read as a secret). Ids below are made up.
+def _chatgpt_body():
+    return {"action": "next", "model": "auto", "parent_message_id": "client-created-root",
+            "conversation_id": "7c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+            "timezone": "America/New_York", "local_function_names": ["local.continue_in_work"],
+            "client_contextual_info": {"app_name": "chatgpt.com"},
+            "messages": [{"author": {"name": None, "role": "user"}, "channel": None,
+                          "content": {"content_type": "text", "parts": ["hello Jane Doe, mail jane.doe@example.com"]},
+                          "id": "0f9e8d7c-6b5a-4f3e-9d2c-1b0a9f8e7d6c", "recipient": "all",
+                          "status": "finished_successfully",
+                          "metadata": {"automation_creation_attribution": {
+                              "origin": "conversation", "flow_id": "0f9e8d7c-6b5a-4f3e-9d2c-1b0a9f8e7d6c"}}}],
+            "supported_encodings": ["v1"], "client_prepare_state": "success"}
+
+
+def test_on_chatgpt_com_only_the_message_gets_smart_masking(monkeypatch, tmp_path):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    seen = _spy(monkeypatch)
+    body = _chatgpt_body()
+    out = _mask("ChatGPT", body)
+    assert seen["hello Jane Doe, mail jane.doe@example.com"] is not None      # the message: smart
+    for own in ("0f9e8d7c-6b5a-4f3e-9d2c-1b0a9f8e7d6c", "7c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f",
+                "local.continue_in_work", "America/New_York", "finished_successfully", "conversation"):
+        assert seen.get(own) is None, own                                     # the site's own: never the smart models
+    assert "jane.doe@example.com" not in str(out)
+    body["messages"][0]["content"]["parts"] = out["messages"][0]["content"]["parts"]
+    assert out == body                                                        # nothing but the message changed
+
+
+def test_on_chatgpt_com_a_secret_in_the_sites_own_field_is_still_masked(monkeypatch, tmp_path):
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    _spy(monkeypatch)
+    body = _chatgpt_body()
+    body["client_contextual_info"]["note"] = "token " + GH
+    assert GH not in str(_mask("ChatGPT", body))
+
+
+def test_codex_on_chatgpt_com_is_still_an_ai_api_request(monkeypatch, tmp_path):
+    """Codex signed in with a ChatGPT account sends the Responses shape to the
+    same site: the conversation-only rule, instructions as they are."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    seen = _spy(monkeypatch)
+    body = {"model": "gpt-5", "instructions": "You are Codex. Ask Jane Doe.",
+            "input": [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello Mary Major"}]}]}
+    out = _mask("ChatGPT", body)
+    assert out["instructions"] == body["instructions"]
+    assert seen["hello Mary Major"] is not None
