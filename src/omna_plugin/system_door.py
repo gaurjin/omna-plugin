@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from mitmproxy import http, tls
+from mitmproxy import ctx, http, tls
 from mitmproxy.certs import CertStore
 from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
@@ -535,6 +535,24 @@ class OmnaAddon:
             # whole message follows the tool-call rule (finding 2 — found by
             # /security-review of the second fix).
             agent = sites.is_agent_api(flow.request.pretty_host.lower(), flow.request.path)
+            if "omna_ws_chunks" not in flow.metadata:
+                flow.metadata["omna_ws_chunks"] = self.pipeline.ws_chunk_restorer(self._site(flow))
+            chunks = flow.metadata["omna_ws_chunks"]
+            if chunks is not None and getattr(msg, "injected", False):
+                return          # held text Omna itself is delivering (below): already restored
+            if chunks is not None:
+                # grok.com: the answer arrives a few characters per frame.
+                piece = chunks.feed(text)
+                if piece is not None:
+                    msg.content = piece.encode("utf-8")
+                    return
+                for late in chunks.leftover():
+                    # Text held as the possible start of a stand-in, and the
+                    # stream moved on: deliver it rather than lose it.
+                    try:
+                        ctx.master.commands.call("inject.websocket", flow, True, late.encode("utf-8"), True)
+                    except Exception as e:  # noqa: BLE001 — the reply still arrives, minus those few characters
+                        log.warning("omna: could not deliver held reply text (%s)", type(e).__name__)
             msg.content = self.pipeline.restore_text(text, json_escape=_is_json(text),
                                                      site=self._site(flow), tools_only=agent).encode("utf-8")
 

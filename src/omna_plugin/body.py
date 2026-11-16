@@ -607,7 +607,11 @@ def mask_body(session: MaskingSession, obj, style: str = TOKENS, careful: bool =
                 return session.mask_text(text, style=style, only=only)
         return session.mask_text(text, style=style, only=only)
 
+    own = sites.as_is(sending_site()) if person is not None else frozenset()
+
     def fn(s: str, key: str | None = None, _in_tool: bool = False) -> str:
+        if key in own:
+            return s            # the company's security check (``sites.Site.as_is``)
         only = ONLY_IN_IDS if careful and is_id_key(key) else None
         r = mask_text(s, only)
         masked = r.masked

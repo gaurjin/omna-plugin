@@ -42,6 +42,7 @@ def test_security_checks_are_hands_off(host, path):
     ("ab.chatgpt.com", "/v1/initialize"),               # the app asking which features are switched on
     ("grok.com", "/monitoring?o=1"),
     ("grok.com", "/ht/v1/track"),
+    ("grok.com", "/_data/v1/exp/exposures"),
     ("gemini.google.com", "/_/BardChatUi/jserror?bl=x"),
     ("gemini.google.com", "/_/BardChatUi/web-reports"),
     ("chatgpt.com", "/realtime/wm"),

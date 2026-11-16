@@ -59,6 +59,16 @@ class Site:
     # form (function names + arguments without field names) — read by
     # ``batchexecute.py``. Listed only where recorded live.
     batch: tuple[tuple[str, str], ...] = ()
+    # Fields of the site's own bodies that hold the company's security check
+    # (an anti-abuse token sent WITH the message): never read, never edited
+    # (owner rule: never touch an AI company's security layer). Listed only
+    # where recorded live.
+    as_is: tuple[str, ...] = ()
+    # Where the site's WebSocket replies carry the answer a few characters at
+    # a time: (the frame's event type, the path to the text, the path to the
+    # name of the stream it belongs to). A stand-in then arrives cut across
+    # frames and is put back by ``pipeline.WsChunkRestorer``. Recorded live only.
+    ws_chunks: tuple[str, tuple[str, ...], tuple[str, ...]] | None = None
 
 
 _COPILOT = ("copilot.com", "copilot.microsoft.com")
@@ -190,7 +200,24 @@ SITES: tuple[Site, ...] = (
     Site("Grok", ("grok.com",), reports=(
         ("grok.com", r"^/monitoring\b"),
         ("grok.com", r"^/ht/v1/"),
-    )),
+        # Which of the page's experiments this visit saw: the page's own key,
+        # the account's own email, no typed text (live 2026-11-16 — the key
+        # was read as a secret and edited).
+        ("grok.com", r"^/_data/v1/exp/exposures$"),
+    ),
+        # Recorded live 2026-11-16 (one typed message, signed in): the page
+        # sends the message over a WebSocket as JSON — "text" is the message
+        # (event.item.x_grok.input_chunks[].text.text), "castle_request_token"
+        # Grok's anti-abuse token in the same frame. Masked as flat text, the
+        # token and the page's own settings were edited and Grok answered
+        # "Connection lost". "message" is where the page put the message
+        # before 2026-11 (POST /rest/app-chat/conversations/new).
+        person_text=("text", "message"),
+        as_is=("castle_request_token",),
+        # The answer streams back as {"event": {"type": "response.chunk",
+        # "chunk": {"text": {"text": "PERSON", "channel": …}}}} — one stand-in
+        # came in five frames ("[", "PERSON", "_", "4", "],").
+        ws_chunks=("response.chunk", ("event", "chunk", "text", "text"), ("event", "chunk", "text", "channel"))),
     Site("Meta AI", ("meta.ai",), reports=(
         ("meta.ai", r"^/monitoring\b"),        # rejected 401 once masked
         ("meta.ai", r"^/api/analytics$"),
@@ -308,6 +335,18 @@ def person_text(site_name: str | None) -> frozenset[str] | None:
     the site has no table (see ``Site.person_text``)."""
     s = next((x for x in SITES if x.name == site_name), None)
     return frozenset(s.person_text) if s is not None and s.person_text is not None else None
+
+
+def as_is(site_name: str | None) -> frozenset[str]:
+    """The security-check fields of a site's own bodies (``Site.as_is``)."""
+    s = next((x for x in SITES if x.name == site_name), None)
+    return frozenset(s.as_is) if s is not None else frozenset()
+
+
+def ws_chunks(site_name: str | None):
+    """Where a site's WebSocket replies carry the answer in pieces (``Site.ws_chunks``), or None."""
+    s = next((x for x in SITES if x.name == site_name), None)
+    return s.ws_chunks if s is not None else None
 
 
 def packed(host: str, path: str) -> bool:

@@ -10,11 +10,11 @@ import time
 from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, quote, unquote, urlencode
 
-from . import batchexecute, office, pdf, picture, protobuf, receipts, webchannel
+from . import batchexecute, office, pdf, picture, protobuf, receipts, sites, webchannel
 from . import ruleset as ruleset_file
 from . import smart as smart_models
 from .body import ONLY_IN_IDS, _looks_like_text, is_api_request, is_id_key, mask_body, restore_body
-from .engine import MaskingSession, ToolView
+from .engine import MaskingSession, ToolView, sending_site
 from .policy import Policy, live_tool_rule
 from .stream import StreamRestorer, TextRestorer
 from .style import TOKENS
@@ -158,6 +158,18 @@ class Pipeline:
             if is_api_request(obj):
                 masked, stats = self.mask_json(obj, style)
                 return json.dumps(masked, ensure_ascii=False, separators=(",", ":")), stats
+        if not agent and text.lstrip()[:1] in ("{", "[") and sites.person_text(sending_site()) is not None:
+            # A chat website that sends its message this way (grok.com,
+            # recorded live 2026-11-16): the site's table says which fields
+            # are the person's, exactly as for its HTTP bodies. As flat text
+            # Grok's anti-abuse token was edited and it refused the message.
+            try:
+                obj = json.loads(text)
+            except ValueError:
+                obj = None
+            if isinstance(obj, (dict, list)):
+                masked, stats = self.mask_json(obj, style)
+                return (text if masked == obj else json.dumps(masked, ensure_ascii=False, separators=(",", ":"))), stats
         return self.mask_text(text, style)
 
     def mask_proto(self, body: bytes, content_type: str, style: str = TOKENS) -> MaskedBody:
@@ -509,6 +521,13 @@ class Pipeline:
         app's …/StreamTimeline)."""
         return protobuf.FrameReader(lambda t: self.restore_text(t, site=site))
 
+    def ws_chunk_restorer(self, site: str | None) -> "WsChunkRestorer | None":
+        """For a site whose WebSocket replies carry the answer a few
+        characters at a time (``sites.Site.ws_chunks``: grok.com); None for
+        every other site."""
+        spec = sites.ws_chunks(site)
+        return None if spec is None else WsChunkRestorer(lambda: self.text_restorer(False, site=site), *spec)
+
     def channel_restorer(self, site: str | None = None) -> webchannel.ReplyReader:
         """The same for replies on Google's channel format (the Gemini website)."""
         return webchannel.ReplyReader(
@@ -593,3 +612,60 @@ class Pipeline:
             receipts.append(rec)
         except OSError:
             pass
+
+
+def _at(obj, path: tuple[str, ...]):
+    for key in path:
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(key)
+    return obj
+
+
+class WsChunkRestorer:
+    """One WebSocket's replies, where the answer arrives a few characters per
+    frame (grok.com, recorded live 2026-11-16). ``feed`` takes a frame and
+    returns it with the real values put back, or None when it is not such a
+    frame (the caller restores it whole, as before). The start of a stand-in
+    is held until the rest arrives in a later frame of the same stream.
+
+    ``leftover()`` hands back text still held when another kind of frame
+    arrives — the stream ended on something that only looked like the start
+    of a stand-in — as a frame of its own for the caller to deliver."""
+
+    def __init__(self, new_restorer, event_type: str, text_path: tuple[str, ...], stream_path: tuple[str, ...]):
+        self._new, self._type, self._text, self._stream = new_restorer, event_type, text_path, stream_path
+        self._streams: dict = {}
+        self._last: dict = {}
+
+    def feed(self, frame: str) -> str | None:
+        if self._type not in frame:
+            return None
+        try:
+            obj = json.loads(frame)
+        except ValueError:
+            return None
+        text = _at(obj, self._text)
+        if _at(obj, ("event", "type")) != self._type or not isinstance(text, str):
+            return None
+        stream = _at(obj, self._stream)
+        key = stream if isinstance(stream, str) else ""
+        restorer = self._streams.get(key)
+        if restorer is None:
+            restorer = self._streams[key] = self._new()
+        out = restorer.feed(text)
+        self._last[key] = obj
+        if out == text:
+            return frame
+        _at(obj, self._text[:-1])[self._text[-1]] = out
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+    def leftover(self) -> list[str]:
+        frames = []
+        for key, restorer in self._streams.items():
+            rest = restorer.flush()
+            if rest:
+                obj = self._last[key]
+                _at(obj, self._text[:-1])[self._text[-1]] = rest
+                frames.append(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+        return frames
