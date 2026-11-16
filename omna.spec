@@ -42,6 +42,7 @@ hiddenimports = [
     "uvicorn.protocols", "uvicorn.protocols.http", "uvicorn.protocols.http.auto",
     "uvicorn.protocols.http.h11_impl",
     "uvicorn.protocols.websockets", "uvicorn.protocols.websockets.auto",
+    "uvicorn.protocols.websockets.wsproto_impl", "wsproto",   # the API door's WebSocket (Codex)
     "uvicorn.lifespan", "uvicorn.lifespan.on",
     # the menu bar
     "pystray._darwin", "PIL._tkinter_finder",

@@ -841,6 +841,7 @@ dependencies = [
     { name = "ruamel-yaml" },
     { name = "starlette" },
     { name = "uvicorn" },
+    { name = "wsproto" },
 ]
 
 [package.optional-dependencies]
@@ -865,6 +866,7 @@ requires-dist = [
     { name = "ruamel-yaml", specifier = ">=0.18" },
     { name = "starlette", specifier = ">=0.38" },
     { name = "uvicorn", specifier = ">=0.30" },
+    { name = "wsproto", specifier = ">=1.2" },
 ]
 provides-extras = ["dev"]
 

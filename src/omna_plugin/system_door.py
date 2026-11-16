@@ -24,7 +24,6 @@ from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
 
 from . import config, hands_off, protobuf, sites, while_typing
-from .body import is_api_request
 from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
@@ -483,23 +482,8 @@ class OmnaAddon:
             self._receipt(flow, flow.response.status_code if flow.response else 0, stream=False)
 
     def _mask_ws_message(self, flow: http.HTTPFlow, text: str) -> tuple[str, MaskStats]:
-        """An agent's request sent as a WebSocket message (Codex signed in
-        with a ChatGPT account, recorded live 2026-11-16: {"type":
-        "response.create", "model", "input"}) is an AI API request and gets
-        the same rule as one sent by HTTP: the conversation is masked, the
-        agent's own parts go as they are. As flat text, 37 of Codex's own
-        fields were edited — two key names among them — and OpenAI refused
-        the turn. Any other message is checked whole, as before."""
-        style = self._style_for(flow)
-        if text.lstrip()[:1] == "{" and sites.is_agent_api(flow.request.pretty_host.lower(), flow.request.path):
-            try:
-                obj = json.loads(text)
-            except ValueError:
-                obj = None
-            if is_api_request(obj):
-                masked, stats = self.pipeline.mask_json(obj, style)
-                return json.dumps(masked, ensure_ascii=False, separators=(",", ":")), stats
-        return self.pipeline.mask_text(text, style)
+        agent = sites.is_agent_api(flow.request.pretty_host.lower(), flow.request.path)
+        return self.pipeline.mask_ws_message(text, self._style_for(flow), agent=agent)
 
     def websocket_message(self, flow: http.HTTPFlow) -> None:
         assert flow.websocket

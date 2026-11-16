@@ -16,7 +16,9 @@ buffering (pings included), forward error bodies unmodified, answer
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 import os
 import time
@@ -29,16 +31,19 @@ from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
-from starlette.routing import Route
+from starlette.routing import Route, WebSocketRoute
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from . import config, crashlog, ext_l3, extension_auth, mappings, ocr, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
+from .pipeline import _merge as _merge_ws_stats
 from .policy import Policy, live_policy
 from . import ruleset as ruleset_file
 from .smart import mode as smart_mode
 from .style import style_for_door, style_for_extension
-from .system_door import EXT_HEADER
+from .system_door import EXT_HEADER, _is_json
+from .ws_upstream import UpstreamRefused, UpstreamSocket
 
 # What Omna for Chrome may record (#184): text it hid in a box, a file it
 # masked, a picture it blacked out — and a file it could NOT read, which went
@@ -65,6 +70,11 @@ except PackageNotFoundError:
 # Paths that carry prompts. A POST here whose body we cannot parse is refused
 # (fail closed) instead of being forwarded unmasked.
 INFERENCE_PREFIXES = ("/v1/messages", "/v1/complete", "/v1/chat/completions", "/v1/responses", "/v1/completions", "/v1/embeddings")
+
+# The WebSocket the API door takes (Codex opens it before every session;
+# refused, it retried seven times — about eight seconds — before using HTTPS).
+WS_ROUTES = frozenset({"/v1/responses"})
+log = logging.getLogger("omna")
 
 # Developer aid: OMNA_DEBUG_DUMP=<dir> writes each MASKED request body there.
 _DUMP_DIR = os.environ.get("OMNA_DEBUG_DUMP")
@@ -565,6 +575,93 @@ def create_app(
             "vary": "Origin",
         }
 
+    def _upstream_for(conn, path: str) -> tuple[str, str]:
+        """(host, address) this request or WebSocket goes to."""
+        upstream = pick_upstream(conn, anthropic_upstream, openai_upstream)
+        if upstream == openai_upstream and chatgpt_sign_in(conn):
+            # "/v1/responses" here is "/responses" there; `path` stays what
+            # the tool asked for (the receipt's route, the prompt-route check).
+            return (urlsplit(chatgpt_upstream).netloc,
+                    chatgpt_upstream.rstrip("/") + (path[len("/v1"):] if path.startswith("/v1/") else path))
+        return urlsplit(upstream).netloc, upstream.rstrip("/") + path
+
+    async def ws_relay(websocket: WebSocket) -> None:
+        """A tool's WebSocket to the provider: every message it sends is
+        masked (an agent's request by the conversation-only rule), every
+        reply restored by the tool-call rule — what the system door does for
+        the same socket. Refused before anything is read: a name that is not
+        this machine, a web page's socket, any path but the one recorded."""
+        path = websocket.url.path
+        if (not _local_host(websocket.headers.get("host", "")) or path not in WS_ROUTES
+                or (websocket.headers.get("origin") and not _cors_headers(websocket))):
+            await websocket.close(code=1008)
+            return
+        upstream_host, url = _upstream_for(websocket, path)
+        if websocket.url.query:
+            url += "?" + websocket.url.query
+        t0 = time.time()
+        mstats = MaskStats()
+        try:
+            from .upstream_tls import ensure_pinned, ssl_context
+
+            await run_in_threadpool(ensure_pinned, upstream_host.split(":")[0], policy)
+            up = await UpstreamSocket.open(url, dict(websocket.headers), verify=ssl_context(policy),
+                                           subprotocols=websocket.scope.get("subprotocols"))
+        except (UpstreamRefused, OSError, asyncio.TimeoutError) as e:
+            # The provider said no (or could not be reached): so do we, and the
+            # tool falls back to its ordinary requests, masked as always.
+            _receipt(websocket, path, upstream_host, getattr(e, "status", 502), mstats, 0, t0, stream=True, note="websocket-refused")
+            await websocket.close(code=1011)
+            return
+        await websocket.accept(subprotocol=up.subprotocol)
+        stats["requests"] += 1
+
+        async def outbound() -> None:
+            while True:
+                msg = await websocket.receive()
+                if msg["type"] != "websocket.receive":
+                    return
+                text = msg.get("text")
+                if text is None:
+                    try:
+                        text = (msg.get("bytes") or b"").decode("utf-8")
+                    except UnicodeDecodeError:
+                        return        # not readable, so not maskable: never sent on
+                # Masking that fails ends the socket here; nothing goes unmasked.
+                masked, st = await run_in_threadpool(pipeline.mask_ws_message, text, api_style.style, True)
+                _merge_ws_stats(mstats, st)
+                await up.send(masked)
+
+        async def inbound() -> None:
+            while True:
+                m = await up.recv()
+                if m is None:
+                    return
+                if isinstance(m, bytes):
+                    await websocket.send_bytes(m)
+                else:
+                    await websocket.send_text(pipeline.restore_text(m, json_escape=_is_json(m), tools_only=True))
+
+        tasks = [asyncio.create_task(outbound()), asyncio.create_task(inbound())]
+        try:
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            for t in done:
+                if not t.cancelled() and t.exception() is not None and not isinstance(t.exception(), WebSocketDisconnect):
+                    log.error("omna: a WebSocket to %s ended on an error (%s)", upstream_host, type(t.exception()).__name__)
+        finally:
+            # The receipt first: closing can be cut short when the tool hangs up.
+            _receipt(websocket, path, upstream_host, 101, mstats, 0, t0, stream=True, note="websocket")
+            for t in tasks:
+                t.cancel()
+            await up.close()
+            try:
+                await websocket.close()
+            except (RuntimeError, WebSocketDisconnect, OSError):
+                pass          # the tool closed it first
+
     async def relay(request: Request) -> Response:
         path = request.url.path
         # Only this machine, by name: a page that re-points its own domain at
@@ -590,15 +687,7 @@ def create_app(
                 "access-control-allow-headers": request.headers.get("access-control-request-headers", "*"),
                 "access-control-max-age": "600",
             })
-        upstream = pick_upstream(request, anthropic_upstream, openai_upstream)
-        if upstream == openai_upstream and chatgpt_sign_in(request):
-            # "/v1/responses" here is "/responses" there; `path` stays what
-            # the tool asked for (the receipt's route, the prompt-route check).
-            upstream_host = urlsplit(chatgpt_upstream).netloc
-            url = chatgpt_upstream.rstrip("/") + (path[len("/v1"):] if path.startswith("/v1/") else path)
-        else:
-            upstream_host = urlsplit(upstream).netloc
-            url = upstream.rstrip("/") + path
+        upstream_host, url = _upstream_for(request, path)
         if request.url.query:
             url += "?" + request.url.query
 
@@ -787,6 +876,7 @@ def create_app(
             Route("/omna/mappings/delete", mappings_delete, methods=["POST"]),
             Route("/omna/mappings/clear", mappings_clear, methods=["POST"]),
             Route("/{path:path}", relay, methods=["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"]),
+            WebSocketRoute("/{path:path}", ws_relay),
         ]
     )
     app.state.session = session

@@ -13,7 +13,7 @@ from urllib.parse import parse_qsl, quote, unquote, urlencode
 from . import office, pdf, picture, protobuf, receipts
 from . import ruleset as ruleset_file
 from . import smart as smart_models
-from .body import ONLY_IN_IDS, _looks_like_text, is_id_key, mask_body, restore_body
+from .body import ONLY_IN_IDS, _looks_like_text, is_api_request, is_id_key, mask_body, restore_body
 from .engine import MaskingSession, ToolView
 from .policy import Policy, live_tool_rule
 from .stream import StreamRestorer, TextRestorer
@@ -141,6 +141,24 @@ class Pipeline:
                                     validated=r.validated, by_layer=dict(r.by_layer),
                                     mask_ms=int((time.time() - t0) * 1000), tokens=list(r.labels),
                                     finds=list(r.finds))
+
+    def mask_ws_message(self, text: str, style: str = TOKENS, agent: bool = False) -> tuple[str, MaskStats]:
+        """One WebSocket message a tool or site sends. An agent's request sent
+        that way (Codex signed in with a ChatGPT account, recorded live
+        2026-11-16: {"type": "response.create", "model", "input"}) is an AI
+        API request and gets the same rule as one sent by HTTP: the
+        conversation is masked, the agent's own parts go as they are. As flat
+        text, 37 of Codex's own fields were edited — two key names among them
+        — and OpenAI refused the turn. Any other message is checked whole."""
+        if agent and text.lstrip()[:1] == "{":
+            try:
+                obj = json.loads(text)
+            except ValueError:
+                obj = None
+            if is_api_request(obj):
+                masked, stats = self.mask_json(obj, style)
+                return json.dumps(masked, ensure_ascii=False, separators=(",", ":")), stats
+        return self.mask_text(text, style)
 
     def mask_proto(self, body: bytes, content_type: str, style: str = TOKENS) -> MaskedBody:
         """Mask a body in the packed binary format (``protobuf.py``): the

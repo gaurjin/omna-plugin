@@ -69,7 +69,7 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
     stop = stop or asyncio.Event()
 
     app = create_app(session, pipeline=pipeline, policy=policy, doors_state=policy.doors, system_port=system_port)
-    api = uvicorn.Server(uvicorn.Config(app, host=config.DEFAULT_HOST, port=api_port, log_level="warning", access_log=False))
+    api = uvicorn.Server(uvicorn.Config(app, host=config.DEFAULT_HOST, port=api_port, log_level="warning", access_log=False, ws="wsproto"))
     api.install_signal_handlers = lambda: None   # one handler for the whole process, below
 
     api_ready = threading.Event()

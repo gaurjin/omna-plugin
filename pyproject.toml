@@ -29,6 +29,7 @@ dependencies = [
     "starlette>=0.38",
     "uvicorn>=0.30",
     "mitmproxy>=12.3.1,<13",   # 12.3.1 is the first that allows Brotli 1.2.1 (Dependabot #57)
+    "wsproto>=1.2",   # the API door's WebSocket (Codex): uvicorn serves it, ws_upstream.py speaks it to the provider
     "pystray>=0.19,<1",
     "pillow>=10",
     "ruamel.yaml>=0.18",
