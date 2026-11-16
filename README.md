@@ -27,6 +27,10 @@ you get back: "…set SUPPORT_EMAIL to jane.doe@example.com…"   ← restored, 
 - **Personal data** (emails, phones, SSNs and 50 international ID formats with real checksum validation,
   cards, IBANs, IPs, names) becomes stable tokens: `[EMAIL_1]` is the same address in every request, so
   prompt caching keeps working.
+- **Only what you send is checked.** Your messages, the files you add and the earlier turns of the chat are
+  masked; the app's own parts — its instructions, its tool list, its settings and sign-in — go exactly as they
+  came. Covered and tested live: claude.ai, the Claude desktop app, Claude Code, chatgpt.com, the ChatGPT
+  desktop app, Codex, gemini.google.com, Antigravity CLI and grok.com.
 - **Nothing is sent to Omna.** The only network destination is the provider you were already using.
   A local receipt log (no values, hash-chained) shows what was caught — Omna for Chrome's too.
 - **16 ms** to mask a 68 KB request — measured, not estimated, on an M5 MacBook Air, and it is on top of a
@@ -529,6 +533,10 @@ upload is refused — it fails, it never goes unmasked.
   ("Emma Clarke", "Rahul Sharma") from public name lists, but a name alone ("marcus") or an address
   in a sentence needs smart masking, which is on by default (`omna smart`).
 - Windows: no engine wheel yet (WSL works).
+- The Gemini Mac app ignores the system proxy, and `omna capture app Gemini` stops it from reaching Google
+  (no reply, nothing sent): it cannot be masked today. Use gemini.google.com in a browser.
+- Antigravity CLI (`agy`) goes through Omna only when it is started with `HTTPS_PROXY=http://127.0.0.1:7789`;
+  `omna init` does not set that up yet.
 - A tool's own cloud features (for example Cursor tab-completion) never pass through a local proxy.
 - Model thinking blocks are passed through untouched in both directions (the API requires it), so a name the
   model mentions inside its thinking shows as a token there.
