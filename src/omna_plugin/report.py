@@ -64,6 +64,7 @@ def build(days: int = 7) -> dict:
     sessions = set()
     n_secret = n_pii = 0
     ok = refused = failed = bypassed = 0
+    failed_why: Counter = Counter()
     ms = []
     mask_ms = []
     distinct_secret: set = set()
@@ -121,6 +122,7 @@ def build(days: int = 7) -> dict:
             ok += 1
         else:
             failed += 1
+            failed_why[_why_failed(st)] += 1
         if isinstance(r.get("ms"), int):
             ms.append(r["ms"])
         if isinstance(r.get("mask_ms"), int):
@@ -165,6 +167,9 @@ def build(days: int = 7) -> dict:
         "requests_ok": ok,
         "requests_refused": refused,
         "requests_failed": failed,
+        # Why the provider said no, in plain words (Muse QA 2026-11-17: the
+        # count had no reason anywhere).
+        "failed_why": dict(failed_why.most_common()),
         "requests_with_catch": requests_with_catch,
         "requests_not_masked": n_not_masked,
         "not_masked": dict(not_masked.most_common()),
@@ -254,11 +259,45 @@ def _not_masked_line(d: dict) -> str:
     return f"SENT UNREAD: {n} request(s) carried something Omna could not read — {_not_masked_words(d)}"
 
 
+def _why_failed(status: int) -> str:
+    """A provider error's status code, in plain words."""
+    if status == 0:
+        return "no connection to the provider"
+    if status in (401, 403):
+        return "sign-in refused by the provider"
+    if status == 429:
+        return "provider rate limit"
+    if status in (400, 404, 413, 422):
+        return "request rejected by the provider"
+    if status >= 500:
+        return "provider or network error"
+    return f"other ({status})"
+
+
+# What each door covers, for people who never read the design notes.
+DOOR_WORDS = {
+    "api": "coding tools (api)",
+    "system": "browsers and desktop apps (system)",
+    "deep": "apps that ignore the proxy (deep)",
+}
+
+
+def _speed_sentence(d: dict) -> str:
+    """The two speed numbers, measured on different clocks (Muse QA 2026-11-17:
+    "masking added 151 ms" next to "round trip 11 ms" read as a contradiction).
+    The provider clock starts AFTER masking, and a quick refusal (for example a
+    sign-in error) is answered in a few ms."""
+    return (f"masking took {d['avg_mask_ms']} ms per request on average, before the request leaves this computer "
+            "(the first request after a start also loads the masking model, so it is slower); "
+            f"the AI provider then took {d['avg_ms']} ms on average to answer")
+
+
 def render_text(d: dict) -> str:
     lines = [
         f"Omna weekly report  ·  last {d['period_days']} days (since {d['since']})  ·  generated {d['generated']}",
         "",
-        f"PROTECT   {d['requests']} AI requests enabled, 0 blocked  ·  {d['requests_refused']} refused (unparseable)  ·  {d['requests_failed']} provider errors",
+        f"PROTECT   {d['requests']} AI requests enabled, 0 blocked  ·  {d['requests_refused']} refused (unparseable)  ·  {d['requests_failed']} provider errors"
+        + (" (" + ", ".join(f"{k} ×{v}" for k, v in (d.get("failed_why") or {}).items()) + ")" if d.get("failed_why") else ""),
         f"          {d['distinct_secrets']} distinct secrets kept off the wire ({d['secrets_caught']} occurrences)  ·  {d['distinct_pii']} distinct personal values tokenised ({d['pii_caught']} occurrences)  ·  {d['requests_with_catch']} requests had at least one catch",
     ]
     if d["by_kind"]:
@@ -280,10 +319,10 @@ def render_text(d: dict) -> str:
         f"          apps: {apps_str}  ·  {refused_str}",
         f"PROVE     receipt chain {'INTACT' if d['chain']['intact'] else 'BROKEN'} ({d['chain']['receipts']} receipts, {d['chain']['message']})",
         f"TRUST     {d['what_left_the_machine']}",
-        f"COST      masking added {d['avg_mask_ms']} ms per request on average (whole round trip incl. the provider: {d['avg_ms']} ms)",
+        f"COST      {_speed_sentence(d)}",
         "",
         "by day:   " + (", ".join(f"{k}: {v}" for k, v in d["by_day"].items()) or "no requests"),
-        "by door:  " + " · ".join(f"{k} {v}" for k, v in d["by_door"].items()),
+        "by door:  " + " · ".join(f"{DOOR_WORDS.get(k, k)} {v}" for k, v in d["by_door"].items()),
         f"engine {d['engine']}  ·  receipts in {d['home']}",
     ]
     return "\n".join(lines)
@@ -297,7 +336,9 @@ def render_html(d: dict) -> str:
     apps = "".join(
         f"<tr><td>{e(k)}{' (bypassed)' if k in d['bypassed_apps'] else ''}</td><td>{v}</td></tr>" for k, v in d["by_app"].items()
     ) or "<tr><td colspan=2>no app receipts</td></tr>"
-    doors = "".join(f"<tr><td>{e(k)}</td><td>{v}</td></tr>" for k, v in d["by_door"].items())
+    doors = "".join(f"<tr><td>{e(DOOR_WORDS.get(k, k))}</td><td>{v}</td></tr>" for k, v in d["by_door"].items())
+    why = ", ".join(f"{e(k)} ×{v}" for k, v in (d.get("failed_why") or {}).items())
+    failed_note = f"<p class=\"muted\">{d['requests_failed']} provider errors: {why}.</p>" if why else ""
     refused_rows = "".join(
         f"<tr><td>{e(r['app'])}</td><td>{e(r['host'])}</td><td>{r['count']}</td></tr>" for r in d["refused"]["by_app_host"]
     ) or "<tr><td colspan=3>no refusals</td></tr>"
@@ -326,7 +367,8 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 <table><tr><th align=left>app</th><th align=left>host</th><th align=left>refused</th></tr>{refused_rows}</table>
 <h2>Requests by day</h2><table>{days}</table>
 <h2>Requests by door</h2><table><tr><th align=left>door</th><th align=left>requests</th></tr>{doors}</table>
-<h2>Trust</h2><p>{e(d['what_left_the_machine'])}. Masking added {d['avg_mask_ms']} ms per request on average; the whole round trip including the provider took {d['avg_ms']} ms.</p>
+{failed_note}
+<h2>Trust</h2><p>{e(d['what_left_the_machine'])}. {e(_speed_sentence(d)[:1].upper() + _speed_sentence(d)[1:])}.</p>
 <p class="muted">engine {e(d['engine'])} · receipts in {e(d['home'])} · verify any time with <code>omna log --verify</code></p>
 </body></html>"""
 

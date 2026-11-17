@@ -243,3 +243,19 @@ def test_report_tolerates_old_receipts_written_before_these_fields_existed():
                      "masked": {"EMAIL": 1}, "secrets": 0, "pii": 1, "ms": 10, "mask_ms": 1})
     d = report.build(days=7)
     assert d["validated"] == 0 and d["by_layer"] == {}
+
+
+def test_report_explains_speed_doors_and_provider_errors():
+    """Muse QA 2026-11-17: two unexplained speed numbers (151 ms vs 11 ms),
+    "door" jargon, and provider errors counted with no reason."""
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "api", "masked": {}, "secrets": 0, "pii": 0, "ms": 900, "mask_ms": 12})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 401, "door": "system", "masked": {}, "secrets": 0, "pii": 0, "ms": 11, "mask_ms": 3})
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 429, "door": "system", "masked": {}, "secrets": 0, "pii": 0, "ms": 11, "mask_ms": 3})
+    d = report.build(days=7)
+    text = report.render_text(d)
+    assert "round trip" not in text
+    assert "before the request leaves this computer" in text and "the AI provider then took" in text
+    assert "coding tools (api)" in text and "browsers and desktop apps (system)" in text
+    assert "sign-in refused by the provider ×1" in text and "provider rate limit ×1" in text
+    html_out = report.render_html(d)
+    assert "round trip" not in html_out and "sign-in refused by the provider" in html_out

@@ -940,3 +940,27 @@ def test_uninstall_unwires_claude_code_in_both_places(monkeypatch, tmp_path, cap
     for p in (user, project):
         assert "7788" not in (p.read_text() if p.exists() else ""), p
         assert "ANTHROPIC_BASE_URL" not in json.dumps(json.loads(p.read_text()) if p.exists() else {})
+
+
+def test_uninstall_keeps_a_copy_of_the_receipts_first(monkeypatch, home, capsys):
+    """Muse QA 2026-11-17: uninstall silently deleted the receipts — the proof
+    a buyer pays for. A counts-only copy is saved in the home folder first."""
+    from pathlib import Path
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
+    (home / "receipts.jsonl").write_text('{"route": "/v1/messages", "status": 200}\n')
+    assert main(["uninstall"]) == 0
+    copies = list(Path.home().glob("omna-receipts-*.jsonl"))
+    assert len(copies) == 1 and copies[0].read_text() == '{"route": "/v1/messages", "status": 200}\n'
+    out = capsys.readouterr()[0]
+    assert "receipts saved to" in out and str(copies[0]) in out
+
+
+def test_uninstall_with_no_receipts_saves_nothing(monkeypatch, home, capsys):
+    from pathlib import Path
+
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr("os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
+    assert main(["uninstall"]) == 0
+    assert not list(Path.home().glob("omna-receipts-*.jsonl"))

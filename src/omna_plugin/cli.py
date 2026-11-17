@@ -820,6 +820,26 @@ def _remove_local_state() -> str | None:
     return error
 
 
+def _save_receipts_before_uninstall() -> None:
+    """Copy receipts.jsonl to the home folder before ~/.omna is deleted (Muse QA
+    2026-11-17: uninstall silently deleted the receipts, the proof a buyer pays
+    for). Receipts hold counts only, never a real value, so the copy is safe to
+    keep."""
+    src = config.receipts_path()
+    try:
+        if not src.exists() or src.stat().st_size == 0:
+            return
+        import shutil
+        import time as _time
+
+        dst = Path.home() / f"omna-receipts-{_time.strftime('%Y-%m-%d-%H%M%S')}.jsonl"
+        shutil.copy2(src, dst)
+        print(f"omna: your receipts saved to {dst} (counts only, no real values) — "
+              "keep it as proof of what Omna masked, or delete it.")
+    except OSError as e:
+        print(f"omna: WARNING — could not save a copy of your receipts ({e}); they are deleted with {config.home()}.")
+
+
 def cmd_uninstall(a) -> int:
     # Both places `omna init` can have wired (it is run once per user, and
     # again with --project in a repo): un-wiring only the one named on this
@@ -843,6 +863,7 @@ def cmd_uninstall(a) -> int:
     xch = continue_dev.uninstall()
     if xch["models_unwired"]:
         print(f"omna: removed Continue's Omna setting from {', '.join(xch['models_unwired'])}")
+    _save_receipts_before_uninstall()
     if sys.platform == "darwin":
         from .mac import setup as mac_setup
 
