@@ -53,7 +53,7 @@ from .style import STYLES
 
 def _health(port: int) -> dict | None:
     try:
-        r = httpx.get(f"{config.base_url(port)}/omna/health", timeout=1.0)
+        r = httpx.get(f"{config.base_url(port)}/omna/health", timeout=1.0, trust_env=False)
         if r.status_code == 200:
             return r.json()
     except httpx.HTTPError:
@@ -69,7 +69,7 @@ def _who_answers(port: int) -> str:
     token = extension_auth.ensure_token()   # no secret yet = nothing could prove it: make one first
     nonce = secrets.token_hex(16)
     try:
-        r = httpx.get(f"{config.base_url(port)}/omna/health", params={"nonce": nonce}, timeout=1.0)
+        r = httpx.get(f"{config.base_url(port)}/omna/health", params={"nonce": nonce}, timeout=1.0, trust_env=False)
     except httpx.HTTPError:
         return "nobody"
     if r.status_code != 200:
@@ -345,12 +345,30 @@ SMART_OFF_TEXT = ("Smart masking is off: names, home addresses and birth dates w
                   "go to the AI as they are. Turn it on: `omna smart on`.")
 
 
-def smart_message(on: bool, ready: list[str]) -> list[str]:
-    """The two lines `omna status` shows about smart masking — the benefit, both ways."""
+def _smart_word(h: dict) -> str:
+    """"on" / "off" / "FAILED (fast only)" for the proxy line of `omna status`."""
+    if not h.get("smart"):
+        return "off"
+    return "FAILED (fast only)" if h.get("smart_failed") and not h.get("smart_models") else "on"
+
+
+def smart_message(on: bool, ready: list[str], failed: dict[str, str] | None = None) -> list[str]:
+    """The two lines `omna status` shows about smart masking — the benefit, both
+    ways — and the truth when a model did not download (Muse QA B4, 2026-11-17)."""
     if not on:
         return ["smart:        OFF", "              " + SMART_OFF_TEXT]
-    models = ", ".join(ready) if ready else "loading in the background (fast masking meanwhile)"
-    return [f"smart:        on ({models})", "              " + SMART_ON_TEXT]
+    failed = failed or {}
+    why = "; ".join(f"{name}: {err}" for name, err in failed.items())
+    if not ready and failed:
+        return [f"smart:        FAILED — the smart model did not download ({why}); fast masking only (rules)",
+                "              Names and addresses written in sentences go to the AI as they are. "
+                "Retry: `omna stop && omna start -d`."]
+    if not ready:
+        return ["smart:        on, model still downloading (fast masking meanwhile)", "              " + SMART_ON_TEXT]
+    line = f"smart:        on ({', '.join(ready)})"
+    if failed:
+        line += f" — {', '.join(failed)} failed to download ({why}); retry: `omna stop && omna start -d`"
+    return [line, "              " + SMART_ON_TEXT]
 
 
 def cmd_smart(a) -> int:
@@ -474,11 +492,11 @@ def cmd_status(a) -> int:
     print(f"omna plugin {__version__}  engine {engine_version()}")
     if h:
         speed = f", {h['avg_mask_ms_this_run']} ms average to mask" if h.get("avg_mask_ms_this_run") else ""
-        print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {'on' if h['smart'] else 'off'}, secrets {'restored locally, never on disk' if h.get('restore_secrets', True) else 'redacted for good'}, {h['requests_this_run']} requests this run{speed})")
+        print(f"proxy:        running on {config.base_url(a.port)}  (smart masking {_smart_word(h)}, secrets {'restored locally, never on disk' if h.get('restore_secrets', True) else 'redacted for good'}, {h['requests_this_run']} requests this run{speed})")
     else:
         print(pause.status_line() or "proxy:        NOT running — nothing is masked  → `omna start -d`")
     if h:
-        for line in smart_message(bool(h.get("smart")), h.get("smart_models") or []):
+        for line in smart_message(bool(h.get("smart")), h.get("smart_models") or [], h.get("smart_failed") or {}):
             print(line)
     if h:
         from . import pdf as _pdf
@@ -1397,6 +1415,7 @@ def maybe_ask_about_crashes(cmd: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    config.tidy_no_proxy()  # a "[::1]" in NO_PROXY used to crash every httpx call (Muse B1)
     if args[:1] == ["native-host"]:
         # Chrome runs this for Omna for Chrome (finding 6) with arguments of
         # its own (the caller's origin; a window handle on Windows), so it is

@@ -139,3 +139,40 @@ def test_the_record_says_which_masking_a_request_really_got(tmp_path, monkeypatc
     lines = menubar.status_lines({"masking": "fast-smart-not-ready", "smart": True})
     assert lines[-1] == "Masking: FAST ONLY — the smart model is still loading"
     assert menubar.status_lines({"masking": "smart"})[-1].startswith("Masking: smart")
+
+
+def test_status_says_failed_when_the_smart_model_did_not_download():
+    """Muse QA B4 (2026-11-17): status said smart masking was "on" (loading)
+    forever when the model never arrived. It must say FAILED and that only
+    fast masking (rules) is running."""
+    from omna_plugin import cli, menubar
+
+    lines = cli.smart_message(True, [], {"privacy filter": "connection refused"})
+    assert lines[0].startswith("smart:        FAILED")
+    assert "fast masking only" in lines[0] and "connection refused" in lines[0]
+    # still downloading, nothing failed: say downloading, not failed
+    assert "downloading" in cli.smart_message(True, [], {})[0]
+    # one model ready, the other failed: on, and the failure named
+    mixed = cli.smart_message(True, ["compact"], {"privacy filter": "disk full"})[0]
+    assert mixed.startswith("smart:        on (compact)") and "privacy filter failed" in mixed
+    assert cli.smart_message(False, [], {})[0] == "smart:        OFF"
+    menu = menubar.status_lines({"masking": "fast-smart-not-ready", "smart": True,
+                                 "smart_failed": {"privacy filter": "offline"}})
+    assert menu[-1] == "Masking: FAST ONLY — the smart model failed to download (restart Omna to retry)"
+
+
+def test_a_failed_download_is_forgotten_once_it_succeeds(monkeypatch):
+    calls = {"n": 0}
+
+    def flaky(smart_model):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("offline")
+
+    monkeypatch.setattr(smart, "models_here", lambda: [smart.COMPACT])
+    monkeypatch.setattr(smart.omna_pii_mask, "download_model", flaky)
+    smart._ready[smart.COMPACT].clear()
+    smart.download_models()
+    assert smart.failed_models() == {smart.SHOWN_AS[smart.COMPACT]: "offline"}
+    smart.download_models()
+    assert smart.failed_models() == {}

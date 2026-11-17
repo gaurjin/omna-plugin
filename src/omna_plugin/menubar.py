@@ -39,7 +39,7 @@ MASKING_WORDS = {
 
 def _health(port: int) -> dict | None:
     try:
-        r = httpx.get(f"{config.base_url(port)}/omna/health", timeout=1.0)
+        r = httpx.get(f"{config.base_url(port)}/omna/health", timeout=1.0, trust_env=False)
         if r.status_code == 200:
             return r.json()
     except httpx.HTTPError:
@@ -73,7 +73,14 @@ def status_lines(h: dict | None) -> list[str]:
         f"Requests masked this session: {h.get('requests_this_run', 0)}",
         f"Covers: {coverage}",
         f"Masking overhead: {h.get('avg_mask_ms_this_run', 0)} ms/request",
-    ] + ([f"Masking: {MASKING_WORDS[h['masking']]}"] if h.get("masking") in MASKING_WORDS else [])
+    ] + _masking_line(h)
+
+
+def _masking_line(h: dict) -> list[str]:
+    if h.get("masking") == "fast-smart-not-ready" and h.get("smart_failed"):
+        # The model is not loading — it failed (Muse QA B4, 2026-11-17).
+        return ["Masking: FAST ONLY — the smart model failed to download (restart Omna to retry)"]
+    return [f"Masking: {MASKING_WORDS[h['masking']]}"] if h.get("masking") in MASKING_WORDS else []
 
 
 def _icon_image(on: bool):

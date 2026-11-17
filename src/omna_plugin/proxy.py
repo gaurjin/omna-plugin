@@ -203,6 +203,12 @@ def _open_compressed(body: bytes, enc: str) -> bytes | None:
     return out if isinstance(out, bytes) and len(out) <= _MAX_OPENED else None
 
 
+def _smart_models_failed() -> dict[str, str]:
+    from . import smart as smart_models
+
+    return smart_models.failed_models()
+
+
 def _smart_models_ready() -> list[str]:
     from . import smart as smart_models
 
@@ -306,6 +312,9 @@ def create_app(
                 "masking": smart_mode(session.smart),
                 # Which smart models have arrived and passed their hash check.
                 "smart_models": _smart_models_ready() if session.smart else [],
+                # Models whose download failed (shown name → reason): status
+                # says FAILED instead of "on" (Muse QA B4, 2026-11-17).
+                "smart_failed": _smart_models_failed() if session.smart else {},
                 # Can this machine read text in pictures (Apple Vision, macOS)?
                 # Omna for Chrome sends screenshots to /omna/ocr only when true.
                 "ocr": ocr.available(),

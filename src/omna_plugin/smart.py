@@ -121,6 +121,12 @@ def ready_models() -> list[str]:
     return [m for m in models_here() if _ready[m].is_set()]
 
 
+def failed_models() -> dict[str, str]:
+    """Models whose download failed this run and are still not ready, by their
+    shown name → the reason (Muse QA B4: status used to say "on" regardless)."""
+    return {SHOWN_AS[m]: e for m, e in _failed.items() if not _ready[m].is_set()}
+
+
 def _choice(chrome_text: str | None = None) -> str | None:
     """The engine's smart_model value for a text, or None = no model ready yet."""
     ready = ready_models()
@@ -219,6 +225,7 @@ def download_models() -> None:
         try:
             omna_pii_mask.download_model(smart_model=name)
             _ready[name].set()
+            _failed.pop(name, None)
         except Exception as e:  # offline, disk full, hash mismatch: stay on what is ready
             _failed[name] = str(e)
             print(f"omna: smart model {SHOWN_AS[name]} not available yet ({e}); "

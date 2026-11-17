@@ -7,6 +7,7 @@ Everything lives under one directory (default ``~/.omna``; override with the
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -118,6 +119,33 @@ def dashboard_token(create: bool = True) -> str:
     with os.fdopen(fd, "w") as f:
         f.write(tok + "\n")
     return tok
+
+
+def tidy_no_proxy() -> None:
+    """Rewrite NO_PROXY / no_proxy so httpx can read it (Muse QA B1, 2026-11-17).
+
+    httpx raises ``InvalidURL`` on a bracketed IPv6 entry ("[::1]",
+    "[fe80::1]:8080") or an IPv6 range ("::1/128") — `omna status` crashed,
+    the installer exited 1 after a good install, and the proxy could not open
+    its connection to the AI provider. Brackets, a port and a range on an IPv6
+    entry are dropped ("::1"), which keeps that address off the proxy. Every
+    other entry is left exactly as it is. Runs once, at the start of `omna`.
+    """
+    for key in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(key)
+        if raw is None or ("[" not in raw and "::" not in raw and raw.count(":") < 2):
+            continue
+        out = []
+        for part in raw.split(","):
+            p = part.strip()
+            m = re.fullmatch(r"\[([^\]]+)\](?::\d+)?(?:/\d+)?", p)
+            if m:
+                p = m.group(1)
+            elif p.count(":") >= 2 and "/" in p and "://" not in p:
+                p = p.split("/", 1)[0]
+            if p:
+                out.append(p)
+        os.environ[key] = ",".join(out)
 
 
 def base_url(port: int = DEFAULT_PORT) -> str:
