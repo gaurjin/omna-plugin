@@ -259,3 +259,18 @@ def test_report_explains_speed_doors_and_provider_errors():
     assert "sign-in refused by the provider ×1" in text and "provider rate limit ×1" in text
     html_out = report.render_html(d)
     assert "round trip" not in html_out and "sign-in refused by the provider" in html_out
+
+
+def test_report_says_medical_facts_stay_visible_when_health_data_was_caught():
+    """Hera pilot (owner 2026-11-17): Omna hides who the patient is, never the
+    medical facts — the report says so plainly when health data was masked."""
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "api", "masked": {"HEALTH": 2}, "secrets": 0, "pii": 2})
+    d = report.build(days=7)
+    line = "health: Omna hid who the patient is; illnesses, medicines, lab results and visit dates were left visible on purpose"
+    assert line in report.render_text(d)
+    assert line in report.render_html(d)
+
+
+def test_no_health_line_without_health_data():
+    receipts.append({"route": "/v1/messages", "upstream": "api.anthropic.com", "status": 200, "door": "api", "masked": {"EMAIL": 1}, "secrets": 0, "pii": 1})
+    assert "health:" not in report.render_text(report.build(days=7))

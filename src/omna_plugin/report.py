@@ -282,6 +282,16 @@ DOOR_WORDS = {
 }
 
 
+HEALTH_LINE = ("health: Omna hid who the patient is; illnesses, medicines, lab results and visit dates "
+               "were left visible on purpose")
+
+
+def _health_caught(d: dict) -> bool:
+    """Was any health identifier masked in this report's window? (Hera pilot,
+    2026-11-17: say plainly that medical facts are not hidden, by design.)"""
+    return any(w in k.upper() for k in d.get("by_kind") or {} for w in ("HEALTH", "MEDICAL", "INSURANCE", "DIAGNOSIS"))
+
+
 def _speed_sentence(d: dict) -> str:
     """The two speed numbers, measured on different clocks (Muse QA 2026-11-17:
     "masking added 151 ms" next to "round trip 11 ms" read as a contradiction).
@@ -302,6 +312,8 @@ def render_text(d: dict) -> str:
     ]
     if d["by_kind"]:
         lines.append("          by kind: " + ", ".join(f"{k} ×{v}" for k, v in d["by_kind"].items()))
+    if _health_caught(d):
+        lines.append("          " + HEALTH_LINE)
     lines.append("          " + _not_masked_line(d))
     lines.append("          " + _ruleset_line(d))
     lines.append("          " + _protection_off_line(d))
@@ -360,7 +372,7 @@ h1{{font-size:22px}} .grid{{display:grid;grid-template-columns:repeat(4,1fr);gap
 <div class="cell"><b>{chain}</b>receipt chain ({d['chain']['receipts']} receipts)</div>
 </div>
 <h2>Catches, not incidents</h2><p class="muted">A catch means the value never reached the provider. No incident occurred.</p>
-<table><tr><th align=left>kind</th><th align=left>count</th></tr>{kinds}</table>
+<table><tr><th align=left>kind</th><th align=left>count</th></tr>{kinds}</table>{f'<p class="muted">{e(HEALTH_LINE)}</p>' if _health_caught(d) else ''}
 <h2>Scan</h2><p>AI destinations seen: {ups}. Claude Code sessions: {d['sessions']}.</p>
 <h3>Apps</h3><table><tr><th align=left>app</th><th align=left>requests</th></tr>{apps}</table>
 <p class="muted">{d['bypassed']} bypassed by policy · {d['refused']['count']} refused by a pinned app's own certificate (never forwarded)</p>
