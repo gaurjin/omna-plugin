@@ -31,7 +31,8 @@ you get back: "…set SUPPORT_EMAIL to jane.doe@example.com…"   ← restored, 
   masked; the app's own parts — its instructions, its tool list, its settings and sign-in — go exactly as they
   came. Covered and tested live: claude.ai, the Claude desktop app, Claude Code, chatgpt.com, the ChatGPT
   desktop app, Codex, gemini.google.com, Antigravity CLI and grok.com.
-- **Nothing is sent to Omna.** The only network destination is the provider you were already using.
+- **Nothing you type is sent to Omna.** Your requests go only to the provider you were already using.
+  Omna counts installs and uninstalls (a random id + version, nothing else — [details](#what-omna-sends-and-to-whom)).
   A local receipt log (no values, hash-chained) shows what was caught — Omna for Chrome's too.
 - **16 ms** to mask a 68 KB request — measured, not estimated, on an M5 MacBook Air, and it is on top of a
   call that already takes seconds. You will not feel it. ([How it was measured](#speed).)
@@ -238,13 +239,19 @@ The proxy relays the stream as it arrives (pings included), forwards `anthropic-
 | `policy.json` | which tools/apps/hosts are covered, and — only if you ran `omna enroll` — an organisation name, a department name, and a random device id. | 0600 |
 | `crashes.jsonl` | the last 50 crashes: error type, message, stack frames (filenames only), versions. Masked by the engine before it is written, so a value that leaked into an error message is a token here too. Never sent. | 0600 |
 | `dashboard.token` | the local secret the dashboard asks for. | 0600 |
+| `install_id` | a random id made on the first `omna init`, so the uninstall count matches the install count. Nothing else. | 0600 |
 
 ### What Omna sends, and to whom
 
-Nothing, to us. The plugin makes exactly one kind of outbound connection: the request you were
-already making, to the AI provider you were already using, with your own key.
+Your requests go to one place: the AI provider you were already using, with your own key.
 
-There is no analytics call, no crash reporter phoning home, no licence check, no update ping.
+To us, two small pings, the same two Omna for Chrome sends: one on the first `omna init` and one on
+`omna uninstall`, to `https://omna.dev/api/public/telemetry`. Each carries exactly
+`{"device_id": <random id from ~/.omna/install_id>, "event": "install" or "uninstall", "version", "source": "cli"}` —
+no prompts, no values, no username, hostname or file path. The code is one short file,
+`src/omna_plugin/installping.py`. Turn it off with `OMNA_NO_TELEMETRY=1` or `DO_NOT_TRACK=1`.
+
+There is no usage analytics, no crash reporter phoning home, no licence check, no update ping.
 When something crashes, it is written to `~/.omna/crashes.jsonl` on your machine and stays there —
 `omna crash` shows you the exact bytes, and `omna crash --send` opens a pre-filled GitHub issue
 that **you** submit, or close. That is a deliberate difference from tools that ship an opt-in

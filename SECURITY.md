@@ -68,8 +68,9 @@ those upstream, though we would still like to hear about it so we can pin or pat
 
 ## How we try to earn the trust
 
-- **Nothing is sent to Omna.** The only outbound connection is your own request to your own
-  provider. A test reads our crash-reporting module's own source code and fails the build if
+- **Nothing you type is sent to Omna.** Your requests go only to your own provider. Omna gets
+  two counts: one install (first `omna init`) and one uninstall (`omna uninstall`) — a random id,
+  the version and `"source": "cli"`, nothing else (`installping.py`; off with `OMNA_NO_TELEMETRY=1`). A test reads our crash-reporting module's own source code and fails the build if
   networking is ever added to it.
 - **Crash reports are off by default**, masked by the engine before they are written to disk, and
   sent only if you say yes when asked.

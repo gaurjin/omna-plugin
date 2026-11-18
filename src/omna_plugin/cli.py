@@ -775,6 +775,11 @@ def cmd_init(a) -> int:
     # or a non-Mac platform); Claude Code is wired either way, which is the sense in
     # which Omna is "active" here.
     print("Omna is active. Everything you send to an AI from this Mac is masked. `omna status` any time.")
+    from . import installping
+
+    if installping.send_install():
+        print("      counted one install at omna.dev (a random id + version, nothing else). "
+              "Off: OMNA_NO_TELEMETRY=1.")
     return 0
 
 
@@ -864,6 +869,10 @@ def cmd_uninstall(a) -> int:
     if xch["models_unwired"]:
         print(f"omna: removed Continue's Omna setting from {', '.join(xch['models_unwired'])}")
     _save_receipts_before_uninstall()
+    # Before ~/.omna (which holds the install id) is deleted below.
+    from . import installping
+
+    installping.send_uninstall()
     if sys.platform == "darwin":
         from .mac import setup as mac_setup
 

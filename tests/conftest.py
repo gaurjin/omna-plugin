@@ -40,3 +40,11 @@ def _never_touch_the_real_home_folder(monkeypatch, tmp_path_factory):
     (found 2026-11-14 while checking that uninstall reverses everything).
     The whole suite now has a throwaway home folder."""
     monkeypatch.setenv("HOME", str(tmp_path_factory.mktemp("home")))
+
+
+@pytest.fixture(autouse=True)
+def _never_send_install_counts(monkeypatch):
+    """`omna init` / `omna uninstall` send one install/uninstall count to
+    omna.dev. No test may reach the network or inflate the real count; the
+    tests for that ping (test_installping.py) turn this back on with a fake."""
+    monkeypatch.setenv("OMNA_NO_TELEMETRY", "1")

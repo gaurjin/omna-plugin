@@ -1,4 +1,5 @@
-"""The only part of Omna that can send anything to Omna (#132).
+"""One of the two parts of Omna that can send anything to Omna (#132); the
+other is ``installping.py`` (install/uninstall count).
 
 Deliberately its own module. ``crashlog.py`` builds and stores the report and
 has a test that fails the build if networking ever appears in it; this file is
