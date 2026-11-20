@@ -608,6 +608,17 @@ def cmd_mask(a) -> int:
         text = " ".join(args)
     from .style import REALISTIC, TOKENS
 
+    if a.smart:
+        # The smart models count as ready only in the process that loaded them
+        # (the proxy does it at start). Without this, --smart silently ran the
+        # rules alone every time (Muse QA 2026-11-19). Loading = hash-check the
+        # files on disk, or download them on the first run.
+        from . import smart as smart_models
+
+        smart_models.download_models()
+        if smart_models.mode(True) != "smart":
+            print("omna: the smart models could not be loaded — this used fast masking only",
+                  file=sys.stderr)
     s = MaskingSession(smart=a.smart)
     r = s.mask_text(text, style=REALISTIC if a.realistic else TOKENS)
     sys.stdout.write(r.masked)

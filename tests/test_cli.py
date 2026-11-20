@@ -964,3 +964,52 @@ def test_uninstall_with_no_receipts_saves_nothing(monkeypatch, home, capsys):
     monkeypatch.setattr("os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
     assert main(["uninstall"]) == 0
     assert not list(Path.home().glob("omna-receipts-*.jsonl"))
+
+
+# --- Muse QA 2026-11-19: `omna mask --smart` silently ran the rules alone ---
+# The smart models count as ready only in the process that loaded them, and
+# `omna mask` never loaded them, so --smart used fast masking every time.
+
+def test_mask_smart_loads_the_models_and_uses_them(capsys, monkeypatch):
+    import omna_pii_mask
+
+    from omna_plugin import smart
+
+    for e in smart._ready.values():
+        e.clear()
+    loaded: list[str] = []
+    monkeypatch.setattr(omna_pii_mask, "download_model", lambda smart_model=None: loaded.append(smart_model))
+    seen: list[bool] = []
+    real = omna_pii_mask.mask
+
+    def spy(text, model=False, **kw):
+        seen.append(model)
+        return real(text, model=False, **{k: v for k, v in kw.items() if k != "smart_model"})
+
+    monkeypatch.setattr(omna_pii_mask, "mask", spy)
+    try:
+        assert main(["mask", "--smart", "mail a@example.com"]) == 0
+    finally:
+        for e in smart._ready.values():
+            e.clear()
+    out, err = capsys.readouterr()
+    assert loaded and seen == [True]
+    assert "fast masking only" not in err
+
+
+def test_mask_smart_says_so_when_no_model_could_be_loaded(capsys, monkeypatch):
+    import omna_pii_mask
+
+    from omna_plugin import smart
+
+    for e in smart._ready.values():
+        e.clear()
+
+    def offline(smart_model=None):
+        raise OSError("offline")
+
+    monkeypatch.setattr(omna_pii_mask, "download_model", offline)
+    assert main(["mask", "--smart", "mail a@example.com"]) == 0
+    out, err = capsys.readouterr()
+    assert "[EMAIL_1]" in out
+    assert "fast masking only" in err
