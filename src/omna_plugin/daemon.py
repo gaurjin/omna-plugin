@@ -112,6 +112,9 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
         except (NotImplementedError, RuntimeError):
             pass
 
+    from . import installping
+    installping.start_daily_loop()   # daily "used it" count; off with OMNA_NO_TELEMETRY
+
     print(f"omna: masking proxy on {config.base_url(api_port)}  (engine {engine_version()}, smart={'on' if smart else 'off'}, secrets={'restored locally' if restore_secrets else 'redacted for good'})", flush=True)
     if master:
         print(f"omna: system door on 127.0.0.1:{system_port}", flush=True)
