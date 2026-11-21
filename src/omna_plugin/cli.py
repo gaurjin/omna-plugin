@@ -517,7 +517,7 @@ def cmd_status(a) -> int:
         if last and (time.time() - last) < 120:
             print(f"extension:    connected (v{h.get('extension_version') or '?'})")
         else:
-            print("extension:    not connected  → install from the Chrome Web Store")
+            print("extension:    not connected yet  → already have Omna for Chrome? it connects within a minute (quit and reopen Chrome once after installing Omna); don't have it? chromewebstore.google.com/detail/omna/nnkjconloimokalfdghmhifcangdbmnc")
     if shutil.which("aider"):
         ast = aider.status()
         aw = ast["openai_base"] == f"{config.base_url(a.port)}/v1" or ast["anthropic_base"] == config.base_url(a.port)
@@ -1466,13 +1466,33 @@ def main(argv: list[str] | None = None) -> int:
         # its own (the caller's origin; a window handle on Windows), so it is
         # handled before argparse, which would refuse them.
         return extension_auth.native_host_main(args[1:])
-    a = build_parser().parse_args(argv)
+    parser = build_parser()
+    if args and not args[0].startswith("-"):
+        # A typo gets one helpful line, not the whole usage wall (client test 2026-11-21, #21).
+        cmds = next((list(x.choices) for x in getattr(parser, "_actions", [])
+                     if isinstance(x, argparse._SubParsersAction)), None)
+        if cmds and args[0] not in cmds:
+            import difflib
+            near = difflib.get_close_matches(args[0], cmds, n=1)
+            hint = f" — did you mean `omna {near[0]}`?" if near else ""
+            print(f"omna: unknown command '{args[0]}'{hint}  (all commands: `omna --help`)", file=sys.stderr)
+            return 2
+    a = parser.parse_args(argv)
     try:
         rc = a.fn(a)
         maybe_ask_about_crashes(a.cmd)
         return rc
     except (KeyboardInterrupt, SystemExit):
         raise
+    except BrokenPipeError:
+        # The output was cut short (`omna log | head`): not a crash (client
+        # test 2026-11-21, #20). Point stdout at nowhere so Python's own flush
+        # at exit does not raise again.
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
+        return 0
     except BaseException as e:
         # Record it locally (masked, never sent — see crashlog.py) and then let
         # it surface exactly as it would have, so nothing is swallowed.

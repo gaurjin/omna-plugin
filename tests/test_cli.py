@@ -331,7 +331,7 @@ def test_status_shows_extension_not_connected_when_stale(capsys, monkeypatch):
 
     assert main(["status"]) == 0
     out, _ = capsys.readouterr()
-    assert "extension:    not connected  → install from the Chrome Web Store" in out
+    assert "extension:    not connected yet  → already have Omna for Chrome?" in out
 
 
 def test_status_shows_extension_not_connected_when_never_seen(capsys, monkeypatch):
@@ -341,7 +341,7 @@ def test_status_shows_extension_not_connected_when_never_seen(capsys, monkeypatc
 
     assert main(["status"]) == 0
     out, _ = capsys.readouterr()
-    assert "extension:    not connected  → install from the Chrome Web Store" in out
+    assert "extension:    not connected yet  → already have Omna for Chrome?" in out
 
 
 def test_mappings_command_refuses_when_proxy_not_running(capsys, monkeypatch):
@@ -1013,3 +1013,27 @@ def test_mask_smart_says_so_when_no_model_could_be_loaded(capsys, monkeypatch):
     out, err = capsys.readouterr()
     assert "[EMAIL_1]" in out
     assert "fast masking only" in err
+
+
+# --- Client test 2026-11-21 ---
+
+def test_a_typo_gets_a_did_you_mean(capsys):
+    """#21: `omna mapping` printed the whole usage wall."""
+    from omna_plugin import cli
+    assert cli.main(["mapping"]) == 2
+    err = capsys.readouterr().err
+    assert "did you mean `omna mappings`" in err and "usage:" not in err
+
+
+def test_output_cut_short_is_not_a_crash(monkeypatch):
+    """#20: `omna log | head` raised BrokenPipeError, which was saved as a crash
+    and then shown to the person as "omna hit a problem"."""
+    from omna_plugin import cli, crashlog
+    saved = []
+    monkeypatch.setattr(crashlog, "record", lambda *a, **k: saved.append(a))
+    monkeypatch.setattr(cli, "cmd_version", lambda a: (_ for _ in ()).throw(BrokenPipeError()), raising=False)
+    p = cli.build_parser()
+    a = p.parse_args(["version"])
+    monkeypatch.setattr(cli, "build_parser", lambda: type("P", (), {"parse_args": lambda self, argv: type("A", (), {"cmd": "version", "fn": staticmethod(lambda a: (_ for _ in ()).throw(BrokenPipeError()))})()})())
+    assert cli.main(["version"]) == 0
+    assert saved == []
