@@ -239,19 +239,26 @@ The proxy relays the stream as it arrives (pings included), forwards `anthropic-
 | `policy.json` | which tools/apps/hosts are covered, and — only if you ran `omna enroll` — an organisation name, a department name, and a random device id. | 0600 |
 | `crashes.jsonl` | the last 50 crashes: error type, message, stack frames (filenames only), versions. Masked by the engine before it is written, so a value that leaked into an error message is a token here too. Never sent. | 0600 |
 | `dashboard.token` | the local secret the dashboard asks for. | 0600 |
-| `install_id` | a random id made on the first `omna init`, so the uninstall count matches the install count. Nothing else. | 0600 |
+| `install_id` | a random id made on the first `omna init`, so the uninstall and daily counts match the install count. Nothing else. | 0600 |
+| `usage_sent.json` | which days' counts were already sent (a short fingerprint per day), so a day is not sent twice. | |
 
 ### What Omna sends, and to whom
 
 Your requests go to one place: the AI provider you were already using, with your own key.
 
-To us, two small pings, the same two Omna for Chrome sends: one on the first `omna init` and one on
-`omna uninstall`, to `https://omna.dev/api/public/telemetry`. Each carries exactly
-`{"device_id": <random id from ~/.omna/install_id>, "event": "install" or "uninstall", "version", "source": "cli"}` —
-no prompts, no values, no username, hostname or file path. The code is one short file,
-`src/omna_plugin/installping.py`. Turn it off with `OMNA_NO_TELEMETRY=1` or `DO_NOT_TRACK=1`.
+To us, small counts, the same ones Omna for Chrome sends, to `https://omna.dev/api/public/telemetry`:
 
-There is no usage analytics, no crash reporter phoning home, no licence check, no update ping.
+- one on the first `omna init` and one on `omna uninstall`:
+  `{"device_id": <random id from ~/.omna/install_id>, "event": "install" or "uninstall", "version", "source": "cli"}`;
+- while Omna runs, at most once an hour, one per day you used it:
+  `{..., "event": "daily_active", "day": "2026-11-21", "counts": {"EMAIL": 5, "API_KEY": 1}}` —
+  how many of each kind were masked that day, added up from your local receipts.
+
+No prompts, no values, no hosts, app names, username, hostname or file path. Your computer type
+(Mac or Linux) is in the request's user-agent. The code is one short file,
+`src/omna_plugin/installping.py`. Turn it all off with `OMNA_NO_TELEMETRY=1` or `DO_NOT_TRACK=1`.
+
+There is no crash reporter phoning home, no licence check, no update ping.
 When something crashes, it is written to `~/.omna/crashes.jsonl` on your machine and stays there —
 `omna crash` shows you the exact bytes, and `omna crash --send` opens a pre-filled GitHub issue
 that **you** submit, or close. That is a deliberate difference from tools that ship an opt-in
