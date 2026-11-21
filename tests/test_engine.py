@@ -507,7 +507,9 @@ def test_an_omna_stand_in_is_never_masked_again(home, monkeypatch):
     i = text.index("EMAIL")
     fake = {"spans": [{"start": i, "end": i + 7, "entity": "PERSON", "layer": "L3", "token": "[PERSON" + "_1]"}], "audit": []}
     monkeypatch.setattr(smart_models, "mask", lambda t, s, r=None: fake if t == text else {"spans": [], "audit": []})
-    r = MaskingSession().mask_text(text)
+    from omna_plugin.engine import from_extension
+    with from_extension():                                  # the request Omna for Chrome labelled
+        r = MaskingSession().mask_text(text)
     assert r.masked == text and not r.counts
 
 
@@ -533,3 +535,21 @@ def test_this_macs_home_folder_is_never_masked(home, monkeypatch):
 def test_wi_fi_is_not_a_persons_name(home):
     r = MaskingSession().mask_text("the Wi" + "-Fi network is on and Wi" + "-Fi is fast")
     assert "Wi-Fi" in r.masked and not r.counts
+
+
+def test_a_real_value_shaped_like_a_stand_in_is_still_masked(home, monkeypatch):
+    """Checker finding (2026-11-21): "[SSN_123456789]" looks like a stand-in
+    but Omna never issued it — the value inside must still be masked. And a
+    secret (L2) touching a real stand-in is never skipped."""
+    from omna_plugin import smart as smart_models
+    text = "my ssn: [SSN_" + "123456789] and key ghp_" + "[EMAIL_1]abcdefghijklmnopqrstuvwxyz0123"
+    i = text.index("123456789")
+    j = text.index("ghp_")
+    fake = {"spans": [{"start": i, "end": i + 9, "entity": "SSN", "layer": "L1", "token": "[SSN" + "_1]"},
+                      {"start": j, "end": len(text), "entity": "GITHUB_TOKEN", "layer": "L2", "token": "[SECRET_GITHUB_TOKEN" + "_1]"}],
+            "audit": []}
+    monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake if t == text else {"spans": [], "audit": []})
+    s = MaskingSession()
+    s._token_to_value["[EMAIL" + "_1]"] = "x@y.com"         # a stand-in Omna really issued
+    r = s.mask_text(text)
+    assert "123456789" not in r.masked and "abcdefghijklmnopqrstuvwxyz0123" not in r.masked

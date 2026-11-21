@@ -26,6 +26,7 @@ from mitmproxy.tools.dump import DumpMaster
 from . import config, hands_off, protobuf, sites, while_typing
 from .adapters import for_host
 from .adapters.base import RequestView
+from .engine import from_extension
 from .pipeline import MaskStats, Pipeline
 from .pipeline import _merge as merge_stats
 from .policy import Policy
@@ -316,7 +317,7 @@ class OmnaAddon:
         req = RequestView(host=flow.request.pretty_host, method=flow.request.method, path=flow.request.path,
                           content_type=flow.request.headers.get("content-type", ""),
                           body=flow.request.get_content() or b"", headers=dict(flow.request.headers))
-        with self.pipeline.session.sending_to(self._site(flow)):
+        with self.pipeline.session.sending_to(self._site(flow)), from_extension(bool(flow.metadata.get("omna_ext"))):
             out = adapter.mask(self.pipeline, req, self._style_for(flow))
         note = f"file-not-masked:{out.stats.not_masked}" if out.stats.not_masked else (
             "passthrough-nonprompt" if out.passthrough else None)

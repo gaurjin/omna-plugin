@@ -70,6 +70,27 @@ SECRET_PREFIX = "SECRET_"
 _SENDING_TO: contextvars.ContextVar[str | None] = contextvars.ContextVar("omna_sending_to", default=None)
 
 
+# True while masking a request Omna for Chrome already masked (it labels them):
+# its stand-ins are its own, never in this registry, and must not be masked
+# again (client test 2026-11-21, #11).
+_FROM_EXTENSION: contextvars.ContextVar[bool] = contextvars.ContextVar("omna_from_extension", default=False)
+
+
+@contextlib.contextmanager
+def from_extension(on: bool = True):
+    tok = _FROM_EXTENSION.set(on)
+    try:
+        yield
+    finally:
+        _FROM_EXTENSION.reset(tok)
+
+
+def _ext_shaped(token: str) -> bool:
+    """A stand-in as Omna for Chrome writes one: a short number, never a value."""
+    m = TOKEN_RE.fullmatch(token)
+    return bool(m) and len(m.group(2)) <= 6
+
+
 def sending_site() -> str | None:
     """The site the text being masked right now is going to (``sending_to``)."""
     return _SENDING_TO.get()
@@ -822,7 +843,7 @@ class MaskingSession:
         # The style is part of the cache key: the same text masks to two
         # different things, and handing one style the other's answer would send
         # a realistic fake value to a door that refused it.
-        key = style + "\x00" + ",".join(sorted(only or ())) + "\x00" + str(smart_models.model_now(self.smart)) + "\x00" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+        key = style + ("\x00ext" if _FROM_EXTENSION.get() else "") + "\x00" + ",".join(sorted(only or ())) + "\x00" + str(smart_models.model_now(self.smart)) + "\x00" + hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
         with self._lock:
             if self._stamp_now() != self._stamp:
                 # Another program changed the file (a forget clears the cache):
@@ -843,7 +864,7 @@ class MaskingSession:
             # 2026-11-21): inside an Omna stand-in already in the text (#11),
             # inside this Mac's own home-folder path (#16), or a word that is
             # never a name (#6). One-way: only drops, never adds (lesson 98).
-            raw = _drop_not_values(text, raw)
+            raw = _drop_not_values(text, raw, issued=lambda t: t in self._token_to_value or t in self._secret_token_to_value or (_FROM_EXTENSION.get() and _ext_shaped(t)))
             audit = raw.get("audit") or []
         if only is not None:
             # L6 events line up with spans one to one: keep the same ones.
@@ -1146,12 +1167,14 @@ def _home_dirs() -> list[str]:
     return [h] if len(h) > 1 else []
 
 
-def _drop_not_values(text: str, raw: dict) -> dict:
+def _drop_not_values(text: str, raw: dict, issued=lambda t: True) -> dict:
     """``raw`` without catches that are provably not a value: they touch an
     Omna stand-in already in ``text``, fall inside this Mac's home-folder path,
     or are a word in NOT_NAMES. Secrets (L2) are never dropped for the path or
     the word. The audit events line up with spans one to one."""
-    toks = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text)] if "[" in text else []
+    # Only stand-ins Omna really issued: "[SSN_123456789]" is shaped like one
+    # but holds a real value (checker finding 2026-11-21).
+    toks = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text) if issued(m.group(0))] if "[" in text else []
     homes = []
     for h in _home_dirs():
         start = 0
@@ -1166,9 +1189,9 @@ def _drop_not_values(text: str, raw: dict) -> dict:
     keep = []
     for idx, sp in enumerate(chars):
         a, b = sp["start"], sp["end"]
-        if any(a < e and b > s for s, e in toks):
-            continue
         if sp.get("layer") != "L2":
+            if any(a < e and b > s for s, e in toks):
+                continue
             if any(a >= s and b <= e for s, e in homes):
                 continue
             if sp.get("entity") == "PERSON" and text[a:b].strip().lower() in NOT_NAMES:
