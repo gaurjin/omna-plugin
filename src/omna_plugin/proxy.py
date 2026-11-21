@@ -34,7 +34,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from . import config, crashlog, ext_l3, ext_presence, extension_auth, mappings, ocr, receipts
+from . import config, crashlog, ext_l3, extension_auth, mappings, ocr, receipts
 from .engine import MaskingSession, engine_version
 from .pipeline import MaskStats, Pipeline
 from .pipeline import _merge as _merge_ws_stats
@@ -226,7 +226,6 @@ def create_app(
     policy: Policy | None = None,
     doors_state: dict[str, bool] | None = None,
     system_port: int = config.SYSTEM_PORT,
-    resolver=None,
 ) -> Starlette:
     # When a Pipeline is given, its MaskingSession is the one source of truth
     # (registry, /omna/health counters, etc.) — a separately-passed `session`
@@ -343,7 +342,6 @@ def create_app(
                 "style": style_for_extension(_live_style(), bool(doors.get("system"))).style,
                 "extension_last_seen": stats["extension_last_seen"],
                 "extension_version": stats["extension_version"],
-                "extension_apps": ext_presence.apps(),
             }
         )
 
@@ -363,14 +361,6 @@ def create_app(
         if not isinstance(body, dict):
             body = {}
         stats["extension_last_seen"] = time.time()
-        # Which browser this check-in came from, so the system door leaves that
-        # browser's chat sites to Omna for Chrome (ext_presence.py). Older
-        # extensions do not send "protecting"; they are taken as protecting.
-        if resolver is not None and request.client is not None:
-            got = await asyncio.get_running_loop().run_in_executor(
-                None, resolver, (request.client.host, request.client.port))
-            if got:
-                ext_presence.mark(got[1], protecting=body.get("protecting") is not False)
         # The extension owns this counter (it is the only door with a UI that
         # can offer the choice), so it reports it here rather than the plugin
         # trying to infer it. Counts only, like everything else in a receipt.

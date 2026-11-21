@@ -23,7 +23,7 @@ from mitmproxy.certs import CertStore
 from mitmproxy.options import Options
 from mitmproxy.tools.dump import DumpMaster
 
-from . import config, ext_presence, hands_off, protobuf, sites, while_typing
+from . import config, hands_off, protobuf, sites, while_typing
 from .adapters import for_host
 from .adapters.base import RequestView
 from .pipeline import MaskStats, Pipeline
@@ -220,12 +220,6 @@ class OmnaAddon:
         app = await self._app_of(data.context.client)
         if app and app in getattr(for_host(data.client_hello.sni or ""), "skip_apps", ()):
             data.ignore_connection = True   # e.g. the OneDrive app's own sync: never an AI, never opened
-            return
-        if ext_presence.covers(app, data.client_hello.sni):
-            # Omna for Chrome is masking in this browser's chat box: leave its
-            # traffic to that site alone (ext_presence.py, client test 2026-11-21).
-            # No receipt — Omna for Chrome writes its own for what it masked.
-            data.ignore_connection = True
             return
         if self.policy.app_action(app) == "bypass":
             data.ignore_connection = True
