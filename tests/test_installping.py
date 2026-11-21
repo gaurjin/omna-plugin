@@ -128,3 +128,17 @@ def test_daily_loop_never_starts_when_counting_is_off(home, monkeypatch):
     before = {t.name for t in threading.enumerate()}
     installping.start_daily_loop(first_delay=0)
     assert "omna-daily-count" not in {t.name for t in threading.enumerate()} - before
+
+
+def test_daily_counts_each_value_once_not_once_per_resend(home, wire):
+    """#14/#15 (client test 2026-11-21): a Claude Code conversation re-sends its
+    history every turn, so one email was counted on every turn. A value is
+    counted once a day, by its private fingerprint (never the value)."""
+    installping.send_install()
+    for _ in range(5):   # the same email and key, re-sent in five turns
+        receipts.append({"v": receipts.FORMAT, "product": "curl", "door": "api", "ts": "2026-11-21T10:00:00-0500",
+                         "masked": {"EMAIL": 1, "AWS_KEY": 1},
+                         "finds": [{"entity": "EMAIL", "fp": ["aaa"], "n": 1}, {"entity": "AWS_KEY", "fp": ["bbb"], "n": 1}]})
+    installping.send_daily(today="2026-11-21")
+    daily = [c["json"] for c in wire if c["json"]["event"] == "daily_active"]
+    assert daily[-1]["counts"] == {"EMAIL": 1, "AWS_KEY": 1}

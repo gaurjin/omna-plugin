@@ -119,6 +119,7 @@ def daily_usage(days: set[str]) -> dict[str, dict[str, int]]:
     from . import receipts
 
     out: dict[str, dict[str, int]] = {}
+    fps: dict[str, dict[str, set]] = {}
     for rec in receipts.tail(0):
         if rec.get("product") != "curl" or rec.get("door") == "control":
             continue
@@ -126,6 +127,19 @@ def daily_usage(days: set[str]) -> dict[str, dict[str, int]]:
         if day not in days:
             continue
         bucket = out.setdefault(day, {})
+        finds = [f for f in (rec.get("finds") or []) if isinstance(f, dict) and f.get("fp")]
+        if finds:
+            # Each value once a day, by its private fingerprint (client test
+            # 2026-11-21: a conversation re-sends its history every turn, so
+            # one email was counted on every turn).
+            seen = fps.setdefault(day, {})
+            for f in finds:
+                kind = str(f.get("entity") or "")
+                for fp in f["fp"]:
+                    if kind and fp not in seen.setdefault(kind, set()):
+                        seen[kind].add(fp)
+                        bucket[kind] = bucket.get(kind, 0) + 1
+            continue
         for kind, n in (rec.get("masked") or {}).items():
             if isinstance(n, int) and n > 0:
                 bucket[kind] = bucket.get(kind, 0) + n
