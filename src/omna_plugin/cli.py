@@ -224,7 +224,7 @@ def write_claude_env_file() -> None:
         return
     try:
         with open(path, "a") as f:
-            f.write("unset HTTPS_PROXY https_proxy\n")
+            f.write("unset HTTPS_PROXY\n" + ("unset https_proxy\n" if os.environ.get("https_proxy") in (None, claude_code._door_url()) else ""))
     except OSError:
         pass
 

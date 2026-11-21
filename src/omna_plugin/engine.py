@@ -1175,22 +1175,20 @@ def _drop_not_values(text: str, raw: dict, issued=lambda t: True) -> dict:
     # Only stand-ins Omna really issued: "[SSN_123456789]" is shaped like one
     # but holds a real value (checker finding 2026-11-21).
     toks = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text) if issued(m.group(0))] if "[" in text else []
+    # Only the home folder's own name ("/Users/name"), never the rest of a
+    # path: grep output puts real values right after it (checker 2026-11-21).
     homes = []
     for h in _home_dirs():
         start = 0
         while (i := text.find(h, start)) >= 0:
-            end = i + len(h)
-            # the home folder and the path that follows it, up to a space or quote
-            while end < len(text) and not text[end].isspace() and text[end] not in "\"'<>`":
-                end += 1
-            homes.append((i, end))
+            homes.append((i, i + len(h)))
             start = i + 1
     chars = _spans_in_chars(text, raw["spans"])
     keep = []
     for idx, sp in enumerate(chars):
         a, b = sp["start"], sp["end"]
         if sp.get("layer") != "L2":
-            if any(a < e and b > s for s, e in toks):
+            if any(a >= s and b <= e for s, e in toks):      # wholly inside a stand-in
                 continue
             if any(a >= s and b <= e for s, e in homes):
                 continue

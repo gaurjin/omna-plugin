@@ -523,7 +523,7 @@ def test_this_macs_home_folder_is_never_masked(home, monkeypatch):
     text = "open /Users/priyar/Developer/app/main.py and mail ana" + "@acme-mail.com"
     i = text.index("Users/priyar")
     j = text.index("ana" + "@")
-    fake = {"spans": [{"start": i, "end": i + len("Users/priyar/Developer"), "entity": "DIGITAL", "layer": "L3", "token": "[DIGITAL" + "_1]"},
+    fake = {"spans": [{"start": i, "end": i + len("Users/priyar"), "entity": "DIGITAL", "layer": "L3", "token": "[DIGITAL" + "_1]"},
                       {"start": j, "end": len(text), "entity": "EMAIL", "layer": "L1", "token": "[EMAIL" + "_1]"}],
             "audit": []}
     monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake if t == text else {"spans": [], "audit": []})
@@ -553,3 +553,18 @@ def test_a_real_value_shaped_like_a_stand_in_is_still_masked(home, monkeypatch):
     s._token_to_value["[EMAIL" + "_1]"] = "x@y.com"         # a stand-in Omna really issued
     r = s.mask_text(text)
     assert "123456789" not in r.masked and "abcdefghijklmnopqrstuvwxyz0123" not in r.masked
+
+
+def test_a_value_in_a_home_folder_path_is_still_masked(home, monkeypatch):
+    """Checker finding 2026-11-21: grep output like <home>/app/.env:3:ADMIN_EMAIL=<email>
+    sent the email unmasked. Only the home folder's own name is spared."""
+    from pathlib import Path
+    from omna_plugin import smart as smart_models
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    em = "ana" + "@acme-mail.com"
+    text = "/Users/priyar/app/.env:3:ADMIN_EMAIL=" + em
+    j = text.index(em)
+    fake = {"spans": [{"start": j, "end": j + len(em), "entity": "EMAIL", "layer": "L1", "token": "[EMAIL" + "_1]"}], "audit": []}
+    monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake if t == text else {"spans": [], "audit": []})
+    r = MaskingSession().mask_text(text)
+    assert em not in r.masked

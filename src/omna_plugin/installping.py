@@ -133,6 +133,9 @@ def daily_usage(days: set[str]) -> dict[str, dict[str, int]]:
             # 2026-11-21: a conversation re-sends its history every turn, so
             # one email was counted on every turn).
             seen = fps.setdefault(day, {})
+            for f in (rec.get("finds") or []):
+                if isinstance(f, dict) and not f.get("fp") and f.get("entity") and isinstance(f.get("n"), int):
+                    bucket[f["entity"]] = bucket.get(f["entity"], 0) + f["n"]   # no fingerprint: count as before
             for f in finds:
                 kind = str(f.get("entity") or "")
                 for fp in f["fp"]:
