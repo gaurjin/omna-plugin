@@ -510,7 +510,7 @@ def cmd_status(a) -> int:
     for line in ruleset_file.status_lines():
         print(line)
     cc = claude_code.status(claude_code.settings_file("user"))
-    wired = cc["base_url"] == config.base_url(a.port)
+    wired = cc["wired"]
     print(f"claude code:  {'wired' if wired else 'not wired'} ({cc['file']}){'  hook ok' if cc['hook'] else ''}{'' if wired else '  → `omna init`'}")
     if h:
         last = h.get("extension_last_seen")
@@ -758,11 +758,15 @@ def _auto_wire_other_tools(port: int) -> None:
 
 def cmd_init(a) -> int:
     path = claude_code.settings_file("project" if a.project else "user")
-    ch = claude_code.init(path, a.port)
+    via_system = sys.platform == "darwin" and not a.no_system
+    ch = claude_code.init(path, a.port, system=via_system)
     print(f"omna: Claude Code wired via {path}")
     if ch["backup"]:
         print(f"      backup of your previous settings: {ch['backup']}")
-    print(f"      env {claude_code.ENV_KEY}={config.base_url(a.port)}  ·  SessionStart hook `omna ensure`")
+    if claude_code.status(path)["via_system"]:
+        print("      through the Mac-wide setting, so Claude Code's Remote Control keeps working  ·  SessionStart hook `omna ensure`")
+    else:
+        print(f"      env {claude_code.ENV_KEY}={config.base_url(a.port)}  ·  SessionStart hook `omna ensure`")
     _auto_wire_other_tools(a.port)
     _pair_chrome()
     print("      other tools: export ANTHROPIC_BASE_URL / OPENAI_BASE_URL to the same address (Cursor BYOK, SDKs).")
@@ -921,7 +925,7 @@ def _set_tool(a, state: str) -> int:
     if a.tool == "claude-code":
         path = claude_code.settings_file("user")
         if state == "on":
-            claude_code.init(path, a.port)
+            claude_code.init(path, a.port, system=sys.platform == "darwin" and bool(pol.doors.get("system")))
         else:
             claude_code.uninstall(path)
     elif a.tool == "aider":

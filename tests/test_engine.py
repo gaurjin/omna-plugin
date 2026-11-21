@@ -497,3 +497,15 @@ def test_wide_characters_before_a_value_do_not_shift_the_mask(home, before, styl
     assert r.masked.startswith(f"{before} Call at ")
     assert r.masked.endswith(" end.") and " today, key " in r.masked
     assert s.restore_text(r.masked) == text
+
+
+def test_an_omna_stand_in_is_never_masked_again(home, monkeypatch):
+    """#11 (client test 2026-11-21): Omna for Chrome sent "[EMAIL_1]"; the smart
+    model read "EMAIL_1" as a name and the curl command sent "[[PERSON_72]]"."""
+    from omna_plugin import smart as smart_models
+    text = "My email is " + "[EMAIL" + "_1] and my phone is " + "[PHONE" + "_1]"
+    i = text.index("EMAIL")
+    fake = {"spans": [{"start": i, "end": i + 7, "entity": "PERSON", "layer": "L3", "token": "[PERSON" + "_1]"}], "audit": []}
+    monkeypatch.setattr(smart_models, "mask", lambda t, s, r=None: fake if t == text else {"spans": [], "audit": []})
+    r = MaskingSession().mask_text(text)
+    assert r.masked == text and not r.counts

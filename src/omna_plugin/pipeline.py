@@ -315,6 +315,31 @@ class Pipeline:
                 text = body.decode("utf-8")
             except (ValueError, UnicodeDecodeError, TypeError):
                 return MaskedBody(None, MaskStats(), refused="unparseable")
+            if sites.person_text(sending_site()) is not None:
+                # A chat website (its person's fields are recorded): JSON sent
+                # as plain text is read as JSON, so the site's table applies;
+                # any other text is the site's own (ChatGPT's page-speed
+                # report, client test 2026-11-21: 98% of all false catches and
+                # ~4 s of masking each) and gets the rules, not the smart model
+                # (owner rule 2026-11-15, the tiebreaker). Emails, keys and
+                # card numbers are still caught there.
+                if text.lstrip()[:1] in ("{", "["):
+                    try:
+                        obj = json.loads(text)
+                    except ValueError:
+                        obj = None
+                    if isinstance(obj, (dict, list)):
+                        try:
+                            masked, stats = self.mask_json(obj, style, careful=careful)
+                            return MaskedBody(json.dumps(masked, ensure_ascii=False).encode("utf-8"), stats)
+                        except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
+                            return MaskedBody(None, MaskStats(), refused="mask-failed")
+                try:
+                    with smart_models.rules_only():
+                        masked, stats = self.mask_text(text, style)
+                    return MaskedBody(masked.encode("utf-8"), stats)
+                except (TypeError, ValueError, UnicodeEncodeError, UnicodeDecodeError):
+                    return MaskedBody(None, MaskStats(), refused="mask-failed")
             try:
                 masked, stats = self.mask_text(text, style)
                 return MaskedBody(masked.encode("utf-8"), stats)

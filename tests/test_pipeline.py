@@ -255,3 +255,32 @@ def test_an_engine_crash_never_carries_the_users_text(monkeypatch):
         assert "sk_live" not in str(e) and e.__cause__ is None and e.__suppress_context__
     else:
         raise AssertionError("expected EngineCrashed")
+
+
+# --- Client test 2026-11-21 ---
+
+def test_a_chat_sites_plain_text_report_gets_rules_only_not_the_smart_model(tmp_path, monkeypatch):
+    """#8/#12: ChatGPT's page-speed report (/awe/api/v2/rum) arrives as plain
+    text; the smart model ran over all of it — 98% of the false catches and
+    ~4 s of masking per report. A chat site's body Omna cannot read as the
+    site's own JSON is the site's, so it gets the rules (owner rule 2026-11-15)."""
+    from omna_plugin import smart as smart_models
+    from omna_plugin.sites import site_of
+    seen = []
+    real = smart_models.mask
+    monkeypatch.setattr(smart_models, "mask", lambda t, s, r=None: (seen.append(smart_models._rules_only.get()), real(t, s, r))[1])
+    p = _pipe(tmp_path, monkeypatch)
+    with p.session.sending_to(site_of("chatgpt.com")):
+        out = p.mask_bytes(b"t=1834 lcp=2210 page=/c/abc user=jane.doe@acme.com", "text/plain;charset=UTF-8")
+    assert seen and all(seen), "the smart model ran on the site's own report"
+    assert b"jane.doe@acme.com" not in out.body                    # the rules still catch an email: no hole
+
+
+def test_a_chat_sites_json_sent_as_plain_text_is_read_as_json(tmp_path, monkeypatch):
+    p = _pipe(tmp_path, monkeypatch)
+    from omna_plugin.sites import site_of
+    body = json.dumps({"messages": [{"content": {"parts": ["mail jane.doe@acme.com"]}}], "id": "x"}).encode()
+    with p.session.sending_to(site_of("chatgpt.com")):
+        out = p.mask_bytes(body, "text/plain")
+    obj = json.loads(out.body)
+    assert "jane.doe@acme.com" not in obj["messages"][0]["content"]["parts"][0]

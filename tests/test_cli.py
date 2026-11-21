@@ -69,7 +69,7 @@ def test_tools_empty_by_default_shows_claude_code(capsys):
 
 def test_enable_and_disable_claude_code_calls_claude_code_init_and_uninstall(monkeypatch, no_restart):
     calls = []
-    monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None: calls.append(("init", path, port)) or {"backup": None})
+    monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None, **k: calls.append(("init", path, port)) or {"backup": None})
     monkeypatch.setattr("omna_plugin.claude_code.uninstall", lambda path: calls.append(("uninstall", path)) or {"env": True, "hook": True})
 
     assert main(["enable", "claude-code"]) == 0
@@ -244,7 +244,7 @@ def test_hosts_add_and_remove(no_restart):
 
 def test_init_calls_mac_setup_apply_on_darwin_unless_no_system(monkeypatch, capsys):
     monkeypatch.setattr("sys.platform", "darwin")
-    monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None: {"backup": None})
+    monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None, **k: {"backup": None})
     calls = []
     monkeypatch.setattr("omna_plugin.mac.setup.apply", lambda api_port=None: calls.append(api_port) or {"sudo_rc": 0})
 
@@ -256,7 +256,7 @@ def test_init_calls_mac_setup_apply_on_darwin_unless_no_system(monkeypatch, caps
 
 def test_init_no_system_skips_mac_setup_apply(monkeypatch, capsys):
     monkeypatch.setattr("sys.platform", "darwin")
-    monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None: {"backup": None})
+    monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None, **k: {"backup": None})
     monkeypatch.setattr("omna_plugin.mac.setup.apply", lambda api_port=None: (_ for _ in ()).throw(AssertionError("must not run Mac setup with --no-system")))
 
     assert main(["init", "--no-system"]) == 0

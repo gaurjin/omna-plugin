@@ -89,3 +89,12 @@ def test_cloudflares_own_answer_stays_hands_off(ct, body):
 ])
 def test_a_body_that_is_not_cloudflares_answer_is_masked(ct, body):
     assert hands_off.reason("www.perplexity.ai", CF, body) is None
+
+
+def test_claude_codes_own_reports_to_anthropic_are_left_alone():
+    """Client test 2026-11-21: through the Mac-wide door, Claude Code's own
+    usage reports and feature-switch lookups had 4,752 false catches in two
+    requests (and timed out). Same reports as claude.ai's /api/event_logging/."""
+    assert hands_off.reason("api.anthropic.com", "/api/event_logging/v2/batch", b"{}")
+    assert hands_off.reason("api.anthropic.com", "/api/eval/sdk-zAZezfDKGoZuXXKe", b"{}")
+    assert not hands_off.reason("api.anthropic.com", "/v1/messages", b"{}")

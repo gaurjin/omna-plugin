@@ -837,6 +837,13 @@ class MaskingSession:
                 return hit
         raw = smart_models.mask(text, self.smart, self._ruleset_arg())
         audit = raw.get("audit") or []
+        if "[" in text and raw["spans"]:
+            # Never mask inside an Omna stand-in that is already in the text
+            # (client test 2026-11-21, #11): Omna for Chrome sent "[EMAIL_1]",
+            # the smart model read "EMAIL_1" as a name, and the AI got a
+            # bracketed PERSON token it could not make sense of.
+            raw = _drop_spans_in_tokens(text, raw)
+            audit = raw.get("audit") or []
         if only is not None:
             # L6 events line up with spans one to one: keep the same ones.
             keep = [i for i, sp in enumerate(raw["spans"])
@@ -1122,6 +1129,22 @@ def _secret_fingerprint(value: str) -> str:
     nothing about the secret, and it differs on every computer."""
     return hmac.new(receipts.fingerprint_key(), b"omna-secret-number-v1\x00" + value.encode("utf-8", "surrogatepass"),
                     hashlib.sha256).hexdigest()[:32]
+
+
+def _drop_spans_in_tokens(text: str, raw: dict) -> dict:
+    """``raw`` without the spans that touch an Omna stand-in already in
+    ``text`` (the audit events line up with spans one to one)."""
+    toks = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text)]
+    if not toks:
+        return raw
+    chars = _spans_in_chars(text, raw["spans"])
+    keep = [i for i, sp in enumerate(chars)
+            if not any(sp["start"] < e and sp["end"] > s for s, e in toks)]
+    if len(keep) == len(raw["spans"]):
+        return raw
+    audit = raw.get("audit") or []
+    return {**raw, "spans": [raw["spans"][i] for i in keep],
+            "audit": [audit[i] for i in keep if i < len(audit)]}
 
 
 def _spans_in_chars(text: str, spans: list[dict]) -> list[dict]:

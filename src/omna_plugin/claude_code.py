@@ -16,7 +16,30 @@ from pathlib import Path
 from . import config
 
 ENV_KEY = "ANTHROPIC_BASE_URL"
+PROXY_KEY = "HTTPS_PROXY"
+CA_KEY = "NODE_EXTRA_CA_CERTS"
 HOOK_MARK = "omna ensure"
+
+# Client test 2026-11-21 (#22): Claude Code's Remote Control refuses to start
+# when ANTHROPIC_BASE_URL points anywhere but api.anthropic.com ("Remote Control
+# is only available when using Claude via api.anthropic.com"). On a Mac with the
+# Mac-wide door, Claude Code is sent through that door instead (HTTPS_PROXY +
+# Omna's local certificate): it still talks to api.anthropic.com, so Remote
+# Control works, and /v1/messages is masked and restored exactly as before
+# (verified live the same day). A proxy the person already set is never
+# overwritten: then the API door (ANTHROPIC_BASE_URL) is used, as before.
+
+
+def _door_url() -> str:
+    return f"http://{config.DEFAULT_HOST}:{config.SYSTEM_PORT}"
+
+
+def _ca_path() -> str:
+    return str(config.ca_dir() / "mitmproxy-ca-cert.pem")
+
+
+def _ours_base(v) -> bool:
+    return isinstance(v, str) and v.startswith(f"http://{config.DEFAULT_HOST}:")
 
 
 def settings_file(scope: str = "user") -> Path:
@@ -47,8 +70,11 @@ def _is_ours(hook: dict) -> bool:
     return "omna" in cmd and cmd.endswith(" ensure")
 
 
-def init(path: Path, port: int = config.DEFAULT_PORT) -> dict:
-    """Add our env var + SessionStart hook. Returns what changed."""
+def init(path: Path, port: int = config.DEFAULT_PORT, system: bool = False) -> dict:
+    """Add our env vars + SessionStart hook. Returns what changed.
+
+    ``system``: the Mac-wide door is on — send Claude Code through it, so
+    Remote Control keeps working (see the top of this file)."""
     data = _load(path)
     changes = {"backup": None, "env": False, "hook": False}
     if path.exists():
@@ -57,10 +83,22 @@ def init(path: Path, port: int = config.DEFAULT_PORT) -> dict:
             shutil.copyfile(path, backup)
             changes["backup"] = str(backup)
     env = data.setdefault("env", {})
-    url = config.base_url(port)
-    if env.get(ENV_KEY) != url:
-        env[ENV_KEY] = url
-        changes["env"] = True
+    theirs = env.get(PROXY_KEY) not in (None, _door_url())
+    if system and not theirs:
+        want = {PROXY_KEY: _door_url(), CA_KEY: _ca_path()}
+        if _ours_base(env.get(ENV_KEY)):
+            del env[ENV_KEY]
+            changes["env"] = True
+    else:
+        want = {ENV_KEY: config.base_url(port)}
+        if env.get(PROXY_KEY) == _door_url():
+            env.pop(PROXY_KEY, None)
+            env.pop(CA_KEY, None)
+            changes["env"] = True
+    for k, v in want.items():
+        if env.get(k) != v:
+            env[k] = v
+            changes["env"] = True
     hooks = data.setdefault("hooks", {})
     starts = hooks.setdefault("SessionStart", [])
     already = any(_is_ours(h) for entry in starts for h in entry.get("hooks", []))
@@ -83,11 +121,17 @@ def uninstall(path: Path) -> dict:
         return changes
     data = _load(path)
     env = data.get("env") or {}
-    if isinstance(env.get(ENV_KEY), str) and env[ENV_KEY].startswith(f"http://{config.DEFAULT_HOST}:"):
+    if _ours_base(env.get(ENV_KEY)):
         del env[ENV_KEY]
         changes["env"] = True
-        if not env:
-            data.pop("env", None)
+    if env.get(PROXY_KEY) == _door_url():
+        del env[PROXY_KEY]
+        changes["env"] = True
+    if env.get(CA_KEY) == _ca_path():
+        del env[CA_KEY]
+        changes["env"] = True
+    if not env:
+        data.pop("env", None)
     hooks = data.get("hooks") or {}
     starts = hooks.get("SessionStart") or []
     kept = []
@@ -116,5 +160,7 @@ def status(path: Path) -> dict:
     return {
         "file": str(path),
         "base_url": env.get(ENV_KEY),
+        "via_system": env.get(PROXY_KEY) == _door_url(),
+        "wired": _ours_base(env.get(ENV_KEY)) or env.get(PROXY_KEY) == _door_url(),
         "hook": any(_is_ours(h) for e in starts for h in e.get("hooks", [])),
     }

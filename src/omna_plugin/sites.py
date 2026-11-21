@@ -87,6 +87,15 @@ SITES: tuple[Site, ...] = (
         # "/cowork" was masked. The app's own registration with the company,
         # never data sent to the AI.
         ("api.anthropic.com", r"^/v1/environments/(?:[^/]+/)?bridge(?:/|$)"),
+    ), reports=(
+        # Claude Code's own usage reports and feature-switch lookups (client
+        # test 2026-11-21, Claude Code through the Mac-wide door): 4,752 false
+        # catches in two requests, which then timed out. The same usage-report
+        # service as claude.ai's /api/event_logging/ below; the conversation
+        # goes to /v1/messages, never here. TRIPWIRE: if Anthropic ever puts
+        # what you typed in these, this is where it would get through.
+        ("api.anthropic.com", r"^/api/event_logging/"),
+        ("api.anthropic.com", r"^/api/eval/"),
     )),
     Site("OpenAI API", ("api.openai.com",), api=True),
     Site("Gemini API", ("generativelanguage.googleapis.com",), api=True),

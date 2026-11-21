@@ -59,3 +59,30 @@ def test_uninstall_removes_a_leftover_backup_even_with_nothing_else_to_undo(tmp_
     assert ch["backup"] is True
     assert not ch["env"] and not ch["hook"]
     assert not (tmp_path / "settings.json.omna-backup").exists()
+
+
+# --- Client test 2026-11-21 (#22): Remote Control refuses ANTHROPIC_BASE_URL ---
+
+def test_init_through_the_mac_wide_door_keeps_remote_control_working(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"env": {"ANTHROPIC_BASE_URL": config.base_url(), "FOO": "bar"}}))
+    ch = claude_code.init(p, system=True)
+    env = json.loads(p.read_text())["env"]
+    assert "ANTHROPIC_BASE_URL" not in env                  # Remote Control refuses any other address
+    assert env["HTTPS_PROXY"] == f"http://{config.DEFAULT_HOST}:{config.SYSTEM_PORT}"
+    assert env["NODE_EXTRA_CA_CERTS"] == str(config.ca_dir() / "mitmproxy-ca-cert.pem")
+    assert env["FOO"] == "bar" and ch["env"]
+    assert claude_code.status(p)["wired"] is True
+    claude_code.uninstall(p)
+    assert json.loads(p.read_text())["env"] == {"FOO": "bar"}
+
+
+def test_a_users_own_proxy_is_never_overwritten(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"env": {"HTTPS_PROXY": "http://corp-proxy:3128"}}))
+    claude_code.init(p, system=True)
+    env = json.loads(p.read_text())["env"]
+    assert env["HTTPS_PROXY"] == "http://corp-proxy:3128"     # theirs stays
+    assert env["ANTHROPIC_BASE_URL"] == config.base_url()      # so the API door is used instead
+    claude_code.uninstall(p)
+    assert json.loads(p.read_text())["env"] == {"HTTPS_PROXY": "http://corp-proxy:3128"}
