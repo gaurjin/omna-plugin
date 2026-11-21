@@ -218,3 +218,13 @@ def test_toggle_realistic_style_flips_the_policy_style(tmp_path, monkeypatch):
     menubar._toggle_realistic_style()
     assert Policy.load().style == TOKENS
     assert menubar._realistic_style() is False
+
+
+def test_the_icon_survives_its_file_vanishing_during_an_upgrade(monkeypatch, tmp_path):
+    """#18 (client test 2026-11-21): reinstalling the curl command replaced its
+    files while the menu-bar icon ran; the next redraw could not open the logo,
+    the drawing thread died, and the icon vanished with no message."""
+    from omna_plugin import menubar
+    monkeypatch.setattr(menubar, "LOGO_PATH", tmp_path / "gone.png")
+    img = menubar._icon_image(True)
+    assert img.size[0] > 0

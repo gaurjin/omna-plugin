@@ -22,6 +22,7 @@ from . import config, pause
 
 POLL_SECONDS = 4
 LOGO_PATH = Path(__file__).parent / "assets" / "menubar-icon.png"
+_last_logo = None   # the last picture that opened (see _icon_image)
 # RED — shown whenever Omna is not masking (paused or not running). It was a
 # calm grey, for a state in which browsers go to the AI unmasked (security
 # review 2026-11-11, finding 16).
@@ -86,7 +87,17 @@ def _masking_line(h: dict) -> list[str]:
 def _icon_image(on: bool):
     from PIL import Image, ImageDraw
 
-    img = Image.open(LOGO_PATH).convert("RGBA")
+    global _last_logo
+    try:
+        img = Image.open(LOGO_PATH).convert("RGBA")
+        _last_logo = img.copy()
+    except OSError:
+        # An upgrade replaces this file while the icon runs (client test
+        # 2026-11-21, #18): the drawing thread died and the icon vanished.
+        # Keep drawing with the last good picture, or a plain dot.
+        img = _last_logo.copy() if _last_logo is not None else Image.new("RGBA", (44, 44), (0, 0, 0, 0))
+        if _last_logo is None:
+            ImageDraw.Draw(img).ellipse((8, 8, 36, 36), fill=(30, 30, 30, 255))
     if not on:
         # Same overlay position the Mac app uses for its state dots: a small
         # circle in the top-right corner of the glyph, not a full recolor.
@@ -308,7 +319,10 @@ def run(port: int = config.DEFAULT_PORT) -> int:
             if h is None:
                 _ensure_daemon(state)
                 h = _health(port)
-            icon.icon = _icon_image(bool(h))
+            try:
+                icon.icon = _icon_image(bool(h))
+            except Exception:  # noqa: BLE001 — the icon must keep running (#18)
+                pass
             icon.title = "\n".join(status_lines(h))
             icon.update_menu()
             time.sleep(POLL_SECONDS)
