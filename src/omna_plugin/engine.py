@@ -1192,6 +1192,12 @@ def _drop_not_values(text: str, raw: dict, issued=lambda t: True) -> dict:
                 continue
             if any(a >= s and b <= e for s, e in homes):
                 continue
+            # A plain file path that starts at the home folder, with nothing a
+            # value could hide in (no @ = ? : or long number): the path itself.
+            seg = text[a:b]
+            if (any(s <= a <= e for s, e in homes) and seg.startswith(("/", "U", "~"))
+                    and not re.search(r"[@=?:&,]|\d{4,}|\s", seg)):
+                continue
             if sp.get("entity") == "PERSON" and text[a:b].strip().lower() in NOT_NAMES:
                 continue
         keep.append(idx)

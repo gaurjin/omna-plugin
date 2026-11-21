@@ -568,3 +568,20 @@ def test_a_value_in_a_home_folder_path_is_still_masked(home, monkeypatch):
     monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake if t == text else {"spans": [], "audit": []})
     r = MaskingSession().mask_text(text)
     assert em not in r.masked
+
+
+def test_a_plain_path_under_home_is_not_a_personal_url(home, monkeypatch):
+    from pathlib import Path
+    from omna_plugin import smart as smart_models
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    text = "The file is /Users/priyar/.claude/settings.json now"
+    i = text.index("/Users")
+    j = i + len("/Users/priyar/.claude/settings.json")
+    fake = {"spans": [{"start": i, "end": j, "entity": "PERSONAL_URL", "layer": "L3", "token": "[PERSONAL_URL" + "_1]"}], "audit": []}
+    monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake if t == text else {"spans": [], "audit": []})
+    assert MaskingSession().mask_text(text).masked == text
+    # but the same catch with a value in it is kept
+    text2 = "/Users/priyar/app/.env:3:EMAIL=ana" + "@acme-mail.com"
+    fake2 = {"spans": [{"start": 0, "end": len(text2), "entity": "PERSONAL_URL", "layer": "L3", "token": "[PERSONAL_URL" + "_1]"}], "audit": []}
+    monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake2 if t == text2 else {"spans": [], "audit": []})
+    assert "acme-mail" not in MaskingSession().mask_text(text2).masked
