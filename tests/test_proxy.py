@@ -805,3 +805,19 @@ async def test_an_upload_form_we_cannot_read_is_refused(env):
     before = len(up.calls)
     r = await client.post("/v1/files", content=b"garbage, not a form", headers={"content-type": "multipart/form-data; boundary=xyz"})
     assert r.status_code == 400 and len(up.calls) == before
+
+
+@pytest.mark.anyio
+async def test_extension_checkin_records_which_browser_has_omna_for_chrome(tmp_path, monkeypatch):
+    """Client test 2026-11-21: the system door must know which browser is covered."""
+    from omna_plugin import ext_presence
+    ext_presence.reset()
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    app = create_app(MaskingSession(), anthropic_upstream="http://anthropic.test",
+                     openai_upstream="http://openai.test", resolver=lambda peer: (9, "Google Chrome"))
+    client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:7788")
+    await client.post("/omna/extension-checkin", auth=EXT, json={"version": "1.2.0"})
+    assert ext_presence.covers("Google Chrome", "claude.ai")
+    await client.post("/omna/extension-checkin", auth=EXT, json={"version": "1.2.0", "protecting": False})
+    assert not ext_presence.covers("Google Chrome", "claude.ai")
+    ext_presence.reset()
