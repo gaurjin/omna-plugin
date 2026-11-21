@@ -509,3 +509,27 @@ def test_an_omna_stand_in_is_never_masked_again(home, monkeypatch):
     monkeypatch.setattr(smart_models, "mask", lambda t, s, r=None: fake if t == text else {"spans": [], "audit": []})
     r = MaskingSession().mask_text(text)
     assert r.masked == text and not r.counts
+
+
+def test_this_macs_home_folder_is_never_masked(home, monkeypatch):
+    """#16 (client test 2026-11-21): inside a long conversation the smart model
+    read part of a path under the person's home folder as a value; the path
+    went out as /[DIGITAL_n]/… and the agent's commands on it failed."""
+    from pathlib import Path
+    from omna_plugin import smart as smart_models
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    text = "open /Users/priyar/Developer/app/main.py and mail ana" + "@acme-mail.com"
+    i = text.index("Users/priyar")
+    j = text.index("ana" + "@")
+    fake = {"spans": [{"start": i, "end": i + len("Users/priyar/Developer"), "entity": "DIGITAL", "layer": "L3", "token": "[DIGITAL" + "_1]"},
+                      {"start": j, "end": len(text), "entity": "EMAIL", "layer": "L1", "token": "[EMAIL" + "_1]"}],
+            "audit": []}
+    monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake if t == text else {"spans": [], "audit": []})
+    r = MaskingSession().mask_text(text)
+    assert "/Users/priyar/Developer/app/main.py" in r.masked
+    assert "ana" + "@acme-mail.com" not in r.masked              # a real value next to it is still masked
+
+
+def test_wi_fi_is_not_a_persons_name(home):
+    r = MaskingSession().mask_text("the Wi" + "-Fi network is on and Wi" + "-Fi is fast")
+    assert "Wi-Fi" in r.masked and not r.counts

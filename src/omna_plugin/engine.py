@@ -41,6 +41,7 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 from collections import OrderedDict
 from dataclasses import dataclass, field
 
@@ -837,12 +838,12 @@ class MaskingSession:
                 return hit
         raw = smart_models.mask(text, self.smart, self._ruleset_arg())
         audit = raw.get("audit") or []
-        if "[" in text and raw["spans"]:
-            # Never mask inside an Omna stand-in that is already in the text
-            # (client test 2026-11-21, #11): Omna for Chrome sent "[EMAIL_1]",
-            # the smart model read "EMAIL_1" as a name, and the AI got a
-            # bracketed PERSON token it could not make sense of.
-            raw = _drop_spans_in_tokens(text, raw)
+        if raw["spans"]:
+            # Catches that are provably not the person's data (client test
+            # 2026-11-21): inside an Omna stand-in already in the text (#11),
+            # inside this Mac's own home-folder path (#16), or a word that is
+            # never a name (#6). One-way: only drops, never adds (lesson 98).
+            raw = _drop_not_values(text, raw)
             audit = raw.get("audit") or []
         if only is not None:
             # L6 events line up with spans one to one: keep the same ones.
@@ -1131,15 +1132,48 @@ def _secret_fingerprint(value: str) -> str:
                     hashlib.sha256).hexdigest()[:32]
 
 
-def _drop_spans_in_tokens(text: str, raw: dict) -> dict:
-    """``raw`` without the spans that touch an Omna stand-in already in
-    ``text`` (the audit events line up with spans one to one)."""
-    toks = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text)]
-    if not toks:
-        return raw
+# Words the masking engine has flagged as a person's name that never are one
+# (client test 2026-11-21: "Wi-Fi" as PERSON, from a rule). Exact words only.
+NOT_NAMES = frozenset({"wi-fi", "wi\u2011fi", "wifi"})
+
+
+def _home_dirs() -> list[str]:
+    """This Mac's own home folder, as it appears in paths ("/Users/name")."""
+    try:
+        h = str(Path.home()).rstrip("/")
+    except (RuntimeError, OSError):
+        return []
+    return [h] if len(h) > 1 else []
+
+
+def _drop_not_values(text: str, raw: dict) -> dict:
+    """``raw`` without catches that are provably not a value: they touch an
+    Omna stand-in already in ``text``, fall inside this Mac's home-folder path,
+    or are a word in NOT_NAMES. Secrets (L2) are never dropped for the path or
+    the word. The audit events line up with spans one to one."""
+    toks = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text)] if "[" in text else []
+    homes = []
+    for h in _home_dirs():
+        start = 0
+        while (i := text.find(h, start)) >= 0:
+            end = i + len(h)
+            # the home folder and the path that follows it, up to a space or quote
+            while end < len(text) and not text[end].isspace() and text[end] not in "\"'<>`":
+                end += 1
+            homes.append((i, end))
+            start = i + 1
     chars = _spans_in_chars(text, raw["spans"])
-    keep = [i for i, sp in enumerate(chars)
-            if not any(sp["start"] < e and sp["end"] > s for s, e in toks)]
+    keep = []
+    for idx, sp in enumerate(chars):
+        a, b = sp["start"], sp["end"]
+        if any(a < e and b > s for s, e in toks):
+            continue
+        if sp.get("layer") != "L2":
+            if any(a >= s and b <= e for s, e in homes):
+                continue
+            if sp.get("entity") == "PERSON" and text[a:b].strip().lower() in NOT_NAMES:
+                continue
+        keep.append(idx)
     if len(keep) == len(raw["spans"]):
         return raw
     audit = raw.get("audit") or []
