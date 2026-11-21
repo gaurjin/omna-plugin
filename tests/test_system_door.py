@@ -838,3 +838,24 @@ async def test_an_agent_through_the_system_door_gets_no_secret_in_its_tool_calls
     tool = "".join(e["delta"].get("partial_json", "") for e in evts if e["type"] == "content_block_delta")
     assert gh in text
     assert gh not in tool and tok in tool
+
+
+# --- Checker findings 2026-11-21: Claude Code through the system door ---
+
+def _agent_flow(host="api.anthropic.com"):
+    f = tflow.tflow()
+    f.request.host, f.request.path, f.request.method = host, "/v1/messages", "POST"
+    return f
+
+
+def test_an_agent_api_always_gets_real_values_back_at_the_system_door(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    addon.policy.restore_browser = False                # the BROWSER restore switch is off
+    assert addon._skip_restore(_agent_flow()) is False   # Claude Code still gets them back
+    browser = tflow.tflow(); browser.request.host = "claude.ai"
+    assert addon._skip_restore(browser) is True
+
+
+def test_an_agent_api_never_gets_realistic_fakes_at_the_system_door(tmp_path, monkeypatch):
+    addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
+    assert addon._style_for(_agent_flow()) == TOKENS

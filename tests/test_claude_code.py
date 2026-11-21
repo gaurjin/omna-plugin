@@ -86,3 +86,33 @@ def test_a_users_own_proxy_is_never_overwritten(tmp_path):
     assert env["ANTHROPIC_BASE_URL"] == config.base_url()      # so the API door is used instead
     claude_code.uninstall(p)
     assert json.loads(p.read_text())["env"] == {"HTTPS_PROXY": "http://corp-proxy:3128"}
+
+
+def test_commands_claude_code_runs_do_not_go_through_omna(tmp_path, monkeypatch):
+    """Checker finding 2026-11-21: Claude Code passes its settings' env to the
+    commands it runs, so with HTTPS_PROXY there every curl/git/npm/pip broke
+    whenever Omna was paused, and Python scripts to AI hosts failed the
+    certificate check. The SessionStart hook writes the undo into
+    CLAUDE_ENV_FILE, which Claude Code runs before each Bash command."""
+    from omna_plugin import cli
+    env_file = tmp_path / "session.env"
+    monkeypatch.setenv("CLAUDE_ENV_FILE", str(env_file))
+    monkeypatch.setenv("HTTPS_PROXY", claude_code._door_url())
+    cli.write_claude_env_file()
+    text = env_file.read_text()
+    assert "unset HTTPS_PROXY" in text
+    # a proxy that is not ours is left alone
+    env_file.unlink()
+    monkeypatch.setenv("HTTPS_PROXY", "http://corp:3128")
+    cli.write_claude_env_file()
+    assert not env_file.exists() or "unset" not in env_file.read_text()
+
+
+def test_a_users_own_certificate_file_is_never_overwritten(tmp_path):
+    p = tmp_path / "settings.json"
+    p.write_text(json.dumps({"env": {"NODE_EXTRA_CA_CERTS": "/etc/corp-ca.pem"}}))
+    claude_code.init(p, system=True)
+    env = json.loads(p.read_text())["env"]
+    assert env["NODE_EXTRA_CA_CERTS"] == "/etc/corp-ca.pem" and "HTTPS_PROXY" not in env
+    claude_code.uninstall(p)
+    assert json.loads(p.read_text())["env"] == {"NODE_EXTRA_CA_CERTS": "/etc/corp-ca.pem"}

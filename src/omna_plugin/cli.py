@@ -211,9 +211,28 @@ def cmd_start(a) -> int:
     return 0
 
 
+def write_claude_env_file() -> None:
+    """Claude Code itself goes through the Mac-wide door (claude_code.py), but
+    the commands it runs for the person — curl, git, npm, pip, their own
+    scripts — must not: they broke whenever Omna was paused, and Python
+    scripts to AI hosts failed the certificate check (checker finding
+    2026-11-21). Claude Code runs the file named in CLAUDE_ENV_FILE before
+    each Bash command; the SessionStart hook writes the undo there. Only our
+    own proxy address is undone; anyone else's is left alone."""
+    path = os.environ.get("CLAUDE_ENV_FILE")
+    if not path or os.environ.get("HTTPS_PROXY") != claude_code._door_url():
+        return
+    try:
+        with open(path, "a") as f:
+            f.write("unset HTTPS_PROXY https_proxy\n")
+    except OSError:
+        pass
+
+
 def cmd_ensure(a) -> int:
     # Used by the Claude Code SessionStart hook: must be quiet on success
     # (anything printed becomes context for the model).
+    write_claude_env_file()
     who = _who_answers(a.port)
     if who == "omna":
         return 0

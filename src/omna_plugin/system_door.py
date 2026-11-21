@@ -197,7 +197,10 @@ class OmnaAddon:
         refusal is printed once per door per run rather than applied quietly.
         """
         door = self._door_for(flow)
-        decision = style_for_door(door, self._fresh().style)
+        # An agent API through the Mac-wide door is a coding tool, not a
+        # browser: the API door's rule applies (tokens; style.py _WHY).
+        rule_door = "api" if flow.request.pretty_host.lower() in _AGENT_API_HOSTS else door
+        decision = style_for_door(rule_door, self._fresh().style)
         if decision.refused and door not in self._said_refused:
             self._said_refused.add(door)
             print(decision.line(), flush=True)
@@ -253,6 +256,10 @@ class OmnaAddon:
         """
         if flow.metadata.get("omna_ext"):
             return True
+        if flow.request.pretty_host.lower() in _AGENT_API_HOSTS:
+            # Claude Code / Codex through the Mac-wide door (claude_code.py):
+            # an agent, not a browser — always restored, like the API door.
+            return False
         return not self._fresh().restore_browser
 
     @staticmethod

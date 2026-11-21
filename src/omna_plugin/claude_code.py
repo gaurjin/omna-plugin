@@ -83,7 +83,12 @@ def init(path: Path, port: int = config.DEFAULT_PORT, system: bool = False) -> d
             shutil.copyfile(path, backup)
             changes["backup"] = str(backup)
     env = data.setdefault("env", {})
-    theirs = env.get(PROXY_KEY) not in (None, _door_url())
+    # Anything the person set themselves wins: their own proxy (either
+    # spelling) or their own certificate file (checker finding 2026-11-21).
+    theirs = (env.get(PROXY_KEY) not in (None, _door_url())
+              or env.get("https_proxy") not in (None, _door_url())
+              or env.get(CA_KEY) not in (None, _ca_path())
+              or path.parent.name == ".claude" and path.parent.parent != Path.home())   # --project: a shared file
     if system and not theirs:
         want = {PROXY_KEY: _door_url(), CA_KEY: _ca_path()}
         if _ours_base(env.get(ENV_KEY)):
