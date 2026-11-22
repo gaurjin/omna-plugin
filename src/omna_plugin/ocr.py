@@ -49,7 +49,17 @@ def _image_size(data: bytes) -> tuple[float, float] | None:
     img = Quartz.CGImageSourceCreateImageAtIndex(src, 0, None)
     if img is None:
         return None
-    return float(Quartz.CGImageGetWidth(img)), float(Quartz.CGImageGetHeight(img))
+    w, h = float(Quartz.CGImageGetWidth(img)), float(Quartz.CGImageGetHeight(img))
+    # Vision measures its boxes on the UPRIGHT picture (it applies the photo's
+    # "rotate me" tag). Tags 5–8 turn it a quarter, so the upright picture's
+    # width and height are swapped (checker 2026-11-22: a portrait phone photo
+    # got its black bar on blank paper and the email went out).
+    props = Quartz.CGImageSourceCopyPropertiesAtIndex(src, 0, None) or {}
+    try:
+        orientation = int(props.get(Quartz.kCGImagePropertyOrientation, 1) or 1)
+    except (TypeError, ValueError):
+        orientation = 1
+    return (h, w) if orientation in (5, 6, 7, 8) else (w, h)
 
 
 def recognize(data: bytes) -> dict:

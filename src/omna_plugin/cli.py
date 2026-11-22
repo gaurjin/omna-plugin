@@ -819,7 +819,7 @@ def _status_details(a) -> int:
     print(_doors_line(h))
     print(_apps_today_line(pol, recs_today))
     print(_refused_line(recs_today))
-    print("what leaves this machine: the masked request, to the AI provider you were already using. Nothing goes to Omna.")
+    print("what leaves this machine: the masked request, to the AI provider you were already using. Your content never reaches Omna.")
     return 0
 
 
@@ -1045,7 +1045,7 @@ def cmd_status(a) -> int:
     if registry_status().get("at_rest") not in ("encrypted", "empty"):
         out.append(f"  {'':<17}⚠ Your real values are NOT encrypted on this Mac")
     out += ["", "  Only the masked message goes to the AI you already use.",
-            "  Nothing goes to Omna."]
+            "  Your content never reaches Omna."]
     footer(out)
     print("\n".join(out))
     return 0
@@ -1189,8 +1189,8 @@ def cmd_style(a) -> int:
     print("      looked real would be the worst thing Omna could hand you.")
     if not pol.restore_browser:
         print("\nomna: restore in the browser is OFF, so YOU will read the fake values")
-        print("      too, and they will look real to you. Turn restore back on in the")
-        print("      menu bar if that is not what you want.")
+        print("      too, and they will look real to you. Turn on \"Restore on reply")
+        print("      (shield mode)\" in the menu bar if that is not what you want.")
     return 0
 
 

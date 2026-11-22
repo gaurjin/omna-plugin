@@ -32,7 +32,9 @@ SECRET_1 = "[SECRET_GITHUB" + "_TOKEN_1]"
 @pytest.fixture
 def addon(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNA_HOME", str(tmp_path))
-    return OmnaAddon(Pipeline(MaskingSession()), Policy(), door="system", resolver=lambda peer: (1, "Google Chrome"))
+    pol = Policy()
+    pol.restore_browser = True   # these tests check restoring in the browser; the default is off (owner decision H, 2026-11-22)
+    return OmnaAddon(Pipeline(MaskingSession()), pol, door="system", resolver=lambda peer: (1, "Google Chrome"))
 
 
 def _flow(host, path="/api/chat/completion", body=b"{}"):

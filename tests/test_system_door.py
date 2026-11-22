@@ -30,6 +30,7 @@ async def door(tmp_path, monkeypatch):
     up = FakeUpstream()
     await up.start(leaf, key)
     pol = Policy()
+    pol.restore_browser = True   # these tests check restoring; the default is off (owner decision H, 2026-11-22)
     pol.hosts = ["127.0.0.1"]                                       # the fake upstream is "an AI host" here
     pol.allow_hosts = lambda: [rf"^127\.0\.0\.1:{up.port}$"]      # its port is not 443
     pipe = Pipeline(MaskingSession())
@@ -179,6 +180,7 @@ async def test_slow_resolver_does_not_serialize_concurrent_flows(tmp_path, monke
         return (1, "SlowApp")
 
     pol = Policy()
+    pol.restore_browser = True   # these tests check restoring; the default is off (owner decision H, 2026-11-22)
     pol.hosts = ["127.0.0.1"]
     pol.allow_hosts = lambda: [rf"^127\.0\.0\.1:{up.port}$"]
     pipe = Pipeline(MaskingSession())
@@ -278,6 +280,7 @@ async def test_untagged_request_still_restores(door):
 async def test_restore_browser_off_masks_but_shows_tokens(door):
     """The menu-bar toggle. Masking is unaffected; only the reply changes."""
     up, port, ctx, addon = door
+    addon.resolver = lambda peer: (999, "Google Chrome")   # the switch is about the browser
     addon.policy.restore_browser = False
     async with httpx.AsyncClient(proxy=f"http://127.0.0.1:{port}", verify=ctx) as c:
         r = await c.post(f"https://127.0.0.1:{up.port}/api/chat", json={"prompt": f"for {EMAIL}"})
@@ -301,6 +304,7 @@ def a_prompt_flow(body: bytes = b'{"prompt": "mail jane.doe@acme.com"}'):
 def an_addon(tmp_path, monkeypatch, door: str, style: str):
     monkeypatch.setenv("OMNA_HOME", str(tmp_path))
     pol = Policy()
+    pol.restore_browser = True   # these tests check restoring; the default is off (owner decision H, 2026-11-22)
     pol.style = style
     return OmnaAddon(Pipeline(MaskingSession()), pol, door=door, resolver=lambda peer: (1, "TestApp"))
 
@@ -471,13 +475,14 @@ def _menu_bar_writes(**fields) -> None:
 
 async def test_turning_off_restore_in_the_menu_bar_reaches_the_running_door(tmp_path, monkeypatch):
     addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
-    Policy().save()                                   # the daemon's own policy.json
+    addon.resolver = lambda peer: (1, "Google Chrome")   # the switch is about the browser
+    _menu_bar_writes(restore_browser=True)            # the person turned it on (default is off, owner H 2026-11-22)
     flow = a_prompt_flow()
     await addon.request(flow)
     flow.response = http.Response.make(200, b'{"reply": "mailed [EMAIL_' b'1]"}',
                                        {"content-type": "application/json"})
     addon.response(flow)
-    assert "jane.doe@acme.com" in flow.response.get_content().decode()   # restoring, as shipped
+    assert "jane.doe@acme.com" in flow.response.get_content().decode()   # restoring, as turned on
 
     _menu_bar_writes(restore_browser=False)
 
@@ -713,6 +718,7 @@ async def test_a_websocket_reply_obeys_the_restore_switch_and_the_extension_tag(
     """Architecture review (MASTER #178): WebSocket replies ignored both."""
     addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
     flow = _flow_on("claude.ai")
+    flow.metadata["omna_app"] = "Google Chrome"   # set by the opening request; the switch is about the browser
     _ws(flow, True, "mail jane.doe@acme.com")
     addon.websocket_message(flow)
     token = flow.websocket.messages[-1].content.decode().split("mail ")[1]
@@ -852,10 +858,57 @@ def test_an_agent_api_always_gets_real_values_back_at_the_system_door(tmp_path, 
     addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
     addon.policy.restore_browser = False                # the BROWSER restore switch is off
     assert addon._skip_restore(_agent_flow()) is False   # Claude Code still gets them back
-    browser = tflow.tflow(); browser.request.host = "claude.ai"
+    browser = tflow.tflow(); browser.request.host = "claude.ai"; browser.metadata["omna_app"] = "Google Chrome"
     assert addon._skip_restore(browser) is True
 
 
 def test_an_agent_api_never_gets_realistic_fakes_at_the_system_door(tmp_path, monkeypatch):
     addon = an_addon(tmp_path, monkeypatch, "system", REALISTIC)
     assert addon._style_for(_agent_flow()) == TOKENS
+
+
+@pytest.mark.parametrize("app,restored", [
+    ("Google Chrome", False), ("Safari", False), ("Arc", False), ("Firefox", False),
+    ("Codex", True), ("node", True), ("Claude", True), (None, True),
+])
+async def test_restore_off_by_default_only_in_a_browser(tmp_path, monkeypatch, app, restored):
+    """Owner decision H (2026-11-22): restore is OFF by default like Omna for
+    Chrome's "Restore on reply (shield mode)" — but that is about the BROWSER.
+    An agent on another AI address (Codex signed in with ChatGPT, Gemini CLI,
+    OpenRouter tools) or a desktop app must keep getting real values back, or
+    it writes stand-ins into the person's files. Unknown app = restored."""
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    addon = OmnaAddon(Pipeline(MaskingSession()), Policy(), door="system",
+                      resolver=lambda peer: (1, app) if app else None)
+    flow = a_prompt_flow()
+    await addon.request(flow)
+    sent = flow.request.get_content().decode()
+    assert "jane.doe@acme.com" not in sent
+    tok = "[EMAIL_" "1]"
+    assert tok in sent
+    flow.response = http.Response.make(200, json.dumps({"reply": f"mailed {tok}"}).encode(),
+                                       {"content-type": "application/json"})
+    addon.response(flow)
+    out = flow.response.get_content().decode()
+    assert ("jane.doe@acme.com" in out) is restored, out
+
+
+@pytest.mark.parametrize("app,browser", [
+    ("Google Chrome", True), ("Google Chrome Canary", True), ("Google Chrome Helper", True),
+    ("Safari", True), ("Safari Technology Preview", True), ("com.apple.WebKit.Networking", True),
+    ("Microsoft Edge Beta", True), ("Arc", True), ("Island", True), ("Sidekick", True),
+    ("Thorium", True), ("Ungoogled Chromium", True), ("SigmaOS", True), ("Wavebox", True),
+    ("Ladybird", True), ("ChatGPT Atlas", True), ("Firefox Nightly", True),
+    ("Opera GX", True), ("Opera Developer", True), ("Opera Air", True), ("Vivaldi Snapshot", True),
+    ("Orion RC", True), ("Zen Browser", True), ("Tor Browser", True), ("Mullvad Browser", True),
+    ("LibreWolf", True), ("Waterfox", True), ("Floorp", True), ("Yandex", True), ("Min", True),
+    ("Ghostery", True), ("Google Chrome for Testing", True), ("Microsoft Edge Canary", True),
+    ("Dia", True), ("Zen", True), ("Dia Agent", False), ("Zen Coder", False),
+    ("Codex", False), ("claude", False), ("node", False), (None, False), ("", False),
+])
+def test_which_apps_count_as_a_browser(app, browser):
+    """Checker 2 (2026-11-22): Safari's traffic comes from WebKit's network
+    process, and several browsers were missing; "Dia"/"Zen" matched any app
+    starting with that word."""
+    from omna_plugin.system_door import _is_browser
+    assert _is_browser(app) is browser

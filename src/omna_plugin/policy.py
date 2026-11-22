@@ -42,7 +42,7 @@ class Policy:
     # CALL (a command, a file the agent writes) is decided by `tool_calls`
     # below — secrets stay stand-ins there by default (finding 2).
     # Masking is NOT affected by this and never optional.
-    restore_browser: bool = True
+    restore_browser: bool = False  # like Omna for Chrome's "Restore on reply (shield mode)": off unless turned on (owner 2026-11-22)
     # How a masked value is WRITTEN: numbered tokens (the default) or a
     # realistic fake value. This is a safety choice, not a preference — a
     # leftover token is visibly wrong, a leftover fake value looks like real
@@ -123,7 +123,7 @@ class Policy:
             pol.deep_apps = list(data.get("deep_apps", []))
             pol.doors = {**pol.doors, **data.get("doors", {})}
             pol.reports_enabled = bool(data.get("reports_enabled", True))
-            pol.restore_browser = bool(data.get("restore_browser", True))
+            pol.restore_browser = bool(data.get("restore_browser", False))
             st = str(data.get("style", TOKENS))
             pol.style = st if st in STYLES else TOKENS
             tc = data.get("tool_calls") or {}

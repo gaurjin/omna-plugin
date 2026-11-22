@@ -417,7 +417,7 @@ def run(port: int = config.DEFAULT_PORT) -> int:
             checked=lambda item: _reports_enabled(),
         ))
         items.append(pystray.MenuItem(
-            "Restore Real Values in Browser",
+            "Restore on reply (shield mode)",
             lambda: _toggle_restore_browser(),
             checked=lambda item: _restore_browser(),
         ))

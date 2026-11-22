@@ -223,3 +223,24 @@ def test_the_addresses_ai_sites_upload_an_attached_file_to_are_built_in():
     # passed unmasked for curl-command users.
     for host in ["oaiusercontent.com", "my.microsoftpersonalcontent.com", "push.clients6.google.com", "grok.com"]:
         assert host in policy.DEFAULT_HOSTS, host
+
+
+def test_restore_on_reply_is_off_by_default(tmp_path, monkeypatch):
+    """Owner decision H (2026-11-22): the menu bar's restore switch works like
+    Omna for Chrome's "Restore on reply (shield mode)" — OFF unless turned on."""
+    from omna_plugin.policy import Policy
+
+    assert Policy().restore_browser is False
+    p = tmp_path / "policy.json"
+    p.write_text("{}")
+    monkeypatch.setattr("omna_plugin.config.policy_path", lambda: p, raising=False)
+    assert Policy.load().restore_browser is False
+
+
+def test_menu_bar_uses_the_chrome_wording():
+    import inspect
+    from omna_plugin import menubar
+
+    src = inspect.getsource(menubar)
+    assert "Restore on reply (shield mode)" in src
+    assert "Restore Real Values in Browser" not in src

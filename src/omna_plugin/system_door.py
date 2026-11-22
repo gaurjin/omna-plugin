@@ -38,6 +38,37 @@ _AGENT_API_HOSTS = frozenset({"api.anthropic.com", "api.openai.com"})
 # Agent APIs whose server-sent events the structured restorer also reads:
 # Gemini's (Antigravity CLI through Code Assist, live 2026-11-16 — a stand-in
 # cut between two events came back as a stand-in under the flat restorer).
+# Web browsers, by the app name procs.py gives (the .app name). The restore
+# switch ("Restore on reply (shield mode)", off by default — owner decision H,
+# 2026-11-22) is about the BROWSER only: an agent or desktop app on any other
+# address must keep getting real values back, or it writes stand-ins into the
+# person's files. Unknown app = not a browser = restored.
+_BROWSER_APPS = frozenset({
+    "google chrome", "chromium", "ungoogled chromium", "thorium", "safari", "arc", "firefox",
+    "microsoft edge", "brave browser", "opera", "vivaldi", "orion", "zen", "dia", "comet",
+    "duckduckgo", "island", "sidekick", "sigmaos", "wavebox", "ladybird", "chatgpt atlas", "atlas",
+    "opera gx", "opera air", "zen browser", "tor browser", "mullvad browser", "librewolf", "waterfox",
+    "floorp", "yandex", "min", "ghostery", "ghostery private browser", "google chrome for testing",
+})
+# Same browser, other edition or its helper process ("Google Chrome Canary",
+# "Safari Technology Preview", "Microsoft Edge Beta", "Google Chrome Helper").
+_EDITIONS = (" helper", " canary", " beta", " dev", " developer", " nightly", " technology preview",
+             " developer edition", " stable", " snapshot", " rc")
+
+
+def _is_browser(app: str | None) -> bool:
+    a = (app or "").strip().lower()
+    if a.startswith("com.apple.webkit"):        # Safari's (and every Apple web view's) network process
+        return True
+    changed = True
+    while changed:                               # "Google Chrome Canary Helper" -> "google chrome"
+        changed = False
+        for e in _EDITIONS:
+            if a.endswith(e):
+                a, changed = a[: -len(e)], True
+    return a in _BROWSER_APPS
+
+
 _GEMINI_SSE_HOSTS = frozenset({"generativelanguage.googleapis.com",
                                "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"})
 
@@ -252,7 +283,8 @@ class OmnaAddon:
 
         1. The extension tagged this request, so it owns the tab. Restoring
            here would swap in the wrong person's value (see `request`).
-        2. The person turned browser restore off in the menu bar.
+        2. A web browser, while restore is off ("Restore on reply (shield
+           mode)" in the menu bar — off by default, owner decision H).
         """
         if flow.metadata.get("omna_ext"):
             return True
@@ -260,6 +292,8 @@ class OmnaAddon:
             # Claude Code / Codex through the Mac-wide door (claude_code.py):
             # an agent, not a browser — always restored, like the API door.
             return False
+        if not _is_browser(flow.metadata.get("omna_app")):
+            return False   # agents and desktop apps: always restored (see _BROWSER_APPS)
         return not self._fresh().restore_browser
 
     @staticmethod

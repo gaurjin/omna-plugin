@@ -157,3 +157,15 @@ def test_init_turns_mac_apps_back_on(monkeypatch):
 def test_privacy_filter_off_reads_as_normal(mac, capsys):
     out = _out(capsys)
     assert "Off (normal)" in out and "name-finder" not in out
+
+
+def test_footer_says_content_never_reaches_omna(capsys, monkeypatch, tmp_path):
+    """Owner decision G (2026-11-22): "Nothing goes to Omna" is untrue since the
+    install count and daily counts go to omna.dev. The footer says what is true:
+    the person's content never reaches Omna."""
+    import inspect
+    from omna_plugin import cli
+
+    src = inspect.getsource(cli)
+    assert "Nothing goes to Omna" not in src
+    assert src.count("Your content never reaches Omna.") >= 2   # status and status --details
