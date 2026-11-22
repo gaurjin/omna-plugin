@@ -149,8 +149,10 @@ def test_ensure_daemon_calls_omna_ensure_when_not_paused(monkeypatch):
 
 
 def test_ensure_daemon_does_nothing_when_paused(monkeypatch):
+    from omna_plugin import pause
     calls = []
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    pause.begin("menubar")                  # #43: the note on disk is what "paused" means
     menubar._ensure_daemon({"paused": True})
     assert calls == []
 
@@ -399,3 +401,57 @@ def test_the_app_menu_bar_counts_as_a_menu_bar(monkeypatch):
     _real_stop_other_menu_bars()
     assert (2001, signal.SIGTERM) in sent, "the app's menu bar was left running"
     assert all(pid not in (2002, 77, me) for pid, _ in sent), sent
+
+
+def _ran(monkeypatch):
+    calls = []
+    monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd[-1] if cmd[-1] != "-d" else "start -d"))
+    monkeypatch.setattr(menubar, "_health", lambda port: None)
+    monkeypatch.setattr(menubar, "_on_main", lambda fn: None)
+    return calls
+
+
+def test_a_terminal_stop_is_not_undone_by_the_menu_bar(monkeypatch):
+    # #43 (2026-11-22): `omna stop` writes "off on purpose" to disk, but the menu
+    # bar's crash recovery only looked at its own memory and ran `omna ensure`
+    # every 4 seconds — starting Omna again behind the person's back.
+    from omna_plugin import pause
+    calls = _ran(monkeypatch)
+    pause.begin("stop")
+    menubar._poll_once(object(), {"paused": False}, 7788)
+    assert "ensure" not in calls, calls
+
+
+def test_a_pause_ended_elsewhere_brings_crash_recovery_back(monkeypatch):
+    # #43: `omna start -d` ended a menu-bar Pause; the menu bar still thought
+    # it was paused and never restarted a crashed service again.
+    calls = _ran(monkeypatch)
+    state = {"paused": True}
+    menubar._poll_once(object(), state, 7788)       # no pause on disk any more
+    assert state["paused"] is False and "ensure" in calls, (state, calls)
+
+
+def test_an_expired_pause_ends_even_if_the_menu_bar_restarted(monkeypatch):
+    import time
+    from omna_plugin import pause
+    calls = _ran(monkeypatch)
+    pause.begin("menubar", now=time.time() - 3600)
+    menubar._poll_once(object(), {"paused": False}, 7788)   # a new menu bar, empty memory
+    assert "start -d" in calls and pause.state() is None, calls
+
+
+def test_a_leftover_off_note_while_omna_runs_does_not_switch_recovery_off_for_good(monkeypatch):
+    # #43 checker 2026-11-22: a stop note left behind while the service runs
+    # kept crash recovery off forever. Older than 30 s while Omna answers: gone.
+    import time
+    from omna_plugin import pause
+    calls = []
+    monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd[-1]))
+    monkeypatch.setattr(menubar, "_on_main", lambda fn: None)
+    monkeypatch.setattr(menubar, "_health", lambda port: {"ok": True})
+    pause.begin("stop", now=time.time() - 120)
+    menubar._poll_once(object(), {"paused": True}, 7788)
+    assert pause.state() is None
+    pause.begin("stop")                                   # a fresh one (the menu bar's own Pause sequence)
+    menubar._poll_once(object(), {"paused": True}, 7788)
+    assert pause.state() is not None

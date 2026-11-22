@@ -55,8 +55,6 @@ def build(days: int = 7) -> dict:
         if t >= since:
             recs.append((t, r))
     by_kind: Counter = Counter()
-    once: dict[str, set] = {}          # #19: each private detail once, by fingerprint
-    once_loose: Counter = Counter()
     by_day: Counter = Counter()
     by_upstream: Counter = Counter()
     by_app: Counter = Counter()
@@ -88,12 +86,6 @@ def build(days: int = 7) -> dict:
     for t, r in recs:
         for k, v in (r.get("masked") or {}).items():
             by_kind[k] += v
-        fps = [f for f in (r.get("finds") or []) if isinstance(f, dict) and f.get("fp")]
-        if fps:
-            for f in fps:
-                once.setdefault(str(f.get("entity")), set()).update(str(x) for x in f["fp"])
-        else:
-            once_loose.update({k: v for k, v in (r.get("masked") or {}).items() if isinstance(v, int)})
         n_secret += r.get("secrets", 0)
         n_pii += r.get("pii", 0)
         n_validated += r.get("validated", 0) or 0
@@ -204,7 +196,8 @@ def build(days: int = 7) -> dict:
         "by_kind": dict(by_kind.most_common()),
         # The same thing the status screen and the daily count show (#19, #14-15):
         # a detail resent in every turn of a chat is one detail, not one per turn.
-        "by_kind_once": dict((Counter({k: len(v) for k, v in once.items()}) + once_loose).most_common()),
+        "by_kind_once": receipts.details_once([r for _, r in recs]),
+        "by_layer_once": receipts.details_once([r for _, r in recs], by="layer"),
         "by_day": dict(sorted(by_day.items())),
         "by_upstream": dict(by_upstream.most_common()),
         "by_app": dict(by_app.most_common()),

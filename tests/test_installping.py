@@ -142,3 +142,15 @@ def test_daily_counts_each_value_once_not_once_per_resend(home, wire):
     installping.send_daily(today="2026-11-21")
     daily = [c["json"] for c in wire if c["json"]["event"] == "daily_active"]
     assert daily[-1]["counts"] == {"EMAIL": 1, "AWS_KEY": 1}
+
+
+def test_daily_count_uses_the_same_count_as_status_and_dashboard():
+    # #19 checker 2026-11-22: the daily count had its own counting code and
+    # disagreed on odd receipts (a fingerprint stored as text counted per letter).
+    import time
+    from omna_plugin import installping, receipts
+    day = time.strftime("%Y-%m-%d")
+    receipts.append({"ts": day + "T10:00:00", "product": "curl", "masked": {"EMAIL": 1, "PHONE": 3},
+                     "finds": [{"entity": "EMAIL", "layer": "L1", "n": 1, "fp": "abcdef"},
+                               {"entity": "PHONE", "layer": "L1", "n": 3, "fp": []}]})
+    assert installping.daily_usage({day})[day] == receipts.details_once(receipts.tail(0))

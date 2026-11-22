@@ -156,3 +156,27 @@ def test_the_app_start_file_runs_the_menu_bar_only_when_opened_as_the_app():
     assert not app_boot.opened_as_the_app([exe, "-m", "omna_plugin.cli", "ensure"], exe)
     assert not app_boot.opened_as_the_app([exe, "-c", "print(1)"], exe)
     assert not app_boot.opened_as_the_app(["/usr/bin/python3"], "/usr/bin/python3")
+
+
+def test_a_stale_app_is_found_and_repaired_for_real(tmp_path):
+    # #37 (2026-11-22): the app carries a copy of Python and a pointer to the
+    # folder Omna is installed in. When an update moves Omna to another Python,
+    # that folder is gone: the menu bar silently never starts. `omna ensure`
+    # (every Claude Code window) repairs it. Real Python, real app, temp folder.
+    import subprocess
+    from pathlib import Path
+    k = app_bundle.own_python()
+    if not k:
+        return                                           # a packaged build: no separate Python
+    dest = tmp_path / "Omna Plugin.app"
+    app_bundle.install(Path("/usr/local/bin/omna"), dest=dest, log=tmp_path / "m.log", **k)
+    assert app_bundle.stale(dest, **k) is False
+    pth = next((dest / "Contents" / "lib").rglob("omna_a_installed_code.pth"))
+    pth.write_text(str(tmp_path / "gone" / "site-packages") + "\n")     # the update deleted it
+    assert app_bundle.stale(dest, **k) is True
+    assert app_bundle.repair_if_stale(dest, **k) is True
+    assert app_bundle.stale(dest, **k) is False
+    py = dest / "Contents" / "MacOS" / app_bundle.PY_NAME
+    r = subprocess.run([str(py), "-c", "import omna_plugin.mac.app_boot; print('ok')"], capture_output=True, text=True, timeout=60)
+    assert r.stdout.strip() == "ok", r.stderr[-400:]
+    assert app_bundle.repair_if_stale(dest, **k) is False             # nothing to do the second time

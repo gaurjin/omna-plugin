@@ -118,34 +118,16 @@ def daily_usage(days: set[str]) -> dict[str, dict[str, int]]:
     join this chain and pause/resume ("control") records are not use."""
     from . import receipts
 
-    out: dict[str, dict[str, int]] = {}
-    fps: dict[str, dict[str, set]] = {}
+    days_recs: dict[str, list] = {}
     for rec in receipts.tail(0):
         if rec.get("product") != "curl" or rec.get("door") == "control":
             continue
         day = str(rec.get("ts", ""))[:10]
-        if day not in days:
-            continue
-        bucket = out.setdefault(day, {})
-        finds = [f for f in (rec.get("finds") or []) if isinstance(f, dict) and f.get("fp")]
-        if finds:
-            # Each value once a day, by its private fingerprint (client test
-            # 2026-11-21: a conversation re-sends its history every turn, so
-            # one email was counted on every turn).
-            seen = fps.setdefault(day, {})
-            for f in (rec.get("finds") or []):
-                if isinstance(f, dict) and not f.get("fp") and f.get("entity") and isinstance(f.get("n"), int):
-                    bucket[f["entity"]] = bucket.get(f["entity"], 0) + f["n"]   # no fingerprint: count as before
-            for f in finds:
-                kind = str(f.get("entity") or "")
-                for fp in f["fp"]:
-                    if kind and fp not in seen.setdefault(kind, set()):
-                        seen[kind].add(fp)
-                        bucket[kind] = bucket.get(kind, 0) + 1
-            continue
-        for kind, n in (rec.get("masked") or {}).items():
-            if isinstance(n, int) and n > 0:
-                bucket[kind] = bucket.get(kind, 0) + n
+        if day in days:
+            days_recs.setdefault(day, []).append(rec)
+    # The same count as the status screen and the dashboard (#19, #14-15):
+    # each private detail once a day, by its private fingerprint.
+    out: dict[str, dict[str, int]] = {d: receipts.details_once(rs) for d, rs in days_recs.items()}
     return out
 
 

@@ -334,6 +334,42 @@ def verify() -> tuple[bool, int, str]:
     return True, n, "chain intact"
 
 
+def details_once(records, by: str = "entity") -> dict[str, int]:
+    """How many DIFFERENT private details, per kind (``by="entity"``) or per
+    layer (``by="layer"``) — the one count every screen uses (#19, #14-15,
+    #41; lesson 95: every count that reaches the person counts the same thing).
+    A chat resends its history every turn, so a detail is counted once by its
+    private fingerprint. A finding with no fingerprint adds its own number; a
+    record with no findings at all adds its masked counts (older format)."""
+    seen: dict[str, set] = {}
+    loose: dict[str, int] = {}
+    for rec in records:
+        finds = [f for f in (rec.get("finds") or []) if isinstance(f, dict)]
+        if not finds:
+            if by == "entity":
+                for k, v in (rec.get("masked") or {}).items():
+                    if isinstance(v, int) and v > 0:
+                        loose[k] = loose.get(k, 0) + v
+            else:
+                for k, v in (rec.get("by_layer") or {}).items():
+                    if isinstance(v, int) and v > 0:
+                        loose[k] = loose.get(k, 0) + v
+            continue
+        for f in finds:
+            key = str(f.get(by) or "?")
+            fps = f.get("fp")
+            if isinstance(fps, str):
+                fps = [fps]                      # a fingerprint stored as text, not a list
+            if fps:
+                seen.setdefault(key, set()).update(str(x) for x in fps)
+            elif isinstance(f.get("n"), int) and f["n"] > 0:
+                loose[key] = loose.get(key, 0) + f["n"]
+    out = {k: len(v) for k, v in seen.items()}
+    for k, v in loose.items():
+        out[k] = out.get(k, 0) + v
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
+
+
 def bad_receipts() -> tuple[int, list[tuple[int, str]]]:
     """(total, [(position, ts) of every receipt that does not check out]).
     Unlike verify(), it does not stop at the first one: a single bad link

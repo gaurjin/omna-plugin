@@ -30,6 +30,7 @@ README, not hidden.
 from __future__ import annotations
 
 import binascii
+import functools
 import re
 from urllib.parse import quote
 
@@ -182,21 +183,45 @@ def _spread(chars: list[str]) -> str:
 
 
 
+# #24 (2-hour real-use run, 2026-11-22): every entry used to hold 3 compiled
+# patterns (~30-50 KB) for as long as the service ran — memory grew with every
+# real value ever masked (147 MB for 3,000 values). They are needed only for
+# rare texts (a spread-out value, a hex dump), so they are built on use and at
+# most _RX_KEEP are kept. Same patterns, same results.
+_RX_KEEP = 1024
+
+
+@functools.lru_cache(maxsize=_RX_KEEP)
+def _rx(kind: str, core: str, hexed: str) -> re.Pattern:
+    if kind == "spread":
+        chars = [re.escape(c) for c in core]
+        return re.compile(f"{_spread(chars)}|{_spread(chars[::-1])}")
+    pairs = [f"(?i:{hexed[i:i + 2]})" for i in range(0, len(hexed), 2)]
+    return re.compile((r"\s*" if kind == "hex_run" else _HEX_SEP).join(pairs))
+
+
 class _Entry:
-    __slots__ = ("stand_in", "back", "enc", "spread", "hexed", "hex_plain", "hex_run")
+    __slots__ = ("stand_in", "core", "back", "enc", "hex_plain")
 
     def __init__(self, value: str, stand_in: str) -> None:
-        core = _WS.sub("", value)
+        self.core = _WS.sub("", value)
         self.stand_in = stand_in
-        self.back = core[::-1]
+        self.back = self.core[::-1]
         enc = quote(value, safe="")
         self.enc = (enc, enc.lower()) if enc != value else ()
-        chars = [re.escape(c) for c in core]
-        self.spread = re.compile(f"{_spread(chars)}|{_spread(chars[::-1])}")
-        hexed = value.encode("utf-8").hex()
-        self.hex_plain = hexed
-        self.hex_run = re.compile(r"\s*".join(f"(?i:{hexed[i:i + 2]})" for i in range(0, len(hexed), 2)))
-        self.hexed = re.compile(_HEX_SEP.join(f"(?i:{hexed[i:i + 2]})" for i in range(0, len(hexed), 2)))
+        self.hex_plain = value.encode("utf-8").hex()
+
+    @property
+    def spread(self) -> re.Pattern:
+        return _rx("spread", self.core, "")
+
+    @property
+    def hex_run(self) -> re.Pattern:
+        return _rx("hex_run", "", self.hex_plain)
+
+    @property
+    def hexed(self) -> re.Pattern:
+        return _rx("hexed", "", self.hex_plain)
 
 
 class Finder:
@@ -238,8 +263,9 @@ class Finder:
                     if enc in text:
                         used += [e.stand_in] * text.count(enc)
                         text = text.replace(enc, e.stand_in)
-            for rx, on in ((e.spread, spread), (e.hexed, dump)):
+            for name, on in (("spread", spread), ("hexed", dump)):
                 if on:
+                    rx = getattr(e, name)
                     text, n = rx.subn(e.stand_in, text)
                     used += [e.stand_in] * n
         return text, used

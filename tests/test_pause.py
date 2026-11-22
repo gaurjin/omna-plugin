@@ -212,3 +212,14 @@ def test_a_late_end_records_the_pause_it_really_ended(tmp_path, monkeypatch):
     monkeypatch.setattr(pause, "state", lambda: stale) # A goes on with what it read
     assert pause.end("start", now=710.0)
     assert written == [(pause.NOTE_RESUMED, {"off_seconds": 10, "why": "start"})], written
+
+
+def test_an_unreadable_note_is_replaced_not_kept(tmp_path, monkeypatch):
+    # #43 checker 2026-11-22: a corrupt paused.json made begin() return a pause
+    # it never saved, so the menu bar undid `omna stop` within seconds.
+    from omna_plugin import pause
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    pause.path().parent.mkdir(parents=True, exist_ok=True)
+    pause.path().write_text("{")
+    pause.begin("stop", now=500.0)
+    assert pause.state() is not None and pause.state()["since"] == 500.0

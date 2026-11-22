@@ -136,9 +136,20 @@ def _resume(state: dict, why: str) -> None:
     subprocess.run(config.self_command() + ["start", "-d"], capture_output=True)
 
 
+def _sync_pause(state: dict) -> bool:
+    """Is protection off on purpose right now? The note on disk decides, not
+    this process's memory (#43, 2026-11-22): `omna start -d` can end a Pause
+    and `omna stop` can start one from the Terminal; the menu bar used to miss
+    both — crash recovery stayed off for good, or undid a stop in 4 seconds."""
+    on_disk = pause.state() is not None
+    state["paused"] = on_disk
+    return on_disk
+
+
 def _end_pause_if_over(state: dict) -> bool:
-    """A Pause ends by itself after 15 minutes (finding 16). True when it did."""
-    if state["paused"] and pause.expired():
+    """A Pause ends by itself after 15 minutes (finding 16). True when it did.
+    Any timed pause counts, even one an earlier menu bar started."""
+    if pause.expired():
         _resume(state, "auto")
         return True
     return False
@@ -147,8 +158,8 @@ def _end_pause_if_over(state: dict) -> bool:
 def _ensure_daemon(state: dict) -> None:
     """Crash recovery for the proxy: it has no launchd `KeepAlive` of its own, so
     this menu-bar process restarts it if it's down and nobody asked for that.
-    Never runs while `state["paused"]` is set."""
-    if state["paused"]:
+    Never runs while protection is off on purpose (a Pause or `omna stop`)."""
+    if _sync_pause(state):
         return
     subprocess.run(config.self_command() + ["ensure"], capture_output=True)
 
@@ -276,6 +287,12 @@ def _confirm_and_uninstall(icon, state: dict) -> None:
 def _poll_once(icon, state: dict, port: int) -> None:
     _end_pause_if_over(state)
     h = _health(port)
+    st = pause.state()
+    if h and st and time.time() - st["since"] > 30:
+        # #43 (checker 2026-11-22): Omna is answering, so this "off on purpose"
+        # note is a leftover; kept, it would switch crash recovery off for good.
+        # Under 30 s it may be our own Pause on its way to stopping the service.
+        pause.end("running")
     if h is None:
         _ensure_daemon(state)
         h = _health(port)

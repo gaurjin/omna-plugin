@@ -1346,3 +1346,43 @@ def test_the_copy_a_restart_helper_starts_does_not_wait_for_that_same_restart(mo
     monkeypatch.setattr("time.sleep", lambda s: (_ for _ in ()).throw(AssertionError("the helper's own new copy waited for the helper")))
     monkeypatch.setattr("omna_plugin.cli._who_answers", lambda port: "omna")
     assert main(["start"]) == 0
+
+
+def test_start_and_ensure_check_and_spawn_under_one_lock(monkeypatch, tmp_path):
+    # #42 (checker 2026-11-22): two `start -d` + an `ensure` at once each saw
+    # "nothing answers" and spawned; omna.pid named a copy that died, and
+    # `omna stop` could no longer stop the one that ran.
+    from omna_plugin import cli as c
+    held = []
+    import contextlib
+
+    @contextlib.contextmanager
+    def lock():
+        held.append("in"); yield; held.append("out")
+
+    monkeypatch.setattr(c, "_start_lock", lock, raising=False)
+    monkeypatch.setattr(c, "_who_answers", lambda port: held.append("who") or None)
+    monkeypatch.setattr(c, "_spawn", lambda *a, **k: held.append("spawn") or 1)
+    monkeypatch.setattr(c, "_wait_healthy", lambda port, s: held.append("healthy") or {"engine": "x"})
+    monkeypatch.setattr(c, "_pair_chrome", lambda quiet=False: None)
+    monkeypatch.setattr(c, "_restart_in_progress", lambda: False)
+    c.main(["ensure", "--port", "18791"])
+    assert held == ["in", "who", "spawn", "healthy", "out"], held
+
+
+def test_a_restart_swaps_copies_under_the_start_lock(monkeypatch):
+    # #42 checker 2026-11-22: an `ensure` waiting on the lock got it in the gap
+    # between "old copy stopped" and "new copy answering" during a settings
+    # restart, saw nothing on the port and started a second copy.
+    from omna_plugin import cli as c
+    import contextlib
+    seen = []
+
+    @contextlib.contextmanager
+    def lock():
+        seen.append("lock"); yield; seen.append("unlock")
+
+    monkeypatch.setattr(c, "_start_lock", lock)
+    monkeypatch.setattr(c, "_replace_running_copy", lambda *a, **k: seen.append("swap"))
+    c._restart_here(18793, False, False)
+    assert seen == ["lock", "swap", "unlock"], seen

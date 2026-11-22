@@ -147,12 +147,12 @@ code{{background:var(--line);padding:1px 5px;border-radius:4px;font-size:11.5px}
   <div class="card"><b>{d['requests_refused']}</b><span>refused, never forwarded</span></div>
 </div>
 
-<h2>How certain each catch was</h2>
+<h2>How certain each catch was <small>(each detail counted once)</small></h2>
 <div class="panel">
   <div class="row"><span class="row-k">checksum-proven</span>
     <span class="row-bar"><i style="width:{_share(d['validated'], d['secrets_caught'] + d['pii_caught'])}%"></i></span>
     <span class="row-v">{d['validated']}</span></div>
-  {_rows(d['by_layer'])}
+  {_rows(d.get('by_layer_once') or d['by_layer'])}
   <p class="empty">L1 deterministic (pattern + checksum) · L2 secret rules · L3 the contextual model.
   Checksum-proven means arithmetic confirmed it — a validated card number isn't a guess.
   We don't show an average confidence: blending fixed rule weights with model
@@ -163,7 +163,7 @@ code{{background:var(--line);padding:1px 5px;border-radius:4px;font-size:11.5px}
 <div class="panel">{_bars(d['by_day'])}</div>
 
 <div class="two">
-  <div><h2>What was caught <small>(each detail counted once)</small></h2><div class="panel">{_rows(d.get('by_kind_once') or d['by_kind'])}</div></div>
+  <div><h2>What was caught <small>(each detail counted once)</small></h2><div class="panel">{_rows(d.get('by_kind_once', d['by_kind']))}</div></div>
   <div><h2>Where it went</h2><div class="panel">{_rows(d['by_upstream'])}</div></div>
 </div>
 

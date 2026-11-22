@@ -100,7 +100,11 @@ def begin(by: str = "menubar", now: float | None = None) -> dict:
     try:
         os.link(tmp, path())
     except FileExistsError:
-        return state() or st          # another process started it a moment ago
+        have = state()
+        if have:
+            return have               # another process started it a moment ago
+        # An unreadable note (checker 2026-11-22): replace it, never pretend.
+        os.replace(tmp, path())
     finally:
         try:
             tmp.unlink()

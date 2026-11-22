@@ -35,6 +35,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import contextlib
+import fcntl
 import shutil
 import secrets
 import signal
@@ -98,6 +100,33 @@ def _pair_chrome(quiet: bool = False) -> None:
         return
     if written and not quiet:
         print("omna: Omna for Chrome can now prove it is talking to Omna — quit and reopen Chrome once to pick this up")
+
+
+
+@contextlib.contextmanager
+def _start_lock(seconds: float = 90.0):
+    """#42: only one process at a time may decide "nothing answers, start a
+    copy" — `omna start -d`, `omna ensure` (every Claude Code window, the
+    menu bar). Without it two of them spawned at once and omna.pid named a
+    copy that died. A file lock: released by the OS even if we are killed."""
+    config.ensure_home()
+    f = open(config.home() / "start.lock", "a")
+    end = time.monotonic() + seconds
+    try:
+        while True:
+            try:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() > end:
+                    break                     # never hang a client for good; go on as before
+                time.sleep(0.1)
+        yield
+    finally:
+        try:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        finally:
+            f.close()
 
 
 def _spawn(port: int, smart: bool, no_restore_secrets: bool = False) -> int:
@@ -211,7 +240,10 @@ def _restart_here(port: int, smart: bool, no_restore_secrets: bool) -> None:
     config.ensure_home()
     lock.write_text(str(os.getpid()))
     try:
-        _replace_running_copy(config.pid_path(), port, smart, no_restore_secrets)
+        # #42: the same lock `start -d` and `ensure` take, so none of them can
+        # slip into the gap between "old copy stopped" and "new copy answering".
+        with _start_lock():
+            _replace_running_copy(config.pid_path(), port, smart, no_restore_secrets)
     finally:
         try:
             if lock.read_text().strip() == str(os.getpid()):
@@ -322,6 +354,24 @@ def cmd_start(a) -> int:
         end = time.monotonic() + 90
         while _restart_in_progress() and time.monotonic() < end:
             time.sleep(0.5)
+    if a.daemon:
+        with _start_lock():
+            who = _who_answers(a.port)
+            if who == "omna":
+                print(f"omna: already running on {config.base_url(a.port)}")
+                return 0
+            if who == "stranger":
+                print(_stranger_message(a.port), file=sys.stderr)
+                return 1
+            _pair_chrome()
+            pid = _spawn(a.port, a.smart, a.no_restore_secrets)
+            h = _wait_healthy(a.port, 60 if a.smart else 10)
+        if h:
+            pause.end("start")      # protection is back: written down with how long it was off
+            print(f"omna: running in the background on {config.base_url(a.port)} (pid {pid}, engine {h['engine']})")
+            return 0
+        print(f"omna: failed to start; see {config.log_path()}", file=sys.stderr)
+        return 1
     who = _who_answers(a.port)
     if who == "omna":
         print(f"omna: already running on {config.base_url(a.port)}")
@@ -330,15 +380,6 @@ def cmd_start(a) -> int:
         print(_stranger_message(a.port), file=sys.stderr)
         return 1
     _pair_chrome()
-    if a.daemon:
-        pid = _spawn(a.port, a.smart, a.no_restore_secrets)
-        h = _wait_healthy(a.port, 60 if a.smart else 10)
-        if h:
-            pause.end("start")      # protection is back: written down with how long it was off
-            print(f"omna: running in the background on {config.base_url(a.port)} (pid {pid}, engine {h['engine']})")
-            return 0
-        print(f"omna: failed to start; see {config.log_path()}", file=sys.stderr)
-        return 1
     from . import daemon
 
     pause.end("start")
@@ -368,17 +409,25 @@ def cmd_ensure(a) -> int:
     # Used by the Claude Code SessionStart hook: must be quiet on success
     # (anything printed becomes context for the model).
     write_claude_env_file()
+    if sys.platform == "darwin":
+        # #37: an update that moved Omna to another Python leaves the menu-bar
+        # app pointing at a deleted folder; it would never start again.
+        from .mac import app_bundle
+
+        app_bundle.repair_if_stale(**app_bundle.own_python())
     if _restart_in_progress():          # #33b: the restart brings it back; a copy of ours would be a second one
         return 0
-    who = _who_answers(a.port)
-    if who == "omna":
-        return 0
-    if who == "stranger":
-        print(_stranger_message(a.port), file=sys.stderr)
-        return 1
-    _pair_chrome(quiet=True)
-    _spawn(a.port, _smart_wanted(a), _no_restore_secrets_wanted(a))
-    if not _wait_healthy(a.port, 10):
+    with _start_lock():
+        who = _who_answers(a.port)
+        if who == "omna":
+            return 0
+        if who == "stranger":
+            print(_stranger_message(a.port), file=sys.stderr)
+            return 1
+        _pair_chrome(quiet=True)
+        _spawn(a.port, _smart_wanted(a), _no_restore_secrets_wanted(a))
+        healthy = _wait_healthy(a.port, 10)
+    if not healthy:
         return 1
     pause.end("start")
     return 0
@@ -843,22 +892,9 @@ def _system_door_on() -> None:
 
 
 def _private_details_today(todays: list[dict]) -> int:
-    """Each private detail once, by its private fingerprint: a long chat sends
-    the same names again with every message (#41: "49,905 values hidden" from
-    336 messages was not believable)."""
-    seen: set[tuple[str, str]] = set()
-    loose = 0
-    for r in todays:
-        finds = r.get("finds") or []
-        if not finds:
-            loose += sum((r.get("masked") or {}).values())
-        for f in finds:
-            fps = f.get("fp") or []
-            if fps:
-                seen.update((str(f.get("entity")), str(x)) for x in fps)
-            else:
-                loose += int(f.get("n") or 0)
-    return len(seen) + loose
+    """Each private detail once (#41) — the same count as the dashboard and the
+    daily count: receipts.details_once."""
+    return sum(receipts.details_once(todays).values())
 
 
 def cmd_status(a) -> int:

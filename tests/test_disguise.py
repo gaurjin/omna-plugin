@@ -125,3 +125,24 @@ def test_a_crafted_dump_cannot_carry_a_key_in_its_side_column(session):
     dump = ("00000000: 4142 4344 4546 4748 4142 4344 4546 4748  " + key + "\n"
             "00000010: 4142 4344 4546 4748 4142 4344 4546 4748  ABCDEFGHABCDEFGH\n")
     assert key not in session.mask_text(dump).masked
+
+
+def test_memory_does_not_grow_with_every_known_value():
+    # #24 (2-hour real-use run 2026-11-22: 518 MB → 1,181 MB): the finder kept
+    # 3 compiled patterns (~30 KB) for EVERY real value ever masked, forever —
+    # 59 MB of patterns after 10 minutes, growing. Patterns are now built only
+    # when a text needs them, and only a bounded number are kept.
+    import tracemalloc
+    from omna_plugin import disguise
+    known = {f"person.number{i}@example-mail.com": f"[EMAIL_{i}]" for i in range(3000)}
+    tracemalloc.start()
+    before = tracemalloc.get_traced_memory()[0]
+    f = disguise.Finder()
+    f.compile(known, (1, 0, 3000))
+    grown = tracemalloc.get_traced_memory()[0] - before
+    tracemalloc.stop()
+    assert grown < 8_000_000, f"{grown / 1e6:.1f} MB for 3,000 known values"
+    # and it still finds a value in disguise
+    v = 'person.number42' + chr(64) + 'example-mail.com'
+    out, used = f.find('here: ' + v[::-1] + ' end')
+    assert used == ['[EMAIL' + '_42]'] and v[::-1] not in out

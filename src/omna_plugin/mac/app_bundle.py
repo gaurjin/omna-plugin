@@ -111,6 +111,36 @@ def own_python() -> dict:
             "py_version": f"{sys.version_info[0]}.{sys.version_info[1]}"}
 
 
+def stale(dest: Path = APP_PATH, *, python: Path | None = None, tool_prefix: Path | None = None,
+          site_packages: Path | None = None, py_version: str | None = None) -> bool:
+    """Is the app's own-Python setup pointing at an Omna folder that is gone or
+    not this one (#37: an update moved Omna to another Python)? False for a
+    missing app or the old shell launcher — nothing to repair there."""
+    main = dest / "Contents" / "MacOS" / PY_NAME
+    if not main.exists() or site_packages is None:
+        return False
+    pths = list((dest / "Contents" / "lib").glob("python*/site-packages/omna_a_installed_code.pth"))
+    if len(pths) != 1:
+        return True
+    try:
+        pointed = Path(pths[0].read_text().strip())
+    except OSError:
+        return True
+    return (not pointed.is_dir() or pointed.resolve() != Path(site_packages).resolve()
+            or pths[0].parent.parent.name != f"python{py_version}")
+
+
+def repair_if_stale(dest: Path = APP_PATH, **python_kw) -> bool:
+    """Rebuild the app when stale(); True when it did. Quiet, never raises."""
+    try:
+        if not stale(dest, **python_kw):
+            return False
+        install(Path(shutil.which("omna") or sys.argv[0]), dest=dest, **python_kw)
+        return True
+    except OSError:
+        return False
+
+
 def remove(dest: Path = APP_PATH) -> None:
     shutil.rmtree(dest, ignore_errors=True)
 
