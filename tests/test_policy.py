@@ -244,3 +244,27 @@ def test_menu_bar_uses_the_chrome_wording():
     src = inspect.getsource(menubar)
     assert "Restore on reply (shield mode)" in src
     assert "Restore Real Values in Browser" not in src
+
+
+def test_existing_installs_get_restore_off_too(tmp_path, monkeypatch):
+    """Owner 2026-11-22: existing installs also get "Restore on reply" OFF.
+    Old installs saved restore_browser: true without anyone choosing it (any
+    settings change wrote it), so a saved true counts only if the PERSON
+    turned it on in the menu bar after this change."""
+    import json
+    from omna_plugin import menubar
+    from omna_plugin.policy import Policy
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin import config
+    p = config.policy_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"restore_browser": True}))      # an old install
+    assert Policy.load().restore_browser is False
+
+    menubar._toggle_restore_browser()                         # the person turns it on
+    assert Policy.load().restore_browser is True
+    Policy.load().save()                                      # any later settings change
+    assert Policy.load().restore_browser is True
+    menubar._toggle_restore_browser()                         # and off again
+    assert Policy.load().restore_browser is False
