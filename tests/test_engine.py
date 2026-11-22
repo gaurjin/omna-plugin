@@ -594,16 +594,6 @@ def _one_catch(monkeypatch, text, a, b, entity, layer="L3"):
     return MaskingSession().mask_text(text).masked
 
 
-def test_a_catch_in_the_middle_of_a_home_path_is_not_a_value(home, monkeypatch):
-    # Gate G13 (#30): the compact model caught only "plugin/smart.py", the END
-    # of a path under the home folder (a folder name with a space before it).
-    from pathlib import Path
-    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
-    text = "then open /Users/priyar/Developer/Omna Labs/omna-plugin/src/omna_plugin/smart.py and run it"
-    a = text.index("plugin/smart.py")
-    assert _one_catch(monkeypatch, text, a, a + len("plugin/smart.py"), "PERSONAL_URL") == text
-
-
 def test_a_value_after_a_home_path_is_still_masked(home, monkeypatch):
     from pathlib import Path
     monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
@@ -677,6 +667,24 @@ def test_checker_leaks_of_the_our_name_rule_stay_masked(home, monkeypatch):
         text = f"open {page} now"
         a = text.index(page)
         assert _one_catch(monkeypatch, text, a, a + len(page), "PERSONAL_URL") == text, page
+
+
+def test_names_and_domains_in_folder_names_stay_masked(home, monkeypatch):
+    # Fresh checker 2 (2026-11-22): a "mid-path is the path" rule let names,
+    # personal web domains and ID numbers in folder names through. Removed;
+    # these stay masked.
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    cases = [
+        ("open /Users/priyar/Developer/Omna Labs/maria-gonzalez/smart.py now", "maria-gonzalez/smart.py"),
+        ("open /Users/priyar/Developer/Omna Labs/omna-plugin/src/janedoe.fr now", "plugin/src/janedoe"),
+        ("ls /Users/priyar/clients/maria-gonzalez-divorce/notes.txt", "maria-gonzalez-divorce/notes.txt"),
+        ("ls /Users/priyar/patients/1EG4-TE5-MK73.pdf", "1EG4-TE5-MK73.pdf"),
+        ("ls /Users/priyarmaria-lopez/x", "maria-lopez/x"),
+    ]
+    for text, value in cases:
+        a = text.index(value)
+        assert value not in _one_catch(monkeypatch, text, a, a + len(value), "PERSONAL_URL"), text
 
 
 def test_checker_leaks_after_a_home_path_stay_masked(home, monkeypatch):

@@ -1183,27 +1183,6 @@ def _only_our_name(seg: str, entity) -> bool:
     return "omna" in words and all(w in BRAND_WORDS for w in words)
 
 
-# The characters a plain folder path is made of. A walk back from a catch to
-# the home folder through only these (no newline, no @ = ? : & ,) means the
-# catch sits inside that one path.
-_PATH_CHARS = re.compile(r"[A-Za-z0-9._\-/ ]*")
-
-
-def _inside_home_path(text: str, a: int, homes: list) -> bool:
-    """Does the catch starting at ``a`` begin in the middle of a plain path
-    under the home folder (e.g. ".../src/omna_plugin/smart.py" caught from
-    "plugin")? Only mid-word: a catch after a space is its own word."""
-    if a == 0 or text[a - 1].isspace():
-        return False
-    for s, e in homes:
-        if e <= a and _PATH_CHARS.fullmatch(text, e, a):
-            # A space may only lead into another folder name ("Omna Labs/x"),
-            # never into ordinary words ("…/logs and host-…": checker 2026-11-21).
-            if all("/" in piece for piece in text[e:a].split(" ")[1:]):
-                return True
-    return False
-
-
 def _home_dirs() -> list[str]:
     """This Mac's own home folder, as it appears in paths ("/Users/name")."""
     try:
@@ -1243,12 +1222,6 @@ def _drop_not_values(text: str, raw: dict, issued=lambda t: True) -> dict:
             seg = text[a:b]
             if (any(s <= a <= e for s, e in homes) and seg.startswith(("/", "U", "~"))
                     and not re.search(r"[@=?:&,]|\d{4,}|\s", seg)):
-                continue
-            # The same, for a catch that begins mid-path (gate G13).
-            # Only a PERSONAL_URL catch (never a name, IP or MAC address), and
-            # never one shaped like a web address ("linkedin.com/in/…").
-            if (sp.get("entity") == "PERSONAL_URL" and _inside_home_path(text, a, homes)
-                    and not re.search(r"[@=?:&,]|\d{4,}|\s|\.[A-Za-z]{2,}/|\.(?:com|net|org|io|co|me|ai|app|dev|info|biz|us|uk|in|de)\b", seg)):
                 continue
             if sp.get("entity") == "PERSON" and text[a:b].strip().lower() in NOT_NAMES:
                 continue
