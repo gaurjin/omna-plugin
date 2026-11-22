@@ -301,7 +301,7 @@ def test_status_shows_doors_apps_and_refused_lines(capsys, monkeypatch):
     receipts_mod.append({"ts": today, "app": "Claude", "masked": {}})
     receipts_mod.append({"ts": today, "app": "Claude Desktop", "host": "api.anthropic.com", "note": "tls-refused", "masked": {}})
 
-    assert main(["status"]) == 0
+    assert main(["status", "--details"]) == 0
     out, _ = capsys.readouterr()
     assert "doors:" in out
     assert "apps today:" in out and "Google Chrome" in out and "×2" in out
@@ -329,7 +329,7 @@ def test_status_shows_extension_connected_when_recently_seen(capsys, monkeypatch
     monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: _fake_health(now - 5, "0.6.0"))
 
-    assert main(["status"]) == 0
+    assert main(["status", "--details"]) == 0
     out, _ = capsys.readouterr()
     assert "extension:    connected (v0.6.0)" in out
 
@@ -340,7 +340,7 @@ def test_status_shows_extension_not_connected_when_stale(capsys, monkeypatch):
     # Older than the 120s freshness window used by cmd_status.
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: _fake_health(now - 121, "0.5.0"))
 
-    assert main(["status"]) == 0
+    assert main(["status", "--details"]) == 0
     out, _ = capsys.readouterr()
     assert "extension:    not connected yet  → already have Omna for Chrome?" in out
 
@@ -350,7 +350,7 @@ def test_status_shows_extension_not_connected_when_never_seen(capsys, monkeypatc
     monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: _fake_health(None))
 
-    assert main(["status"]) == 0
+    assert main(["status", "--details"]) == 0
     out, _ = capsys.readouterr()
     assert "extension:    not connected yet  → already have Omna for Chrome?" in out
 
@@ -548,7 +548,7 @@ def test_status_shows_enrolment_when_tagged(monkeypatch, capsys):
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)
     main(["enroll", "--org", "Acme Inc", "--dept", "engineering"])
     capsys.readouterr()
-    main(["status"])
+    main(["status", "--details"])
     out, _ = capsys.readouterr()
     assert "enrolled:" in out and "Acme Inc" in out and "engineering" in out
 
@@ -769,14 +769,14 @@ def test_an_unknown_style_is_rejected(capsys):
 def test_status_names_the_style_per_door(capsys, no_restart):
     main(["style", "realistic"])
     capsys.readouterr()
-    main(["status"])
+    main(["status", "--details"])
     out, _ = capsys.readouterr()
     assert "style:" in out
     assert "browser" in out and "coding tools" in out
 
 
 def test_status_says_every_door_when_the_style_is_the_default(capsys):
-    main(["status"])
+    main(["status", "--details"])
     out, _ = capsys.readouterr()
     assert "style:" in out and "every door" in out
 
@@ -803,7 +803,7 @@ def test_status_says_what_files_are_masked_and_how_to_turn_on_smart(capsys, monk
     monkeypatch.setattr("omna_plugin.cli.time.time", lambda: now)
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: {**_fake_health(None, None), "ocr": True})
     monkeypatch.setattr("omna_plugin.pdf.available", lambda: True)
-    assert main(["status"]) == 0
+    assert main(["status", "--details"]) == 0
     out, _ = capsys.readouterr()
     assert "smart:        OFF" in out
     assert "go to the AI as they are. Turn it on: `omna smart on`" in out
@@ -816,7 +816,7 @@ def test_status_is_honest_where_pictures_cannot_be_read(capsys, monkeypatch):
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: {**_fake_health(None, None), "smart": True, "ocr": False,
                                                                  "smart_models": ["compact"]})
     monkeypatch.setattr("omna_plugin.pdf.available", lambda: False)
-    assert main(["status"]) == 0
+    assert main(["status", "--details"]) == 0
     out, _ = capsys.readouterr()
     # On: say so, say what it buys, and how to turn it off (owner: the benefit, both ways).
     assert "smart:        on (compact)" in out
@@ -912,7 +912,7 @@ def test_status_tells_the_truth_about_codex(monkeypatch, tmp_path, capsys, cfg, 
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)
     monkeypatch.setattr("omna_plugin.cli.shutil.which", lambda name: "/usr/local/bin/codex" if name == "codex" else None)
     monkeypatch.setattr("omna_plugin.codex.settings_file", lambda: p)
-    main(["status"])
+    main(["status", "--details"])
     line = next(ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("codex cli:"))
     assert expect in line, line
 

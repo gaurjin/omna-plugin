@@ -698,7 +698,7 @@ def cmd_categories(a) -> int:
     return 0
 
 
-def cmd_status(a) -> int:
+def _status_details(a) -> int:
     from .engine import engine_version
     from .proxy import __version__
 
@@ -759,7 +759,8 @@ def cmd_status(a) -> int:
         print(f"enrolled:     {pol.org or '(no org)'} / {pol.dept or '(no department)'}  (device {pol.device_id})")
     ok, n, msg = receipts.verify()
     off_note = "  (OFF — nothing new is being logged)" if not pol.reports_enabled else ""
-    print(f"receipts:     {n} total, {msg}; today: {_fmt_counts(_today_counts())}{off_note}")
+    total, bad = receipts.bad_receipts()
+    print(f"receipts:     {total} total, {msg if ok else f'{len(bad)} don' + chr(39) + f't check out (first at {bad[0][0]}: {msg})'}; today: {_fmt_counts(_today_counts())}{off_note}")
     print(_style_line(pol))
     print(tool_calls_line(pol))
     reg = extension_auth.registered()
@@ -772,6 +773,246 @@ def cmd_status(a) -> int:
     print("what leaves this machine: the masked request, to the AI provider you were already using. Nothing goes to Omna.")
     return 0
 
+
+
+# ---------------------------------------------------------------- omna status (#41)
+# Owner 2026-11-22: "it should be easy to read, very user-friendly ... look
+# like Apple, not Windows." One headline, one line per thing that is covered,
+# today in plain words, the proof, and a fix next to anything that is off.
+# Everything technical stays in `omna status --details`.
+
+def _mac_apps_route() -> tuple[str, bool] | None:
+    """(the network service carrying this Mac's internet, does it send AI
+    traffic through Omna?) — None when that cannot be read (not a Mac)."""
+    if sys.platform != "darwin":
+        return None
+    from .mac import netproxy
+
+    try:
+        dev = ""
+        r = subprocess.run(["route", "-n", "get", "default"], capture_output=True, text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            if line.strip().startswith("interface:"):
+                dev = line.split(":", 1)[1].strip()
+        order = subprocess.run(["networksetup", "-listnetworkserviceorder"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    service = ""
+    last = ""
+    for line in order.splitlines():
+        line = line.strip()
+        if line.startswith("(") and ")" in line and "Hardware Port" not in line:
+            last = line.split(")", 1)[1].strip().lstrip("*").strip()
+        elif "Hardware Port" in line and dev and f"Device: {dev})" in line:
+            service = last
+    if not service:
+        return None
+    url, enabled = netproxy.current_pac(service)
+    return service, bool(enabled and "/omna/proxy.pac" in url)
+
+
+def _when(ts: str) -> str:
+    from datetime import datetime
+
+    try:
+        d = datetime.strptime(str(ts), "%Y-%m-%dT%H:%M:%S%z")
+    except ValueError:
+        return str(ts)[:16]
+    return d.strftime("%b %-d, %-I:%M %p")
+
+
+def _n(x: int) -> str:
+    return f"{x:,}"
+
+
+def _menu_bar_running() -> bool:
+    """Is the Omna menu-bar icon running (it ends a Pause by itself)?"""
+    r = subprocess.run(["pgrep", "-f", r"/bin/omna menubar$|Contents/MacOS/omna-menubar$"],
+                       capture_output=True, text=True)
+    return bool(r.stdout.strip())
+
+
+def _system_door_on() -> None:
+    """`omna init` sets up Mac-wide masking, so it also opens that door if it
+    was switched off in Omna's settings (#41: status told a client "To fix:
+    omna init" and nothing in init turned it back on)."""
+    pol = Policy.load()
+    if not pol.doors.get("system", True):
+        pol.doors["system"] = True
+        pol.save()
+
+
+def _private_details_today(todays: list[dict]) -> int:
+    """Each private detail once, by its private fingerprint: a long chat sends
+    the same names again with every message (#41: "49,905 values hidden" from
+    336 messages was not believable)."""
+    seen: set[tuple[str, str]] = set()
+    loose = 0
+    for r in todays:
+        finds = r.get("finds") or []
+        if not finds:
+            loose += sum((r.get("masked") or {}).values())
+        for f in finds:
+            fps = f.get("fp") or []
+            if fps:
+                seen.update((str(f.get("entity")), str(x)) for x in fps)
+            else:
+                loose += int(f.get("n") or 0)
+    return len(seen) + loose
+
+
+def cmd_status(a) -> int:
+    """The client screen (#41). Owner 2026-11-22: easy to read, "like Apple,
+    not Windows". Wording from a fresh client read-through of the real screens:
+    never claim protection that is not there, every fix true, fits 80 columns."""
+    if getattr(a, "details", False):
+        return _status_details(a)
+    from datetime import date
+
+    from .proxy import __version__
+
+    h = _health(a.port)
+    pol = Policy.load()
+    IND = " " * 19
+    rows: list[tuple[str, str, list[str]]] = []       # (mark, name, lines under it)
+
+    def footer(out: list[str]) -> None:
+        out += ["", f"  Omna {__version__} · more detail: omna status --details"]
+
+    if not h:
+        st = pause.state()
+        out: list[str] = []
+        cc_on = claude_code.status(claude_code.settings_file("user"))["wired"]
+        at = lambda ts: time.strftime("%-I:%M %p", time.localtime(ts))   # noqa: E731
+        if st and st.get("until") and (pause.minutes_left() or 0) > 0:
+            out += [f"Omna is paused for {pause.minutes_left()} more minutes — nothing is masked",
+                    "", "  What you type goes to AI exactly as you wrote it until then."]
+            if cc_on:
+                out.append("  Claude Code will not work until it is back.")
+            if _menu_bar_running():
+                out.append(f"  It turns back on by itself at {at(st['until'])}.")
+            else:
+                out.append("  It will not turn back on by itself (the menu-bar icon is not running).")
+            out.append("  To turn it on now: omna start -d")
+        elif st and st.get("until"):
+            out += [f"Omna's pause ended at {at(st['until'])}, but it did not turn back on", "",
+                    "  (the menu-bar icon is not running, so nothing turned it on).",
+                    "  What you type goes to AI exactly as you wrote it.",
+                    "  To turn it on: omna start -d"]
+        else:
+            out += ["Omna is OFF — nothing is masked", "",
+                    "  What you type goes to AI exactly as you wrote it."]
+            if cc_on:
+                out.append("  Claude Code will not work until it is on.")
+            out.append("  To turn it on: omna start -d")
+        footer(out)
+        print("\n".join(out))
+        return 0
+
+    cc = claude_code.status(claude_code.settings_file("user"))
+    fixes: list[str] = []
+    INIT = "omna init (asks for your Mac password)"
+    rows.append(("✓", "Claude Code", []) if cc["wired"] else ("✗", "Claude Code", ["Not set up"]))
+    if not cc["wired"]:
+        fixes.append(INIT)
+    last = h.get("extension_last_seen")
+    if last and (time.time() - last) < 120:
+        rows.append(("✓", "Chrome", [f"Omna for Chrome {h.get('extension_version') or ''}".rstrip()]))
+    else:
+        rows.append(("○", "Chrome", ["Not connected yet. Have Omna for Chrome? Quit and",
+                                     "reopen Chrome once. Don't have it? Get it here:",
+                                     "@chromewebstore.google.com/detail/omna/nnkjconloimokalfdghmhifcangdbmnc"]))
+    if sys.platform == "darwin":
+        doors = h.get("doors") or {}
+        route = _mac_apps_route()
+        if not doors.get("system"):
+            rows.append(("✗", "Mac apps", ["Turned off — desktop AI apps go unmasked"]))
+            fixes.append(INIT + ",\n" + IND + "then omna stop && omna start -d")
+        elif route and not route[1]:
+            rows.append(("✗", "Mac apps", [f"Not connected on {route[0]} — desktop AI apps",
+                                           "(Claude, ChatGPT) go unmasked"]))
+            fixes.append(INIT)
+        else:
+            rows.append(("✓", "Mac apps", ["Claude, ChatGPT and other AI apps"]))
+    if shutil.which("aider"):
+        ast = aider.status()
+        aw = ast["openai_base"] == f"{config.base_url(a.port)}/v1" or ast["anthropic_base"] == config.base_url(a.port)
+        rows.append(("✓", "Aider", []) if aw else ("✗", "Aider", ["Not set up"]))
+        aw or fixes.append("omna enable aider")
+    if shutil.which("codex"):
+        xst = codex.status(codex.settings_file())
+        xw = xst["routed"] and xst["base_url"] == f"{config.base_url(a.port)}/v1"
+        rows.append(("✓", "Codex", []) if xw else ("✗", "Codex", ["Not set up"]))
+        xw or fixes.append("omna enable codex")
+    if continue_dev.detected():
+        cw = continue_dev.status()["wired"]
+        rows.append(("✓", "Continue", []) if cw else ("✗", "Continue", ["Not set up"]))
+        cw or fixes.append("omna enable continue")
+
+    off = [name for mark, name, _ in rows if mark == "✗"]
+    if not any(mark == "✓" for mark, _, _ in rows):
+        out = ["Omna is running, but nothing is protected yet"]
+    elif off:
+        names = off[0] if len(off) == 1 else ", ".join(off[:-1]) + " and " + off[-1]
+        verb = "are" if len(off) > 1 or off[0].endswith("apps") else "is"
+        out = [f"Omna is on — but {names} {verb} not protected"]
+    else:
+        out = ["Omna is on — protecting everything below"]
+    out.append("")
+    for mark, name, under in rows:
+        first = under[0] if under else ""
+        out.append(f"  {mark}  {name:<14}{first}".rstrip())
+        for more in under[1:]:
+            out.append("     " + more[1:] if more.startswith("@") else IND + more)
+    # One fix line, each step once (read-through 2: "omna init" was said twice).
+    longest = max(fixes, key=len) if fixes else None
+    steps = [longest] if longest else []
+    steps += [f for f in dict.fromkeys(fixes) if f != longest and not longest.startswith(f)]
+    for i, f in enumerate(steps):
+        out.append(("  To fix: " if i == 0 else "          ") + f)
+    out.append("")
+
+    recs = receipts.tail(0)
+    today = date.today().isoformat()
+    todays = [r for r in recs if str(r.get("ts", "")).startswith(today) and r.get("door") != "control"]
+    refused = sum(1 for r in todays if r.get("note") == "tls-refused")
+    msgs = len(todays) - refused
+    details = _private_details_today(todays)
+    line = f"{_n(msgs)} message{'' if msgs == 1 else 's'} to AI · {_n(details)} private detail{'' if details == 1 else 's'} hidden"
+    out.append(f"  {'Today':<17}{line}")
+    if refused:
+        out.append(f"{IND}{_n(refused)} blocked by an app that refuses Omna (see --details)")
+    total, bad = receipts.bad_receipts()
+    if not total:
+        out.append(f"  {'Proof':<17}Nothing yet — a receipt is written for every message")
+    elif not bad:
+        out.append(f"  {'Proof':<17}{_n(total)} receipt{'' if total == 1 else 's'} on this Mac, none changed ✓")
+    else:
+        out.append(f"  {'Proof':<17}⚠ {_n(len(bad))} of {_n(total)} receipts don't check out")
+        out.append(f"{IND}(first: {_when(bad[0][1])}). All others do. Masking still works.")
+    if not pol.reports_enabled:
+        out.append(f"{IND}Receipts are off — nothing new is written down")
+    failed = h.get("smart_failed") or {}
+    if h.get("smart") and not (h.get("smart_models") or []) and failed:
+        out.append(f"  {'Smart masking':<17}⚠ Not working — names in sentences go unmasked.")
+        out.append(f"{IND}To fix: omna stop && omna start -d")
+    elif not h.get("smart"):
+        out.append(f"  {'Smart masking':<17}Off — names in sentences are not caught")
+        out.append(f"{IND}Turn on: omna smart on")
+    if pol.privacy_filter == "on":
+        out.append(f"  {'Privacy filter':<17}On — extra name checks")
+    else:
+        out.append(f"  {'Privacy filter':<17}Off (normal)")
+        out.append(f"{IND}For extra name checks: omna privacy-filter on")
+    from .engine import registry_status
+
+    if registry_status().get("at_rest") not in ("encrypted", "empty"):
+        out.append(f"  {'':<17}⚠ Your real values are NOT encrypted on this Mac")
+    out += ["", "  Only the masked message goes to the AI you already use.",
+            "  Nothing goes to Omna."]
+    footer(out)
+    print("\n".join(out))
+    return 0
 
 def cmd_log(a) -> int:
     if a.verify:
@@ -990,6 +1231,7 @@ def cmd_init(a) -> int:
     elif sys.platform == "darwin":
         from .mac import setup as mac_setup
 
+        _system_door_on()
         res = mac_setup.apply(api_port=a.port)
         print("      Mac: system proxy + certificate installed — every AI app on this Mac is masked, not just Claude Code.")
         print("      Mac: a menu-bar icon now shows Omna's status — click it any time to see what's covered, or to uninstall.")
@@ -1573,7 +1815,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_restart_worker)
     s = sub.add_parser("ensure", help="start the background proxy if needed"); add_port(s)
     s.add_argument("--smart", action="store_true"); s.set_defaults(fn=cmd_ensure)
-    s = sub.add_parser("status"); add_port(s); s.set_defaults(fn=cmd_status)
+    s = sub.add_parser("status", help="is Omna protecting me? (--details: the full screen)"); add_port(s)
+    s.add_argument("--details", action="store_true", help="the full technical screen")
+    s.set_defaults(fn=cmd_status)
     s = sub.add_parser("log", help="show local receipts")
     s.add_argument("-n", type=int, default=20); s.add_argument("--verify", action="store_true"); s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_log)

@@ -334,6 +334,22 @@ def verify() -> tuple[bool, int, str]:
     return True, n, "chain intact"
 
 
+def bad_receipts() -> tuple[int, list[tuple[int, str]]]:
+    """(total, [(position, ts) of every receipt that does not check out]).
+    Unlike verify(), it does not stop at the first one: a single bad link
+    (#40, two writers at once) must not make every later receipt look
+    unprovable — each later one still checks against the one before it."""
+    prev = GENESIS
+    bad: list[tuple[int, str]] = []
+    n = 0
+    for rec in _iter(config.receipts_path()):
+        n += 1
+        if "_corrupt" in rec or rec.get("prev") != prev or rec.get("hash") != _hash(rec.get("prev", ""), rec):
+            bad.append((n, str(rec.get("ts", ""))))
+        prev = rec.get("hash", prev)
+    return n, bad
+
+
 def summary(records: list[dict]) -> dict[str, int]:
     """Aggregate masked/redacted counts across records."""
     out: dict[str, int] = {}

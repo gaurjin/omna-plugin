@@ -114,10 +114,10 @@ def _health(port):
 
 def test_status_shows_the_privacy_filter_line(capsys, monkeypatch):
     monkeypatch.setattr("omna_plugin.cli._health", _health)
-    main(["status"])
+    main(["status", "--details"])
     out = capsys.readouterr().out
     assert "privacy filter: OFF" in out and "`omna privacy-filter on`" in out
     p = Policy.load(); p.privacy_filter = "on"; p.save()
-    main(["status"])
+    main(["status", "--details"])
     out = capsys.readouterr().out
     assert "privacy filter: ON" in out and "`omna privacy-filter off`" in out
