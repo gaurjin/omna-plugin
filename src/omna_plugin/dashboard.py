@@ -163,7 +163,7 @@ code{{background:var(--line);padding:1px 5px;border-radius:4px;font-size:11.5px}
 <div class="panel">{_bars(d['by_day'])}</div>
 
 <div class="two">
-  <div><h2>What was caught</h2><div class="panel">{_rows(d['by_kind'])}</div></div>
+  <div><h2>What was caught <small>(each detail counted once)</small></h2><div class="panel">{_rows(d.get('by_kind_once') or d['by_kind'])}</div></div>
   <div><h2>Where it went</h2><div class="panel">{_rows(d['by_upstream'])}</div></div>
 </div>
 
