@@ -1161,18 +1161,26 @@ NOT_NAMES = frozenset({"wi-fi", "wi\u2011fi", "wifi"})
 # "OMNA", "Omna's", "Omna Labs", "Omna for Chrome". A catch with any other
 # word in it ("Omna Tiwari") stays masked as a whole.
 BRAND_WORDS = frozenset({"omna", "labs", "plugin", "for", "chrome", "s"})
+# Only kinds of catch a word or a web address can be — never a password,
+# secret, email, card, phone or number (fresh checker 2026-11-22).
+_NAME_KINDS = frozenset({"PERSON", "ORGANIZATION", "ORG", "ADDRESS", "LOCATION",
+                         "PERSONAL_URL", "URL", "DIGITAL_ID"})
+# Our own public pages only, never any other omna.dev path (a name or a
+# reset code can sit in one: checker 2026-11-22).
+_OUR_SITE = re.compile(r"(?:https?://)?(?:www\.)?omna\.dev/?(?:(?:sample-report|admin/dashboard|cli/install\.sh|install\.md|guide)/?)?", re.I)
 
 
-def _only_our_name(seg: str) -> bool:
-    words = [w.lower() for w in re.findall(r"[A-Za-z0-9]+", seg)]
-    if "omna" in words and all(w in BRAND_WORDS for w in words):
+def _only_our_name(seg: str, entity) -> bool:
+    if entity not in _NAME_KINDS or "@" in seg:
+        return False
+    s = seg.strip()
+    if _OUR_SITE.fullmatch(s):
         return True
-    # Our own website's address ("omna.dev/admin/dashboard"), never an email
-    # (no @) and never one carrying values (no ? = &).
-    return bool(_OUR_SITE.fullmatch(seg.strip()))
-
-
-_OUR_SITE = re.compile(r"(?:https?://)?(?:www\.)?omna\.dev(?:/[A-Za-z0-9._\-/]*)?", re.I)
+    # Every letter in any alphabet counts: "Omna \u674e\u660e" is a name.
+    if re.search(r"[^\w\s'\u2019.\-]", s):
+        return False
+    words = [w.lower() for w in re.findall(r"\w+", s)]
+    return "omna" in words and all(w in BRAND_WORDS for w in words)
 
 
 # The characters a plain folder path is made of. A walk back from a catch to
@@ -1240,11 +1248,11 @@ def _drop_not_values(text: str, raw: dict, issued=lambda t: True) -> dict:
             # Only a PERSONAL_URL catch (never a name, IP or MAC address), and
             # never one shaped like a web address ("linkedin.com/in/…").
             if (sp.get("entity") == "PERSONAL_URL" and _inside_home_path(text, a, homes)
-                    and not re.search(r"[@=?:&,]|\d{4,}|\s|\.[A-Za-z]{2,}/", seg)):
+                    and not re.search(r"[@=?:&,]|\d{4,}|\s|\.[A-Za-z]{2,}/|\.(?:com|net|org|io|co|me|ai|app|dev|info|biz|us|uk|in|de)\b", seg)):
                 continue
             if sp.get("entity") == "PERSON" and text[a:b].strip().lower() in NOT_NAMES:
                 continue
-            if _only_our_name(text[a:b]):
+            if _only_our_name(text[a:b], sp.get("entity")):
                 continue
         keep.append(idx)
     if len(keep) == len(raw["spans"]):

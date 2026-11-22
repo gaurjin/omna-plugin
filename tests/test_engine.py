@@ -650,6 +650,35 @@ def test_a_catch_with_more_than_our_name_stays_masked(home, monkeypatch):
         assert value not in _one_catch(monkeypatch, text, a, a + len(value), kind, layer=layer), text
 
 
+def test_checker_leaks_of_the_our_name_rule_stay_masked(home, monkeypatch):
+    # Fresh checker 2026-11-22 on 30a0559: our website rule let any omna.dev
+    # path through (a name in it, a reset code), any kind of catch was dropped,
+    # names in other alphabets were invisible, and web domains as folder names
+    # under the home folder were dropped.
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    cases = [
+        ("see https://omna.dev/u/john-smith now", "https://omna.dev/u/john-smith", "PERSONAL_URL"),
+        ("reset at omna.dev/reset/9f8a7b6c5d4e3f2a1b0c now", "omna.dev/reset/9f8a7b6c5d4e3f2a1b0c", "PERSONAL_URL"),
+        ("pay omna.dev/4111111111111111 now", "omna.dev/4111111111111111", "CREDIT_CARD"),
+        ("call Omna \u674e\u660e today", "Omna \u674e\u660e", "PERSON"),
+        ("hi \u0930\u093e\u0939\u0941\u0932 Omna today", "\u0930\u093e\u0939\u0941\u0932 Omna", "PERSON"),
+        ("Omna \u0410\u043d\u043d\u0430 joined", "Omna \u0410\u043d\u043d\u0430", "PERSON"),
+        ("pw Omna-For-Chrome-S ok", "Omna-For-Chrome-S", "PASSWORD"),
+        ("mail omna" + "@labs ok", "omna" + "@labs", "EMAIL"),
+        ("ls /Users/priyar/Sites/johnsmith.com", "johnsmith.com", "PERSONAL_URL"),
+        ("ls /Users/priyar/mail/john.smith-gmail.com", "john.smith-gmail.com", "PERSONAL_URL"),
+    ]
+    for text, value, kind in cases:
+        a = len(text[:text.index(value)].encode())      # the engine speaks UTF-8 byte offsets
+        assert value not in _one_catch(monkeypatch, text, a, a + len(value.encode()), kind), (text, kind)
+    # our real pages stay readable
+    for page in ("omna.dev", "https://omna.dev/sample-report", "omna.dev/admin/dashboard", "omna.dev/cli/install.sh"):
+        text = f"open {page} now"
+        a = text.index(page)
+        assert _one_catch(monkeypatch, text, a, a + len(page), "PERSONAL_URL") == text, page
+
+
 def test_checker_leaks_after_a_home_path_stay_masked(home, monkeypatch):
     # Fresh checker 2026-11-21 on the first G13 fix: the walk back to the home
     # folder crossed spaces into ordinary words, and dropped IP, MAC and names.
