@@ -123,7 +123,9 @@ class Policy:
             pol.deep_apps = list(data.get("deep_apps", []))
             pol.doors = {**pol.doors, **data.get("doors", {})}
             pol.reports_enabled = bool(data.get("reports_enabled", True))
-            pol.restore_browser = bool(data.get("restore_browser", False))
+            # Counts only when the PERSON turned it on after 2026-11-22: older
+            # installs saved true without anyone choosing it (owner: off everywhere).
+            pol.restore_browser = bool(data.get("restore_browser", False)) and bool(data.get("restore_chosen", False))
             st = str(data.get("style", TOKENS))
             pol.style = st if st in STYLES else TOKENS
             tc = data.get("tool_calls") or {}
@@ -161,6 +163,7 @@ class Policy:
             "doors": self.doors,
             "reports_enabled": self.reports_enabled,
             "restore_browser": self.restore_browser,
+            "restore_chosen": self.restore_browser,   # a saved true is the person's own choice
             "style": self.style,
             "tool_calls": self.tool_calls,
             "restore_secrets": self.restore_secrets,
