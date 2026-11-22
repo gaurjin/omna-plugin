@@ -58,3 +58,13 @@ def _never_close_real_menu_bars(monkeypatch):
     from omna_plugin import menubar
 
     monkeypatch.setattr(menubar, "stop_other_menu_bars", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_menu_bar_app(monkeypatch, tmp_path_factory):
+    """2026-11-22: `omna ensure` repairs /Applications/Omna Plugin.app, and a
+    test that ran `ensure` rebuilt the developer's REAL app to point at the
+    test copy. Every test gets a throwaway app path."""
+    from omna_plugin.mac import app_bundle
+
+    monkeypatch.setattr(app_bundle, "APP_PATH", tmp_path_factory.mktemp("apps") / "Omna Plugin.app")

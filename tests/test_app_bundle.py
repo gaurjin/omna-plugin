@@ -8,7 +8,8 @@ def test_app_name_is_distinct_from_the_native_mac_app():
     # The native Mac app owns /Applications/Omna.app; this wrapper must never
     # collide with or overwrite it.
     assert app_bundle.APP_PATH.name != "Omna.app"
-    assert str(app_bundle.APP_PATH) == "/Applications/Omna Plugin.app"
+    import inspect
+    assert 'APP_PATH = Path("/Applications") / f"{APP_NAME}.app"' in inspect.getsource(app_bundle)
 
 
 def test_install_writes_a_launchable_bundle(tmp_path):
@@ -158,7 +159,7 @@ def test_the_app_start_file_runs_the_menu_bar_only_when_opened_as_the_app():
     assert not app_boot.opened_as_the_app(["/usr/bin/python3"], "/usr/bin/python3")
 
 
-def test_a_stale_app_is_found_and_repaired_for_real(tmp_path):
+def test_a_stale_app_is_found_and_repaired_for_real(tmp_path, monkeypatch):
     # #37 (2026-11-22): the app carries a copy of Python and a pointer to the
     # folder Omna is installed in. When an update moves Omna to another Python,
     # that folder is gone: the menu bar silently never starts. `omna ensure`
@@ -174,9 +175,32 @@ def test_a_stale_app_is_found_and_repaired_for_real(tmp_path):
     pth = next((dest / "Contents" / "lib").rglob("omna_a_installed_code.pth"))
     pth.write_text(str(tmp_path / "gone" / "site-packages") + "\n")     # the update deleted it
     assert app_bundle.stale(dest, **k) is True
+    monkeypatch.setattr(app_bundle, "_is_the_installed_omna", lambda: True)   # as the installed omna would
     assert app_bundle.repair_if_stale(dest, **k) is True
     assert app_bundle.stale(dest, **k) is False
     py = dest / "Contents" / "MacOS" / app_bundle.PY_NAME
     r = subprocess.run([str(py), "-c", "import omna_plugin.mac.app_boot; print('ok')"], capture_output=True, text=True, timeout=60)
     assert r.stdout.strip() == "ok", r.stderr[-400:]
     assert app_bundle.repair_if_stale(dest, **k) is False             # nothing to do the second time
+
+
+def test_the_test_suite_can_never_touch_the_real_app():
+    # 2026-11-22: during tonight's work the REAL /Applications/Omna Plugin.app
+    # was rebuilt to point at the development copy. Tests are walled off.
+    assert str(app_bundle.APP_PATH) != "/Applications/Omna Plugin.app"
+
+
+def test_repair_only_from_the_installed_omna(tmp_path, monkeypatch):
+    # A development copy (repo .venv) must never rebuild the app to point at itself.
+    from pathlib import Path
+    k = app_bundle.own_python()
+    if not k:
+        return
+    dest = tmp_path / "Omna Plugin.app"
+    app_bundle.install(Path("/usr/local/bin/omna"), dest=dest, log=tmp_path / "m.log", **k)
+    pth = next((dest / "Contents" / "lib").rglob("omna_a_installed_code.pth"))
+    pth.write_text(str(tmp_path / "gone") + "\n")
+    monkeypatch.setattr(app_bundle, "_is_the_installed_omna", lambda: False)
+    assert app_bundle.repair_if_stale(dest, **k) is False
+    monkeypatch.setattr(app_bundle, "_is_the_installed_omna", lambda: True)
+    assert app_bundle.repair_if_stale(dest, **k) is True

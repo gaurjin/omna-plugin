@@ -130,10 +130,25 @@ def stale(dest: Path = APP_PATH, *, python: Path | None = None, tool_prefix: Pat
             or pths[0].parent.parent.name != f"python{py_version}")
 
 
-def repair_if_stale(dest: Path = APP_PATH, **python_kw) -> bool:
-    """Rebuild the app when stale(); True when it did. Quiet, never raises."""
+def _is_the_installed_omna() -> bool:
+    """Is this Python the one the `omna` command a client runs belongs to?
+    A development copy (a repo's .venv) must never rebuild the real app to
+    point at itself (2026-11-22: it did, and the menu bar ran dev code)."""
+    omna = shutil.which("omna")
+    if not omna:
+        return False
     try:
-        if not stale(dest, **python_kw):
+        return Path(omna).resolve().parent.parent == Path(sys.prefix).resolve()
+    except OSError:
+        return False
+
+
+def repair_if_stale(dest: Path | None = None, **python_kw) -> bool:
+    """Rebuild the app when stale(); True when it did. Quiet, never raises.
+    Only the installed Omna repairs, never a development copy."""
+    dest = APP_PATH if dest is None else dest
+    try:
+        if not _is_the_installed_omna() or not stale(dest, **python_kw):
             return False
         install(Path(shutil.which("omna") or sys.argv[0]), dest=dest, **python_kw)
         return True
