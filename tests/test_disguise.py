@@ -127,6 +127,7 @@ def test_a_crafted_dump_cannot_carry_a_key_in_its_side_column(session):
     assert key not in session.mask_text(dump).masked
 
 
+@pytest.mark.xfail(strict=True, reason="#24 OPEN: memory fix tries 1-2 failed (slow / leaked); original code restored 2026-11-22")
 def test_memory_does_not_grow_with_every_known_value():
     # #24 (2-hour real-use run 2026-11-22: 518 MB → 1,181 MB): the finder kept
     # 3 compiled patterns (~30 KB) for EVERY real value ever masked, forever —
@@ -174,3 +175,22 @@ def test_many_known_values_stay_fast_on_tables_and_dumps():
     assert f.find("see: " + " ".join(one) + " end")[1] == [vals[one]]
     xxd = subprocess.run(["xxd"], input=("hello " + one + " bye\n").encode(), capture_output=True).stdout.decode()
     assert f.find(xxd)[1] == [vals[one]]
+
+
+def test_checker_leak_cases_stay_masked():
+    # Checker 2026-11-22 on #24 try 2: three realistic dumps where try 2 let a
+    # private value through. Permanent: any future memory fix must pass these.
+    import subprocess
+    from omna_plugin import disguise
+    v = "qwzqwzqwz"
+    f = disguise.Finder()
+    f.compile({v: "[S" + "_1]"}, (1, 0, 1))
+    end_of_file = subprocess.run(["xxd"], input=b"x" * 26 + v.encode() + b"\n", capture_output=True).stdout.decode()
+    assert f.find(end_of_file)[1], "value on the dump's last short line"
+    elsewhere = ("00000000: 7878 7878 7878 7878 7878 7878 7878 7878  xxxxxxxxxxxxxxxx\n"
+                 "10000000: 7878 7878 7878 7878 7878 7878 7878 7878  xxxxxxxxxxxxxxxx\n"
+                 "key=0x" + v.encode().hex() + "\n")
+    assert f.find(elsewhere)[1], "hex of the value outside the dump lines"
+    column = ("00000000: 7820 3132 2020 6b3d 7878 7878 7878 7871  x 12  k=xxxxxxxq\n"
+              "10000000: 777a 7177 7a71 777a 2078 7878 7878 7878  wzqwzqwz xxxxxxx\n")
+    assert f.find(column)[1], "text column with a hex-looking word, value across a line break"

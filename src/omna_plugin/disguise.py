@@ -30,7 +30,6 @@ README, not hidden.
 from __future__ import annotations
 
 import binascii
-import functools
 import re
 from urllib.parse import quote
 
@@ -63,44 +62,6 @@ _HEX_LINE = re.compile(r"(?m)^(?:[0-9a-fA-F]{6,8}:?)?((?:[ \t]+[0-9a-fA-F]{2,8})
 # them).
 _SPREAD_GATE = re.compile(r"(?<!\S)\S(?:" + _SEP + r"\S(?!\S)){5}")
 
-
-# #24 try 2 (checker 2026-11-22): with thousands of known values, building
-# each value's pattern for every table-like text cost seconds. Instead, the
-# spread-out stretches and the hex columns are found ONCE per text, collapsed
-# to plain characters, and a value's pattern is built only if the value (or
-# its reverse / its hex) is in that collapsed text — a necessary condition, so
-# results do not change.
-_SPREAD_RUN = re.compile(r"\S(?:" + _SEP + r"\S)+")
-_SEP_RX = re.compile(_SEP)
-
-
-def _spread_letters(text: str) -> str:
-    """Every spread-out stretch, separators removed, joined by a NUL."""
-    out = []
-    for m in _SPREAD_RUN.finditer(text):
-        out.append("".join(_SEP_RX.split(m.group(0))))
-    return "\x00".join(out)
-
-
-_HEX_WORD = re.compile(r"(?<!\S)[0-9a-fA-F]{2,8}(?!\S)")
-
-
-def _dump_hex(text: str) -> str:
-    """A dump's hex columns, lower case, as streams joined by NUL: whole hex
-    words only (a text column like "6C({o@" is not one), offsets left out;
-    a second stream also drops what follows a line's last double space —
-    where xxd and hexdump put the text column, which can look like hex
-    ("prefix text AbCd")."""
-    full, trimmed = [], []
-    for line in text.splitlines():
-        m = _HEX_LINE.match(line)
-        if not m:
-            continue
-        body = line[m.start(1):]
-        full += _HEX_WORD.findall(body)
-        cut = [m.start() for m in re.finditer(r"[ \t]{2,}", body.rstrip())]
-        trimmed += _HEX_WORD.findall(body[:cut[-1]] if cut else body)
-    return ("".join(full) + "\x00" + "".join(trimmed)).lower()
 
 def _char_dump(text: str) -> str | None:
     body = _OFFSET_LINE.sub("", text)
@@ -221,45 +182,21 @@ def _spread(chars: list[str]) -> str:
 
 
 
-# #24 (2-hour real-use run, 2026-11-22): every entry used to hold 3 compiled
-# patterns (~30-50 KB) for as long as the service ran — memory grew with every
-# real value ever masked (147 MB for 3,000 values). They are needed only for
-# rare texts (a spread-out value, a hex dump), so they are built on use and at
-# most _RX_KEEP are kept. Same patterns, same results.
-_RX_KEEP = 1024
-
-
-@functools.lru_cache(maxsize=_RX_KEEP)
-def _rx(kind: str, core: str, hexed: str) -> re.Pattern:
-    if kind == "spread":
-        chars = [re.escape(c) for c in core]
-        return re.compile(f"{_spread(chars)}|{_spread(chars[::-1])}")
-    pairs = [f"(?i:{hexed[i:i + 2]})" for i in range(0, len(hexed), 2)]
-    return re.compile((r"\s*" if kind == "hex_run" else _HEX_SEP).join(pairs))
-
-
 class _Entry:
-    __slots__ = ("stand_in", "core", "back", "enc", "hex_plain")
+    __slots__ = ("stand_in", "back", "enc", "spread", "hexed", "hex_plain", "hex_run")
 
     def __init__(self, value: str, stand_in: str) -> None:
-        self.core = _WS.sub("", value)
+        core = _WS.sub("", value)
         self.stand_in = stand_in
-        self.back = self.core[::-1]
+        self.back = core[::-1]
         enc = quote(value, safe="")
         self.enc = (enc, enc.lower()) if enc != value else ()
-        self.hex_plain = value.encode("utf-8").hex()
-
-    @property
-    def spread(self) -> re.Pattern:
-        return _rx("spread", self.core, "")
-
-    @property
-    def hex_run(self) -> re.Pattern:
-        return _rx("hex_run", "", self.hex_plain)
-
-    @property
-    def hexed(self) -> re.Pattern:
-        return _rx("hexed", "", self.hex_plain)
+        chars = [re.escape(c) for c in core]
+        self.spread = re.compile(f"{_spread(chars)}|{_spread(chars[::-1])}")
+        hexed = value.encode("utf-8").hex()
+        self.hex_plain = hexed
+        self.hex_run = re.compile(r"\s*".join(f"(?i:{hexed[i:i + 2]})" for i in range(0, len(hexed), 2)))
+        self.hexed = re.compile(_HEX_SEP.join(f"(?i:{hexed[i:i + 2]})" for i in range(0, len(hexed), 2)))
 
 
 class Finder:
@@ -288,8 +225,6 @@ class Finder:
         spread = _SPREAD_GATE.search(text) is not None
         dump = len(_HEX_LINE.findall(text)) >= 2
         flat = _WS.sub("", text).lower()
-        letters = _spread_letters(text) if spread else ""
-        hexes = _dump_hex(text) if dump else ""
         for e in self._entries.values():
             if not dump and e.hex_plain in flat:       # hex in one run (xxd -p wraps lines)
                 text, n = e.hex_run.subn(e.stand_in, text)
@@ -303,10 +238,8 @@ class Finder:
                     if enc in text:
                         used += [e.stand_in] * text.count(enc)
                         text = text.replace(enc, e.stand_in)
-            for name, on in (("spread", spread and (e.core in letters or e.back in letters)),
-                             ("hexed", dump and e.hex_plain in hexes)):
+            for rx, on in ((e.spread, spread), (e.hexed, dump)):
                 if on:
-                    rx = getattr(e, name)
                     text, n = rx.subn(e.stand_in, text)
                     used += [e.stand_in] * n
         return text, used
