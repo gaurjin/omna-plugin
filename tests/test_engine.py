@@ -585,3 +585,90 @@ def test_a_plain_path_under_home_is_not_a_personal_url(home, monkeypatch):
     fake2 = {"spans": [{"start": 0, "end": len(text2), "entity": "PERSONAL_URL", "layer": "L3", "token": "[PERSONAL_URL" + "_1]"}], "audit": []}
     monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake2 if t == text2 else {"spans": [], "audit": []})
     assert "acme-mail" not in MaskingSession().mask_text(text2).masked
+
+
+def _one_catch(monkeypatch, text, a, b, entity, layer="L3"):
+    from omna_plugin import smart as smart_models
+    fake = {"spans": [{"start": a, "end": b, "entity": entity, "layer": layer, "token": "[" + entity + "_1]"}], "audit": []}
+    monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake if t == text else {"spans": [], "audit": []})
+    return MaskingSession().mask_text(text).masked
+
+
+def test_a_catch_in_the_middle_of_a_home_path_is_not_a_value(home, monkeypatch):
+    # Gate G13 (#30): the compact model caught only "plugin/smart.py", the END
+    # of a path under the home folder (a folder name with a space before it).
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    text = "then open /Users/priyar/Developer/Omna Labs/omna-plugin/src/omna_plugin/smart.py and run it"
+    a = text.index("plugin/smart.py")
+    assert _one_catch(monkeypatch, text, a, a + len("plugin/smart.py"), "PERSONAL_URL") == text
+
+
+def test_a_value_after_a_home_path_is_still_masked(home, monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    # a name as its own word after the path: not inside the path
+    t1 = "see /Users/priyar/notes.txt Maria Lopez said so"
+    a = t1.index("Maria")
+    assert "Maria" not in _one_catch(monkeypatch, t1, a, a + len("Maria Lopez"), "PERSON")
+    # grep output: a value after ":" is not part of the path
+    t2 = "/Users/priyar/app/.env:3:OWNER=maria_lopez"
+    a = t2.index("maria_lopez")
+    assert "maria_lopez" not in _one_catch(monkeypatch, t2, a, len(t2), "PERSON")
+    # a long number inside the caught piece stays masked
+    t3 = "/Users/priyar/clients/acct_48213377/file.txt"
+    a = t3.index("acct_")
+    assert "48213377" not in _one_catch(monkeypatch, t3, a, a + len("acct_48213377"), "FINANCIAL")
+    # a secret (L2) is never dropped for the path
+    t4 = "/Users/priyar/keys/sk_live_abcdefghijklmnop"
+    a = t4.index("sk_live")
+    assert "sk_live" not in _one_catch(monkeypatch, t4, a, len(t4), "SECRET", layer="L2")
+
+
+def test_our_company_name_is_never_masked(home, monkeypatch):
+    # #31 (owner 2026-11-22: "never mask Omna in any case"): the compact model
+    # calls "Omna" a PERSON in the owner's own messages.
+    for word in ("Omna", "OMNA", "omna", "Omna's", "Omna Labs", "Omna for Chrome", "Omna Plugin",
+                 "omna.dev", "omna.dev/admin/dashboard", "https://omna.dev/cli/install.sh"):
+        text = f"Open {word}, then ship."
+        a = text.index(word)
+        for kind in ("PERSON", "ORGANIZATION", "ADDRESS", "PERSONAL_URL", "DIGITAL_ID"):
+            assert _one_catch(monkeypatch, text, a, a + len(word), kind) == text, (word, kind)
+
+
+def test_a_catch_with_more_than_our_name_stays_masked(home, monkeypatch):
+    # Only a catch made of our name alone is spared — never a person, an email
+    # at our domain, a secret, or a web address carrying values.
+    cases = [("Omna Tiwari joined the call.", "Omna Tiwari", "PERSON"),
+             ("Kiji Watanabe called.", "Kiji Watanabe", "PERSON"),
+             ("mail ana" + "@omna.dev today", "ana" + "@omna.dev", "EMAIL"),
+             ("go to omna.dev/r?email=ana" + "@x.com now", "omna.dev/r?email=ana" + "@x.com", "PERSONAL_URL"),
+             ("key omna_" + "sk_live_51HxQ2aBcD9eF now", "omna_" + "sk_live_51HxQ2aBcD9eF", "SECRET")]
+    for text, value, kind in cases:
+        a = text.index(value)
+        layer = "L2" if kind == "SECRET" else "L3"
+        assert value not in _one_catch(monkeypatch, text, a, a + len(value), kind, layer=layer), text
+
+
+def test_checker_leaks_after_a_home_path_stay_masked(home, monkeypatch):
+    # Fresh checker 2026-11-21 on the first G13 fix: the walk back to the home
+    # folder crossed spaces into ordinary words, and dropped IP, MAC and names.
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    ip = "10.4.2" + ".17"
+    mac = "a4:83:e7:1f:" + "2b:9c"
+    cases = [
+        ("/Users/priyar/logs/host-" + ip + ".log", ip, "IP_ADDRESS"),
+        ("/Users/priyar/vpn/" + ip + "/config.ovpn", ip, "IP_ADDRESS"),
+        ("/Users/priyar/dev/" + mac + ".cfg", mac, "DEVICE_ID"),
+        ("see /Users/priyar/logs and host-" + ip + " was the attacker", ip, "IP_ADDRESS"),
+        ("/Users/priyar/dev and flash board-" + mac + " today", mac, "DEVICE_ID"),
+        ("/Users/priyar/dev then call Lopez/Maria later", "Maria", "PERSON"),
+        ("/Users/priyar/dev then call Lopez/Maria later", "Maria", "PERSONAL_URL"),
+        ("/Users/priyar/notes/linkedin.com/in/maria-lopez", "linkedin.com/in/maria-lopez", "PERSONAL_URL"),
+    ]
+    for text, value, kind in cases:
+        a = text.index(value)
+        assert value not in _one_catch(monkeypatch, text, a, a + len(value), kind), (text, kind)
+
+

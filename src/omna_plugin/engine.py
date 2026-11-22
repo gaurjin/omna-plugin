@@ -1156,6 +1156,44 @@ def _secret_fingerprint(value: str) -> str:
 # Words the masking engine has flagged as a person's name that never are one
 # (client test 2026-11-21: "Wi-Fi" as PERSON, from a rule). Exact words only.
 NOT_NAMES = frozenset({"wi-fi", "wi\u2011fi", "wifi"})
+# Our own company name is never private (owner 2026-11-22, #31: "never mask
+# Omna in any case"). A catch made only of these words is dropped: "Omna",
+# "OMNA", "Omna's", "Omna Labs", "Omna for Chrome". A catch with any other
+# word in it ("Omna Tiwari") stays masked as a whole.
+BRAND_WORDS = frozenset({"omna", "labs", "plugin", "for", "chrome", "s"})
+
+
+def _only_our_name(seg: str) -> bool:
+    words = [w.lower() for w in re.findall(r"[A-Za-z0-9]+", seg)]
+    if "omna" in words and all(w in BRAND_WORDS for w in words):
+        return True
+    # Our own website's address ("omna.dev/admin/dashboard"), never an email
+    # (no @) and never one carrying values (no ? = &).
+    return bool(_OUR_SITE.fullmatch(seg.strip()))
+
+
+_OUR_SITE = re.compile(r"(?:https?://)?(?:www\.)?omna\.dev(?:/[A-Za-z0-9._\-/]*)?", re.I)
+
+
+# The characters a plain folder path is made of. A walk back from a catch to
+# the home folder through only these (no newline, no @ = ? : & ,) means the
+# catch sits inside that one path.
+_PATH_CHARS = re.compile(r"[A-Za-z0-9._\-/ ]*")
+
+
+def _inside_home_path(text: str, a: int, homes: list) -> bool:
+    """Does the catch starting at ``a`` begin in the middle of a plain path
+    under the home folder (e.g. ".../src/omna_plugin/smart.py" caught from
+    "plugin")? Only mid-word: a catch after a space is its own word."""
+    if a == 0 or text[a - 1].isspace():
+        return False
+    for s, e in homes:
+        if e <= a and _PATH_CHARS.fullmatch(text, e, a):
+            # A space may only lead into another folder name ("Omna Labs/x"),
+            # never into ordinary words ("…/logs and host-…": checker 2026-11-21).
+            if all("/" in piece for piece in text[e:a].split(" ")[1:]):
+                return True
+    return False
 
 
 def _home_dirs() -> list[str]:
@@ -1198,7 +1236,15 @@ def _drop_not_values(text: str, raw: dict, issued=lambda t: True) -> dict:
             if (any(s <= a <= e for s, e in homes) and seg.startswith(("/", "U", "~"))
                     and not re.search(r"[@=?:&,]|\d{4,}|\s", seg)):
                 continue
+            # The same, for a catch that begins mid-path (gate G13).
+            # Only a PERSONAL_URL catch (never a name, IP or MAC address), and
+            # never one shaped like a web address ("linkedin.com/in/…").
+            if (sp.get("entity") == "PERSONAL_URL" and _inside_home_path(text, a, homes)
+                    and not re.search(r"[@=?:&,]|\d{4,}|\s|\.[A-Za-z]{2,}/", seg)):
+                continue
             if sp.get("entity") == "PERSON" and text[a:b].strip().lower() in NOT_NAMES:
+                continue
+            if _only_our_name(text[a:b]):
                 continue
         keep.append(idx)
     if len(keep) == len(raw["spans"]):
