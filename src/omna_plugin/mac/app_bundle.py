@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from xml.sax.saxutils import escape as _xml_escape
 
@@ -22,20 +23,21 @@ from .. import config
 APP_NAME = "Omna Plugin"
 APP_PATH = Path("/Applications") / f"{APP_NAME}.app"
 BUNDLE_ID = "dev.omna.plugin.app"
-BIN_NAME = "omna-plugin-launcher"
+BIN_NAME = "omna-plugin-launcher"   # the old shell launcher (kept for a packaged build)
+PY_NAME = "omna-menubar"            # #35: the app's own Python (see mac/app_boot.py)
 LOGIN_ITEM_FLAG = "login_item_enabled.flag"
 ICON_NAME = "AppIcon"
 ICON_SRC = Path(__file__).parent.parent / "assets" / f"{ICON_NAME}.icns"
 
 
-def _info_plist() -> str:
+def _info_plist(main: str = BIN_NAME) -> str:
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key><string>{_xml_escape(APP_NAME)}</string>
   <key>CFBundleIdentifier</key><string>{BUNDLE_ID}</string>
-  <key>CFBundleExecutable</key><string>{_xml_escape(BIN_NAME)}</string>
+  <key>CFBundleExecutable</key><string>{_xml_escape(main)}</string>
   <key>CFBundleIconFile</key><string>{ICON_NAME}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>1.0</string>
@@ -58,19 +60,55 @@ def _launcher_script(omna_bin: Path, log: Path) -> str:
     return f"#!/bin/sh\nexec {_sh_quote(str(omna_bin))} menubar >>{log_x} 2>&1\n"
 
 
-def install(omna_bin: Path, *, dest: Path = APP_PATH, log: Path | None = None) -> Path:
-    """Write (or overwrite) the bundle. Idempotent — safe to call on every `omna init`."""
+def install(omna_bin: Path, *, dest: Path = APP_PATH, log: Path | None = None,
+            python: Path | None = None, tool_prefix: Path | None = None,
+            site_packages: Path | None = None, py_version: str | None = None) -> Path:
+    """Write (or overwrite) the bundle. Idempotent — safe to call on every `omna init`.
+
+    With ``python`` (the curl command's own interpreter file), the app's main
+    program is a copy of it (#35: macOS 27 shows the icon only then); it finds
+    the installed code through ``pyvenv.cfg`` and a ``.pth`` pointer, and
+    ``mac/app_boot.py`` starts the menu bar. Without it (a packaged build),
+    the old shell launcher."""
     macos_dir = dest / "Contents" / "MacOS"
     resources_dir = dest / "Contents" / "Resources"
+    shutil.rmtree(macos_dir, ignore_errors=True)     # never leave the other kind of launcher
+    shutil.rmtree(dest / "Contents" / "lib", ignore_errors=True)
     macos_dir.mkdir(parents=True, exist_ok=True)
     resources_dir.mkdir(parents=True, exist_ok=True)
-    (dest / "Contents" / "Info.plist").write_text(_info_plist())
-    launcher = macos_dir / BIN_NAME
-    launcher.write_text(_launcher_script(omna_bin, log or config.menubar_log_path()))
-    os.chmod(launcher, 0o755)
+    if python is not None and tool_prefix is not None and site_packages is not None and py_version:
+        (dest / "Contents" / "Info.plist").write_text(_info_plist(PY_NAME))
+        main = macos_dir / PY_NAME
+        shutil.copyfile(python, main)                 # a real copy: a link is not "inside the app"
+        os.chmod(main, 0o755)
+        shutil.copyfile(tool_prefix / "pyvenv.cfg", dest / "Contents" / "pyvenv.cfg")
+        here = dest / "Contents" / "lib" / f"python{py_version}" / "site-packages"
+        here.mkdir(parents=True, exist_ok=True)
+        # .pth files run in name order: the pointer to the installed code first.
+        (here / "omna_a_installed_code.pth").write_text(f"{site_packages}\n")
+        (here / "omna_b_start_menu_bar.pth").write_text("import omna_plugin.mac.app_boot\n")
+    else:
+        (dest / "Contents" / "Info.plist").write_text(_info_plist())
+        launcher = macos_dir / BIN_NAME
+        launcher.write_text(_launcher_script(omna_bin, log or config.menubar_log_path()))
+        os.chmod(launcher, 0o755)
     if ICON_SRC.exists():
         shutil.copyfile(ICON_SRC, resources_dir / f"{ICON_NAME}.icns")
     return dest
+
+
+def own_python() -> dict:
+    """What ``install`` needs to make this Python the app's main program, or
+    {} for a packaged build (no separate Python to copy)."""
+    if getattr(sys, "frozen", False):
+        return {}
+    prefix = Path(sys.prefix)
+    import omna_plugin
+    if not (prefix / "pyvenv.cfg").exists():
+        return {}
+    return {"python": Path(sys.executable).resolve(), "tool_prefix": prefix,
+            "site_packages": Path(omna_plugin.__file__).resolve().parent.parent,
+            "py_version": f"{sys.version_info[0]}.{sys.version_info[1]}"}
 
 
 def remove(dest: Path = APP_PATH) -> None:

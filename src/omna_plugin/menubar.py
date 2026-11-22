@@ -279,12 +279,39 @@ def _poll_once(icon, state: dict, port: int) -> None:
     if h is None:
         _ensure_daemon(state)
         h = _health(port)
-    try:
-        icon.icon = _icon_image(bool(h))
-    except Exception:  # noqa: BLE001 — the icon must keep running (#18)
-        pass
-    icon.title = "\n".join(status_lines(h))
-    icon.update_menu()
+    on = bool(h)
+    lines = status_lines(h)
+
+    def draw() -> None:
+        # #35: macOS 27 lets only the main thread change a menu-bar icon;
+        # from this check thread it trapped the process or left no icon.
+        try:
+            icon.icon = _icon_image(on)
+        except Exception:  # noqa: BLE001 — the icon must keep running (#18)
+            pass
+        icon.title = "\n".join(lines)
+        icon.update_menu()
+
+    _on_main(draw)
+
+
+
+def _setup(icon, state: dict, port: int) -> None:
+    """pystray's start-up step. It runs on pystray's own thread, so the icon is
+    shown on the main thread (#35: macOS 27 raced it — sometimes no icon,
+    always none when the app was opened from Finder)."""
+    _on_main(lambda: setattr(icon, "visible", True))
+    threading.Thread(target=_poll_forever, args=(icon, state, port), daemon=True).start()
+
+def _on_main(fn) -> None:
+    """Run ``fn`` on the main thread (the one that owns the icon) on a Mac;
+    elsewhere, right here."""
+    if sys.platform == "darwin":
+        from PyObjCTools import AppHelper
+
+        AppHelper.callAfter(fn)
+    else:
+        fn()
 
 
 def _poll_forever(icon, state: dict, port: int, sleep=time.sleep) -> None:
@@ -305,6 +332,8 @@ def _poll_forever(icon, state: dict, port: int, sleep=time.sleep) -> None:
 # counts — never an editor, grep or rg that merely mentions "omna menubar"
 # (checker 2026-11-21).
 _MENUBAR_CMD = re.compile(r"(?:/bin/omna|python\S*(?: -\S+)* -m omna_plugin\.cli) menubar(?: --port \d+)?$")
+# #35: the Omna Plugin app's own Python, opened with no arguments.
+_APP_MENUBAR = re.compile(r"\.app/Contents/MacOS/omna-menubar$")
 
 
 def stop_other_menu_bars() -> None:
@@ -333,7 +362,8 @@ def stop_other_menu_bars() -> None:
         except ValueError:
             continue
         name = program.get(pid_s, "")
-        if pid == me or not (name.startswith("python") or name == "omna") or not _MENUBAR_CMD.search(command):
+        is_app = name == "omna-menubar" and bool(_APP_MENUBAR.search(command))
+        if pid == me or not (is_app or ((name.startswith("python") or name == "omna") and _MENUBAR_CMD.search(command))):
             continue
         try:
             os.kill(pid, signal.SIGTERM)
@@ -385,9 +415,5 @@ def run(port: int = config.DEFAULT_PORT) -> int:
 
     icon = pystray.Icon("omna", _icon_image(False), "Omna", menu=pystray.Menu(menu_items))
 
-    def setup(icon) -> None:
-        icon.visible = True
-        threading.Thread(target=_poll_forever, args=(icon, state, port), daemon=True).start()
-
-    icon.run(setup=setup)
+    icon.run(setup=lambda i: _setup(i, state, port))
     return 0

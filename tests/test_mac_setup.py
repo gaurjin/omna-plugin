@@ -105,7 +105,7 @@ def test_apply_never_installs_a_raw_launchd_agent_and_uses_the_branded_login_ite
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
     app_path = tmp_path / "Omna Plugin.app"
-    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: app_path)
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin, **kw: app_path)
     install_calls = []
     remove_calls = []
     login_item_calls = []
@@ -319,7 +319,7 @@ def test_apply_wires_vscode_when_installed(monkeypatch, tmp_path):
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
     app_path = tmp_path / "Omna Plugin.app"
-    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: app_path)
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin, **kw: app_path)
     monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: None)
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.vscode, "installed", lambda: True)
@@ -342,7 +342,7 @@ def test_apply_reports_vscode_ca_trust_skip_alongside_a_successful_proxy_write(m
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
-    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: tmp_path / "Omna Plugin.app")
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin, **kw: tmp_path / "Omna Plugin.app")
     monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: None)
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.vscode, "installed", lambda: True)
@@ -360,7 +360,7 @@ def test_apply_skips_vscode_entirely_when_not_installed(monkeypatch, tmp_path):
     monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
-    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: tmp_path / "Omna Plugin.app")
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin, **kw: tmp_path / "Omna Plugin.app")
     monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: None)
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.vscode, "init_proxy_setting", lambda: (_ for _ in ()).throw(AssertionError("must not touch VS Code")))
@@ -470,7 +470,7 @@ def test_init_closes_an_old_menu_bar_before_opening_the_app(monkeypatch, tmp_pat
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
     app_path = tmp_path / "Omna Plugin.app"
-    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: app_path)
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin, **kw: app_path)
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
     monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: None)
     order = []

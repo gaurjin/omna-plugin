@@ -60,7 +60,7 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
     # from before this changed. It supervises the daemon as a plain subprocess.
     launchd.remove()
     launchd.remove(label=launchd.MENUBAR_LABEL)
-    app_path = app_bundle.install(omna_bin)
+    app_path = app_bundle.install(omna_bin, **app_bundle.own_python())   # #35
     app_bundle.enable_login_item(app_path=app_path)
     # #35: an old menu bar still running (e.g. from a tool folder an upgrade
     # just deleted) would turn this `open` into a no-op. Close it first.

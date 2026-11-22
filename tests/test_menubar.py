@@ -336,3 +336,66 @@ def test_closing_old_menu_bars_never_touches_unrelated_programs(monkeypatch):
     monkeypatch.setattr(menubar.os, "kill", lambda pid, sig: sent.append(pid))
     _real_stop_other_menu_bars()
     assert sorted(sent) == [11, 12], sent
+
+
+def test_the_check_round_changes_the_icon_only_on_the_main_thread(monkeypatch):
+    # #35 (2026-11-21, macOS 27): the background check set the icon's picture,
+    # tooltip and menu from its own thread; macOS traps that (crash report:
+    # -[NSStatusItem setMenu:] -> assertBarrierOnQueue) or leaves no icon.
+    class Icon:
+        def __init__(self):
+            self.changes = []
+
+        def __setattr__(self, k, v):
+            if k != "changes":
+                self.changes.append(k)
+            object.__setattr__(self, k, v)
+
+        def update_menu(self):
+            self.changes.append("menu")
+
+    handed = []
+    monkeypatch.setattr(menubar, "_on_main", handed.append, raising=False)
+    monkeypatch.setattr(menubar, "_health", lambda port: {"ok": True})
+    icon = Icon()
+    menubar._poll_once(icon, {"paused": False}, 7788)
+    assert icon.changes == [], f"changed off the main thread: {icon.changes}"
+    assert len(handed) == 1
+    handed[0]()
+    assert "menu" in icon.changes and "icon" in icon.changes
+
+
+def test_start_up_shows_the_icon_only_on_the_main_thread(monkeypatch):
+    # #35: pystray runs ``setup`` on its own thread; showing the icon from there
+    # raced macOS 27 (icon there in some starts, missing in others; always
+    # missing when the app was opened from Finder).
+    class Icon:
+        visible = False
+
+    handed = []
+    started = []
+    monkeypatch.setattr(menubar, "_on_main", handed.append, raising=False)
+    monkeypatch.setattr(menubar.threading, "Thread", lambda **kw: type("T", (), {"start": lambda self: started.append(kw)})())
+    icon = Icon()
+    menubar._setup(icon, {"paused": False}, 7788)
+    assert icon.visible is False, "shown off the main thread"
+    assert len(handed) == 1 and len(started) == 1
+    handed[0]()
+    assert icon.visible is True
+
+
+def test_the_app_menu_bar_counts_as_a_menu_bar(monkeypatch):
+    # #35: the app's main program is now its own Python, "omna-menubar".
+    import os
+    import signal
+    me = os.getpid()
+    app = "/Applications/Omna Plugin.app/Contents/MacOS/omna-menubar"
+    listing = f"{me} /x/python -m omna_plugin.cli menubar\n2001 {app}\n2002 {app} -m omna_plugin.cli ensure\n77 /x/python -m omna_plugin.cli start --port 7788\n"
+    comm = f"{me} /x/python\n2001 {app}\n2002 {app}\n77 /x/python\n"
+    monkeypatch.setattr(menubar.subprocess, "run",
+                        lambda cmd, **k: type("R", (), {"stdout": comm if "comm=" in cmd[-1] else listing, "returncode": 0})())
+    sent = []
+    monkeypatch.setattr(menubar.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _real_stop_other_menu_bars()
+    assert (2001, signal.SIGTERM) in sent, "the app's menu bar was left running"
+    assert all(pid not in (2002, 77, me) for pid, _ in sent), sent
