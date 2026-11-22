@@ -74,6 +74,12 @@ class Policy:
     # Smart masking (on-device models): "on" | "off". ON by default since
     # 0.6.15 (owner 2026-11-01: "on with the compact model"); `omna smart off`.
     smart: str = "on"
+    # The OpenAI privacy-filter model (part of smart masking): "on" | "off".
+    # OFF by default (owner 2026-11-22: speed and leaks are the two winning
+    # metrics; one long text pushed the service to 9.5 GB, #24): the compact
+    # model + fast rules run. Kept as an opt-in, never deleted:
+    # `omna privacy-filter on`. Old settings files without it get "off".
+    privacy_filter: str = "off"
     # Crash reports: "unset" | "on" | "off". OFF until the person says yes —
     # the only posture consistent with "nothing is
     # sent to Omna". The difference from a hidden opt-in is that we ASK, once,
@@ -127,6 +133,8 @@ class Policy:
             pol.cors_origins = [str(o) for o in data.get("cors_origins", [])]
             sm = str(data.get("smart", "on"))
             pol.smart = sm if sm in ("on", "off") else "on"
+            pf = str(data.get("privacy_filter", "off"))
+            pol.privacy_filter = pf if pf in ("on", "off") else "off"
             cr = str(data.get("crash_reports", "unset"))
             pol.crash_reports = cr if cr in ("unset", "on", "off") else "unset"
             pol.tls_strict = bool(data.get("tls_strict", False))
@@ -158,6 +166,7 @@ class Policy:
             "restore_secrets": self.restore_secrets,
             "cors_origins": self.cors_origins,
             "smart": self.smart,
+            "privacy_filter": self.privacy_filter,
             "crash_reports": self.crash_reports,
             "tls_strict": self.tls_strict,
             "tls_pins": self.tls_pins,

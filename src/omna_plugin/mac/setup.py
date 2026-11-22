@@ -62,6 +62,10 @@ def apply(api_port: int = config.DEFAULT_PORT) -> dict:
     launchd.remove(label=launchd.MENUBAR_LABEL)
     app_path = app_bundle.install(omna_bin)
     app_bundle.enable_login_item(app_path=app_path)
+    # #35: an old menu bar still running (e.g. from a tool folder an upgrade
+    # just deleted) would turn this `open` into a no-op. Close it first.
+    from .. import menubar
+    menubar.stop_other_menu_bars()
     subprocess.run(["open", str(app_path)], capture_output=True)
     vs_code = None
     if vscode.installed():
@@ -114,7 +118,7 @@ def revert() -> dict:
         pid = int(config.pid_path().read_text().strip() or 0)
     except (FileNotFoundError, ValueError):
         pid = 0
-    subprocess.run(["omna", "stop"], capture_output=True)
+    subprocess.run(config.self_command() + ["stop"], capture_output=True)
     if pid:
         _wait_for_daemon_exit(pid)
     launchd.remove()

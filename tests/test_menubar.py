@@ -1,7 +1,10 @@
 from PIL import Image
 
 from omna_plugin import menubar
+_real_stop_other_menu_bars = menubar.stop_other_menu_bars  # captured before conftest's guard patches it
 from omna_plugin.mac import app_bundle, launchd
+
+SELF = __import__('omna_plugin.config', fromlist=['x']).self_command()   # how the menu bar runs omna (#34)
 
 
 def test_status_lines_not_running(tmp_path, monkeypatch):
@@ -125,7 +128,7 @@ def test_toggle_masking_running_pauses_via_cli_stop_and_sets_paused_flag(monkeyp
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
     state = {"paused": False}
     menubar._toggle_masking({"doors": {}}, state)
-    assert calls == [["omna", "stop"]]
+    assert calls == [SELF + ["stop"]]
     assert state["paused"] is True
 
 
@@ -134,7 +137,7 @@ def test_toggle_masking_not_running_resumes_via_cli_start_and_clears_paused_flag
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
     state = {"paused": True}
     menubar._toggle_masking(None, state)
-    assert calls == [["omna", "start", "-d"]]
+    assert calls == [SELF + ["start", "-d"]]
     assert state["paused"] is False
 
 
@@ -142,7 +145,7 @@ def test_ensure_daemon_calls_omna_ensure_when_not_paused(monkeypatch):
     calls = []
     monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
     menubar._ensure_daemon({"paused": False})
-    assert calls == [["omna", "ensure"]]
+    assert calls == [SELF + ["ensure"]]
 
 
 def test_ensure_daemon_does_nothing_when_paused(monkeypatch):
@@ -228,3 +231,108 @@ def test_the_icon_survives_its_file_vanishing_during_an_upgrade(monkeypatch, tmp
     monkeypatch.setattr(menubar, "LOGO_PATH", tmp_path / "gone.png")
     img = menubar._icon_image(True)
     assert img.size[0] > 0
+
+
+def test_menu_bar_runs_omna_by_full_path_not_by_name(monkeypatch):
+    # #34 (2026-11-21): the menu bar is started by macOS at login, where PATH
+    # does not include ~/.local/bin. ["omna", "ensure"] failed every 4 s with
+    # "No such file or directory: 'omna'": the curl command was never brought
+    # back after it went down, and the whole Mac lost its AI traffic.
+    import os
+    calls = []
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(menubar.subprocess, "run", lambda cmd, **k: calls.append(cmd))
+    monkeypatch.setattr(menubar.pause, "end", lambda *a, **k: None)
+    monkeypatch.setattr(menubar.pause, "begin", lambda *a, **k: None, raising=False)
+    menubar._ensure_daemon({"paused": False})
+    menubar._resume({"paused": True}, "click")
+    menubar._toggle_masking(None, {"paused": False})
+    assert len(calls) == 3
+    for cmd in calls:
+        assert os.path.isabs(cmd[0]) and os.path.exists(cmd[0]), f"menu bar runs {cmd!r}: not a full path"
+
+
+# ---------------------------------------------------------------- #35: no menu-bar icon after an upgrade
+# Owner, 2026-11-21: no Omna icon in the menu bar, and clicking
+# /Applications/Omna Plugin.app did nothing. The running menu bar came from a
+# tool folder an upgrade had deleted; its poll thread died on its first error
+# (FileNotFoundError 'omna'), so crash recovery stopped for good; and because
+# it was still running, macOS only "activated" it on a click.
+
+class _PollIcon:
+    def __init__(self):
+        self.icon = None
+        self.title = ""
+
+    def update_menu(self):
+        pass
+
+
+def test_one_error_never_ends_the_menu_bar_crash_recovery(monkeypatch):
+    calls = []
+
+    def flaky_ensure(state):
+        calls.append(1)
+        if len(calls) == 1:
+            raise FileNotFoundError("omna")
+
+    monkeypatch.setattr(menubar, "_health", lambda port: None)
+    monkeypatch.setattr(menubar, "_ensure_daemon", flaky_ensure)
+    naps = []
+
+    def sleep(s):
+        naps.append(s)
+        if len(naps) == 3:
+            raise SystemExit                 # end the test after three rounds
+
+    try:
+        menubar._poll_forever(_PollIcon(), {"paused": False}, 7788, sleep=sleep)
+    except SystemExit:
+        pass
+    assert len(calls) == 3, f"crash recovery stopped after the first error ({len(calls)} round(s) ran)"
+
+
+def test_a_new_menu_bar_replaces_an_old_one_still_running(monkeypatch):
+    import os
+    import signal
+    me = os.getpid()
+    listing = f"{me} /x/python -m omna_plugin.cli menubar\n1012 /old/python3.12 /old/bin/omna menubar\n77 /x/python -m omna_plugin.cli start --port 7788\n"
+    comm = f"{me} /x/python\n1012 /old/python3.12\n77 /x/python\n"
+    monkeypatch.setattr(menubar.subprocess, "run",
+                        lambda cmd, **k: type("R", (), {"stdout": comm if "comm=" in cmd[-1] else listing, "returncode": 0})())
+    sent = []
+    monkeypatch.setattr(menubar.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    _real_stop_other_menu_bars()
+    assert (1012, signal.SIGTERM) in sent, "the old menu bar was left running"
+    assert all(pid != me for pid, _ in sent), "it stopped itself"
+    assert all(pid != 77 for pid, _ in sent), "it stopped the curl command (plugin/proxy) service — must never happen"
+
+
+
+def test_closing_old_menu_bars_never_touches_unrelated_programs(monkeypatch):
+    # Checker 2026-11-21: the pattern also matched editors and searches.
+    import signal
+    listing = "\n".join([
+        "11 /Users/x/.local/share/uv/tools/omna-plugin/bin/python /Users/x/.local/share/uv/tools/omna-plugin/bin/omna menubar",
+        "12 /Users/x/Omna Labs/omna-plugin/.venv/bin/python -m omna_plugin.cli menubar --port 7788",
+        "21 vim /tmp/omna menubar notes",
+        "22 grep /omna menubar",
+        "23 rg omna_plugin.cli menubar src/",
+        "24 python3 -c import omna_plugin.cli menubar",
+        "25 /x/python -m omna_plugin.cli start --port 7788",
+        "26 tail -f /Users/x/.omna/menubar.log",
+        "27 less /bin/omna menubar",
+        "28 sh -c echo python -m omna_plugin.cli menubar",
+        "29 /usr/bin/vim /tmp/bin/omna menubar",
+    ]) + "\n"
+    # What program each process really is (ps comm): checker 2, 2026-11-21.
+    programs = {"11": "/Users/x/.local/share/uv/tools/omna-plugin/bin/python", "12": "/Users/x/Omna Labs/omna-plugin/.venv/bin/python",
+                "21": "vim", "22": "grep", "23": "rg", "24": "/usr/bin/python3", "25": "/x/python", "26": "tail",
+                "27": "/usr/bin/less", "28": "/bin/sh", "29": "/usr/bin/vim"}
+    comm = "".join(f"{k} {v}\n" for k, v in programs.items())
+    monkeypatch.setattr(menubar.subprocess, "run",
+                        lambda cmd, **k: type("R", (), {"stdout": comm if "comm=" in cmd[-1] else listing, "returncode": 0})())
+    sent = []
+    monkeypatch.setattr(menubar.os, "kill", lambda pid, sig: sent.append(pid))
+    _real_stop_other_menu_bars()
+    assert sorted(sent) == [11, 12], sent

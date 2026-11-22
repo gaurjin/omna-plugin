@@ -3,6 +3,8 @@ import pytest
 from omna_plugin.cli import main
 from omna_plugin.cli import _restart_daemon as _real_restart_daemon  # captured before the autouse fixture below can patch it
 from omna_plugin.policy import Policy
+from omna_plugin import cli as _cli_module
+_real_hand_off_restart = getattr(_cli_module, "_hand_off_restart", None)  # captured before the autouse fixture below can patch it
 
 
 @pytest.fixture(autouse=True)
@@ -18,6 +20,15 @@ def no_restart(monkeypatch):
     calls = []
     monkeypatch.setattr("omna_plugin.cli._restart_daemon", lambda a=None, **kw: calls.append((a, kw)))
     return calls
+
+
+@pytest.fixture(autouse=True)
+def restart_in_this_process(monkeypatch):
+    """#34b: a real restart is handed to a separate helper process. The tests
+    of the restart's own steps run those steps right here instead; the
+    hand-off itself is tested on its own (see _real_hand_off_restart)."""
+    from omna_plugin import cli
+    monkeypatch.setattr("omna_plugin.cli._hand_off_restart", cli._restart_here)
 
 
 @pytest.fixture(autouse=True)
@@ -392,7 +403,7 @@ def test_restart_daemon_respawns_with_the_same_smart_and_secrets_mode(monkeypatc
     pol.restore_secrets = False       # the SAVED setting decides (lead L1), not the daemon's answer
     pol.save()
     killed = []
-    monkeypatch.setattr("os.kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr("os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()) if sig == 0 else killed.append(pid))  # closes at once
     spawned = []
     monkeypatch.setattr("omna_plugin.cli._spawn", lambda port, smart, no_restore_secrets=False: spawned.append((port, smart, no_restore_secrets)))
 
@@ -425,7 +436,7 @@ def test_restart_daemon_warns_when_the_respawned_proxy_never_comes_up(monkeypatc
     pidfile.write_text("4242")
     monkeypatch.setattr("omna_plugin.config.pid_path", lambda: pidfile)
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"smart": False, "restore_secrets": True})
-    monkeypatch.setattr("os.kill", lambda pid, sig: None)
+    monkeypatch.setattr("os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()) if sig == 0 else None)  # closes at once
     monkeypatch.setattr("omna_plugin.cli._spawn", lambda port, smart, no_restore_secrets=False: 4243)
     monkeypatch.setattr("omna_plugin.cli._wait_healthy", lambda port, seconds: None)
 
@@ -433,6 +444,70 @@ def test_restart_daemon_warns_when_the_respawned_proxy_never_comes_up(monkeypatc
     out, err = capsys.readouterr()
     assert "did not come back up" in err
 
+
+
+def test_restart_daemon_waits_for_the_old_copy_to_close_before_starting_the_new(monkeypatch, tmp_path):
+    # Regression (owner, 2026-11-21): `omna privacy-filter off` from inside
+    # Claude Code started the new copy while the old one was still closing.
+    # The new copy saw it answering, said "already running" and quit; then the
+    # old one finished closing. Nothing ran, and Claude Code got "Connection
+    # refused". The new copy may start only once the old process has exited.
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: tmp_path / "missing.plist")
+    pidfile = tmp_path / "omna.pid"
+    pidfile.write_text("4242")
+    monkeypatch.setattr("omna_plugin.config.pid_path", lambda: pidfile)
+    closing = {"checks_left": 5}            # the old copy needs a few moments to close
+
+    def fake_kill(pid, sig):
+        assert pid == 4242
+        if sig == 0:                        # "are you still there?"
+            if closing["checks_left"] > 0:
+                closing["checks_left"] -= 1
+                return None
+            raise ProcessLookupError
+
+    monkeypatch.setattr("os.kill", fake_kill)
+    monkeypatch.setattr("omna_plugin.cli._health",
+                        lambda port: {"smart": False} if closing["checks_left"] > 0 else None)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    started_while_old_alive = []
+    monkeypatch.setattr("omna_plugin.cli._spawn",
+                        lambda port, smart, no_restore_secrets=False: started_while_old_alive.append(closing["checks_left"] > 0) or 4243)
+    monkeypatch.setattr("omna_plugin.cli._wait_healthy", lambda port, seconds: {"engine": "x"})
+
+    _real_restart_daemon()
+    assert started_while_old_alive == [False], "the new copy started while the old one was still closing"
+
+
+def test_restart_daemon_force_stops_an_old_copy_that_never_closes(monkeypatch, tmp_path):
+    # If the old copy hangs, it is force-stopped (SIGKILL) so the new one can start.
+    import signal as _signal
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: tmp_path / "missing.plist")
+    pidfile = tmp_path / "omna.pid"
+    pidfile.write_text("4242")
+    monkeypatch.setattr("omna_plugin.config.pid_path", lambda: pidfile)
+    sent = []
+    alive = {"v": True}
+
+    def fake_kill(pid, sig):
+        sent.append(sig)
+        if sig == _signal.SIGKILL:
+            alive["v"] = False
+        if sig == 0 and not alive["v"]:
+            raise ProcessLookupError
+
+    monkeypatch.setattr("os.kill", fake_kill)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)
+    clock = {"t": 0.0}
+    monkeypatch.setattr("time.monotonic", lambda: clock["t"])
+    monkeypatch.setattr("time.sleep", lambda s: clock.__setitem__("t", clock["t"] + s))
+    spawned = []
+    monkeypatch.setattr("omna_plugin.cli._spawn", lambda port, smart, no_restore_secrets=False: spawned.append(alive["v"]) or 4243)
+    monkeypatch.setattr("omna_plugin.cli._wait_healthy", lambda port, seconds: {"engine": "x"})
+
+    _real_restart_daemon()
+    assert _signal.SIGKILL in sent
+    assert spawned == [False]
 
 # ---------------------------------------------------------------- enrolment
 def test_enroll_sets_org_dept_and_mints_a_device_id(capsys):
@@ -1037,3 +1112,237 @@ def test_output_cut_short_is_not_a_crash(monkeypatch):
     monkeypatch.setattr(cli, "build_parser", lambda: type("P", (), {"parse_args": lambda self, argv: type("A", (), {"cmd": "version", "fn": staticmethod(lambda a: (_ for _ in ()).throw(BrokenPipeError()))})()})())
     assert cli.main(["version"]) == 0
     assert saved == []
+
+
+# ---------------------------------------------------------------- #33b: no second copy during a restart
+# Found by the checker 2026-11-21: the restart deleted omna.pid before the old
+# copy had exited. `omna ensure` (the menu bar every 4 s, Claude Code's
+# SessionStart hook) saw nothing answering in that gap and started a SECOND
+# copy; omna.pid then named a dead process and `omna stop` / settings changes
+# silently did nothing. Gate check G14 counts the starts on the real Mac.
+
+def _restart_with_old_copy_closing(monkeypatch, tmp_path, during_close=None, during_wait=None):
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: tmp_path / "missing.plist")
+    pidfile = tmp_path / "omna.pid"
+    pidfile.write_text("4242")
+    monkeypatch.setattr("omna_plugin.config.pid_path", lambda: pidfile)
+    closing = {"checks_left": 3}
+    seen = []
+
+    def fake_kill(pid, sig):
+        if pid != 4242:
+            return None                             # any other process: alive
+        if sig == 0:
+            seen.append(pidfile.read_text() if pidfile.exists() else None)
+            if closing["checks_left"] > 0:
+                closing["checks_left"] -= 1
+                if during_close and closing["checks_left"] == 1:
+                    during_close()
+                return None
+            raise ProcessLookupError
+
+    inside = []
+
+    def fake_wait_healthy(port, seconds):
+        if during_wait and not inside:          # only the restart's own wait, not one inside `ensure`
+            inside.append(1)
+            during_wait()
+            inside.pop()
+        return {"engine": "x"}
+
+    monkeypatch.setattr("os.kill", fake_kill)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"smart": False})
+    monkeypatch.setattr("omna_plugin.cli._wait_healthy", fake_wait_healthy)
+    spawned = []
+    monkeypatch.setattr("omna_plugin.cli._spawn",
+                        lambda port, smart, no_restore_secrets=False: spawned.append(port) or pidfile.write_text("4243") or 4243)
+    return pidfile, seen, spawned
+
+
+def test_restart_keeps_omna_pid_naming_the_old_copy_until_it_has_exited(monkeypatch, tmp_path):
+    pidfile, seen, spawned = _restart_with_old_copy_closing(monkeypatch, tmp_path)
+    _real_restart_daemon()
+    assert seen and all(s == "4242" for s in seen), f"omna.pid while the old copy was closing: {seen}"
+    assert pidfile.read_text() == "4243" and spawned == [7788]
+
+
+def test_ensure_during_a_restart_does_not_start_a_second_copy(monkeypatch, tmp_path):
+    results = []
+    run_ensure = lambda: results.append(main(["ensure"]))
+    pidfile, seen, spawned = _restart_with_old_copy_closing(monkeypatch, tmp_path,
+                                                             during_close=run_ensure, during_wait=run_ensure)
+    monkeypatch.setattr("omna_plugin.cli._who_answers", lambda port: "nobody")
+    monkeypatch.setattr("omna_plugin.cli._pair_chrome", lambda quiet=False: None)
+    _real_restart_daemon()
+    assert results == [0, 0]
+    assert spawned == [7788], "`omna ensure` started a second copy during the restart"
+    from omna_plugin import config
+    assert not config.restart_lock_path().exists(), "the restart note must be gone once the restart is over"
+
+
+def test_a_restart_note_left_by_a_dead_restart_does_not_block_ensure(monkeypatch):
+    # If the restarting command itself was killed, its note must not stop
+    # `omna ensure` from bringing the service back for good.
+    from omna_plugin import config
+    config.ensure_home()
+    config.restart_lock_path().write_text("999999")          # no such process
+    monkeypatch.setattr("os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()) if pid == 999999 else None)
+    spawned = _spawn_recorder(monkeypatch)
+    assert main(["ensure"]) == 0
+    assert spawned == [False]
+
+
+def test_start_d_waits_for_a_restart_in_progress_instead_of_starting_a_second_copy(monkeypatch):
+    # The menu bar's Resume runs `omna start -d`.
+    import os as _os
+    from omna_plugin import config
+    config.ensure_home()
+    lock = config.restart_lock_path()
+    lock.write_text(str(_os.getpid()))                        # a live restarter
+    naps = {"n": 0}
+
+    def fake_sleep(s):
+        naps["n"] += 1
+        if naps["n"] == 3:
+            lock.unlink()                                     # the restart finishes
+    monkeypatch.setattr("time.sleep", fake_sleep)
+    spawned = _spawn_recorder(monkeypatch)
+    monkeypatch.setattr("omna_plugin.cli._who_answers", lambda port: "nobody" if lock.exists() else "omna")
+    assert main(["start", "-d"]) == 0
+    assert spawned == [], "`omna start -d` started a second copy during a restart"
+
+
+def test_stop_does_not_claim_success_when_the_named_copy_is_gone_but_one_still_answers(monkeypatch, tmp_path, capsys):
+    # #33b(b): omna.pid named a dead process while another copy kept running;
+    # `omna stop` said "stopped" and nothing stopped.
+    from omna_plugin import config
+    config.ensure_home()
+    config.pid_path().write_text("999999")
+    monkeypatch.setattr("os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()))
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"smart": False})
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    assert main(["stop"]) == 1
+    out = capsys.readouterr().out
+    assert "stopped —" not in out and "still running" in out
+
+
+def test_stop_with_an_empty_omna_pid_never_signals_process_zero(monkeypatch, capsys):
+    # os.kill(0, …) signals the caller's whole process group.
+    from omna_plugin import config
+    config.ensure_home()
+    config.pid_path().write_text("")
+    sent = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: sent.append(pid))
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)
+    main(["stop"])
+    assert 0 not in sent
+
+
+
+# ---------------------------------------------------------------- #34b: a restart that is killed halfway still finishes
+# Owner, 2026-11-21: the chat was interrupted while `omna privacy-filter off`
+# was restarting the service. The old copy had been stopped, the new one was
+# never started, and the whole Mac lost its AI traffic ("connection refused").
+# The restart's steps now run in a separate helper process, in its own
+# session, so killing the command (Ctrl-C, a cut chat) cannot reach it.
+
+class _FakeHelper:
+    def __init__(self, pid=5151, wait_raises=None):
+        self.pid = pid
+        self.wait_raises = wait_raises
+        self.signals = []
+
+    def wait(self, timeout=None):
+        if self.wait_raises:
+            raise self.wait_raises
+        return 0
+
+    def terminate(self):
+        self.signals.append("terminate")
+
+    def kill(self):
+        self.signals.append("kill")
+
+
+def _hand_off_setup(monkeypatch, tmp_path, helper):
+    monkeypatch.setattr("omna_plugin.mac.launchd.plist_path", lambda: tmp_path / "missing.plist")
+    from omna_plugin import config
+    config.ensure_home()
+    config.pid_path().write_text("4242")
+    monkeypatch.setattr("omna_plugin.cli._hand_off_restart", _real_hand_off_restart)
+    monkeypatch.setattr("omna_plugin.cli._health", lambda port: {"smart": True})
+    monkeypatch.setattr("omna_plugin.cli._wait_healthy", lambda port, seconds: {"engine": "x"})
+    stopped = []
+    monkeypatch.setattr("os.kill", lambda pid, sig: stopped.append((pid, sig)))
+    monkeypatch.setattr("omna_plugin.cli._spawn", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the command itself must not start the new copy")))
+    started = []
+
+    def fake_popen(cmd, **kw):
+        started.append((cmd, kw))
+        return helper
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    return config, started, stopped
+
+
+def test_restart_is_handed_to_a_helper_the_command_kill_cannot_reach(monkeypatch, tmp_path):
+    assert _real_hand_off_restart is not None, "no restart hand-off exists yet"
+    helper = _FakeHelper()
+    config, started, stopped = _hand_off_setup(monkeypatch, tmp_path, helper)
+    _real_restart_daemon()
+    assert len(started) == 1, "the restart was not handed to a helper process"
+    cmd, kw = started[0]
+    assert cmd[-4:-1] == ["restart-worker", "--port", "7788"] and cmd[-1] == "--smart", cmd
+    assert kw.get("start_new_session") is True, "the helper must run in its own session, out of reach of Ctrl-C / a cut chat"
+    assert kw.get("stdin") is not None, "the helper must not read from the command's terminal"
+    assert stopped == [], "the command itself stopped the old copy; only the helper may"
+
+
+def test_killing_the_restart_command_leaves_the_helper_running(monkeypatch, tmp_path):
+    assert _real_hand_off_restart is not None, "no restart hand-off exists yet"
+    helper = _FakeHelper(wait_raises=KeyboardInterrupt())
+    config, started, stopped = _hand_off_setup(monkeypatch, tmp_path, helper)
+    with pytest.raises(KeyboardInterrupt):
+        _real_restart_daemon()
+    assert helper.signals == [], "the command took the helper down with it"
+    assert config.restart_lock_path().read_text() == str(helper.pid), \
+        "the restart note must name the helper, so `omna ensure` waits for it and does not start a second copy"
+
+
+def test_restart_command_says_so_when_the_service_is_not_back_after_the_helper(monkeypatch, tmp_path, capsys):
+    assert _real_hand_off_restart is not None, "no restart hand-off exists yet"
+    helper = _FakeHelper()
+    _hand_off_setup(monkeypatch, tmp_path, helper)
+    monkeypatch.setattr("omna_plugin.cli._wait_healthy", lambda port, seconds: None)
+    _real_restart_daemon()
+    assert "did not come back up" in capsys.readouterr().err
+
+
+def test_restart_worker_command_replaces_the_copy_and_clears_its_note(monkeypatch, tmp_path):
+    import os as _os
+    from omna_plugin import config
+    config.ensure_home()
+    config.pid_path().write_text("4242")
+    config.restart_lock_path().write_text(str(_os.getpid()))   # written by the command that started this helper
+    monkeypatch.setattr("os.kill", lambda pid, sig: (_ for _ in ()).throw(ProcessLookupError()) if sig == 0 else None)
+    spawned = []
+    monkeypatch.setattr("omna_plugin.cli._spawn", lambda port, smart, no_restore_secrets=False: spawned.append((port, smart, no_restore_secrets)) or 4243)
+    monkeypatch.setattr("omna_plugin.cli._wait_healthy", lambda port, seconds: {"engine": "x"})
+    assert main(["restart-worker", "--port", "7788", "--smart", "--no-restore-secrets"]) == 0
+    assert spawned == [(7788, True, True)]
+    assert not config.restart_lock_path().exists(), "the restart note must be gone once the helper is done"
+
+
+def test_the_copy_a_restart_helper_starts_does_not_wait_for_that_same_restart(monkeypatch):
+    # Checker 2026-11-21 (seen in a real run): the helper starts the new copy
+    # with `omna start`; that copy saw the restart note (naming the helper, its
+    # own parent) and waited for the restart to finish, while the helper
+    # waited for it to answer. Omna stayed down ~1 minute after every change.
+    import os as _os
+    from omna_plugin import config
+    config.ensure_home()
+    config.restart_lock_path().write_text(str(_os.getppid()))     # the note names OUR parent = the helper
+    monkeypatch.setattr("time.sleep", lambda s: (_ for _ in ()).throw(AssertionError("the helper's own new copy waited for the helper")))
+    monkeypatch.setattr("omna_plugin.cli._who_answers", lambda port: "omna")
+    assert main(["start"]) == 0

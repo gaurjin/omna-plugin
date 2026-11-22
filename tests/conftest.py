@@ -48,3 +48,13 @@ def _never_send_install_counts(monkeypatch):
     omna.dev. No test may reach the network or inflate the real count; the
     tests for that ping (test_installping.py) turn this back on with a fake."""
     monkeypatch.setenv("OMNA_NO_TELEMETRY", "1")
+
+
+@pytest.fixture(autouse=True)
+def _never_close_real_menu_bars(monkeypatch):
+    """#35: stop_other_menu_bars() closes Omna menu-bar processes on this Mac.
+    No test may close the developer's real one: it is a no-op unless a test
+    calls the real function with its own fake process list."""
+    from omna_plugin import menubar
+
+    monkeypatch.setattr(menubar, "stop_other_menu_bars", lambda: None)

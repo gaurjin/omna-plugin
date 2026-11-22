@@ -10,6 +10,9 @@ non-technical person sees exactly one entry in System Settings → Login Items.
 
 from __future__ import annotations
 
+import os
+import re
+import signal
 import subprocess
 import sys
 import threading
@@ -122,7 +125,7 @@ def _toggle_masking(h: dict | None, state: dict) -> None:
     if h:
         state["paused"] = True
         pause.begin("menubar")
-        subprocess.run(["omna", "stop"], capture_output=True)
+        subprocess.run(config.self_command() + ["stop"], capture_output=True)
     else:
         _resume(state, "click")
 
@@ -130,7 +133,7 @@ def _toggle_masking(h: dict | None, state: dict) -> None:
 def _resume(state: dict, why: str) -> None:
     state["paused"] = False
     pause.end(why)
-    subprocess.run(["omna", "start", "-d"], capture_output=True)
+    subprocess.run(config.self_command() + ["start", "-d"], capture_output=True)
 
 
 def _end_pause_if_over(state: dict) -> bool:
@@ -147,7 +150,7 @@ def _ensure_daemon(state: dict) -> None:
     Never runs while `state["paused"]` is set."""
     if state["paused"]:
         return
-    subprocess.run(["omna", "ensure"], capture_output=True)
+    subprocess.run(config.self_command() + ["ensure"], capture_output=True)
 
 
 def _toggle_login_item() -> None:
@@ -270,8 +273,78 @@ def _confirm_and_uninstall(icon, state: dict) -> None:
     icon.stop()
 
 
+def _poll_once(icon, state: dict, port: int) -> None:
+    _end_pause_if_over(state)
+    h = _health(port)
+    if h is None:
+        _ensure_daemon(state)
+        h = _health(port)
+    try:
+        icon.icon = _icon_image(bool(h))
+    except Exception:  # noqa: BLE001 — the icon must keep running (#18)
+        pass
+    icon.title = "\n".join(status_lines(h))
+    icon.update_menu()
+
+
+def _poll_forever(icon, state: dict, port: int, sleep=time.sleep) -> None:
+    """Every POLL_SECONDS: crash recovery + the icon. One error must never end
+    it (#35, 2026-11-21: a single FileNotFoundError on the first round stopped
+    crash recovery for good, and nobody noticed for two hours)."""
+    while True:
+        try:
+            _poll_once(icon, state, port)
+        except Exception as e:  # noqa: BLE001 — written to menubar.log, then the next round
+            print(f"omna menubar: poll round failed: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        sleep(POLL_SECONDS)
+
+
+# A menu-bar process, either way it can be started: `.../bin/omna menubar`
+# (the app's launcher) or `python -m omna_plugin.cli menubar`.
+# Only a command line that ENDS like one of those (plus an optional --port N)
+# counts — never an editor, grep or rg that merely mentions "omna menubar"
+# (checker 2026-11-21).
+_MENUBAR_CMD = re.compile(r"(?:/bin/omna|python\S*(?: -\S+)* -m omna_plugin\.cli) menubar(?: --port \d+)?$")
+
+
+def stop_other_menu_bars() -> None:
+    """#35: close every OTHER Omna menu-bar process. An old one — still running
+    from a tool folder an upgrade deleted — shows no icon and makes a click on
+    the app (or `omna init`'s `open`) do nothing, because macOS only brings the
+    running one forward. Only menu-bar processes are touched; the curl command
+    (plugin/proxy) service keeps running."""
+    try:
+        out = getattr(subprocess.run(["ps", "-axo", "pid=,command="], capture_output=True, text=True), "stdout", "")
+        progs = getattr(subprocess.run(["ps", "-axo", "pid=,comm="], capture_output=True, text=True), "stdout", "")
+    except OSError:
+        return
+    # What program each process really is. A menu bar is always Python (or the
+    # packaged `omna`) — never less, vim, grep or sh that merely shows the
+    # words "omna menubar" (checker 2, 2026-11-21).
+    program = {}
+    for line in (progs or "").splitlines():
+        pid_s, _, prog = line.strip().partition(" ")
+        program[pid_s] = prog.strip().rsplit("/", 1)[-1]
+    me = os.getpid()
+    for line in (out or "").splitlines():
+        pid_s, _, command = line.strip().partition(" ")
+        try:
+            pid = int(pid_s)
+        except ValueError:
+            continue
+        name = program.get(pid_s, "")
+        if pid == me or not (name.startswith("python") or name == "omna") or not _MENUBAR_CMD.search(command):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+
 def run(port: int = config.DEFAULT_PORT) -> int:
     import pystray
+
+    stop_other_menu_bars()          # #35: the newest menu bar wins
 
     # A pause survives this process being quit and reopened: it is on disk.
     st = pause.state()
@@ -312,24 +385,9 @@ def run(port: int = config.DEFAULT_PORT) -> int:
 
     icon = pystray.Icon("omna", _icon_image(False), "Omna", menu=pystray.Menu(menu_items))
 
-    def poll() -> None:
-        while True:
-            _end_pause_if_over(state)
-            h = _health(port)
-            if h is None:
-                _ensure_daemon(state)
-                h = _health(port)
-            try:
-                icon.icon = _icon_image(bool(h))
-            except Exception:  # noqa: BLE001 — the icon must keep running (#18)
-                pass
-            icon.title = "\n".join(status_lines(h))
-            icon.update_menu()
-            time.sleep(POLL_SECONDS)
-
     def setup(icon) -> None:
         icon.visible = True
-        threading.Thread(target=poll, daemon=True).start()
+        threading.Thread(target=_poll_forever, args=(icon, state, port), daemon=True).start()
 
     icon.run(setup=setup)
     return 0

@@ -12,10 +12,13 @@ the compact model").
 Which run (``models_here()``):
 
 - Every Mac/PC with smart masking on gets the compact model.
-- The OpenAI privacy filter joins on machines with at least
-  ``FULL_MODEL_MIN_RAM_GB`` of memory; there both read every text and their
-  finds are merged (they leak far less together — measured 2026-11-01, numbers
-  private, MASTER #141).
+- The OpenAI privacy filter is OFF by default (owner 2026-11-22: speed and
+  leaks are the two winning metrics; long pastes took 1.5–14 s with it and one
+  long text pushed the service to 9.5 GB, #24). It is kept, never deleted:
+  ``omna privacy-filter on`` turns it back on, and then it joins on machines
+  with at least ``FULL_MODEL_MIN_RAM_GB`` of memory; there both read every
+  text and their finds are merged (they leak less together — measured
+  2026-11-01, numbers private, MASTER #141).
 - Both download in the BACKGROUND (``start_downloads``): starting Omna never
   waits on a download. Until a model has arrived and passed its pinned-hash
   check it is not used — text gets fast masking (L1/L2) meanwhile.
@@ -106,6 +109,25 @@ def ram_gb() -> float:
         return 0.0
 
 
+_PF_SEEN: list = [None, False]   # (settings file date, privacy filter on?)
+
+
+def privacy_filter_on() -> bool:
+    """Has the person turned the OpenAI privacy filter on (``omna
+    privacy-filter on``)? Off by default. Re-read only when the settings file
+    changes: this runs for every message."""
+    from . import config
+    from .policy import Policy
+
+    try:
+        stamp = config.policy_path().stat().st_mtime_ns
+    except OSError:
+        stamp = 0
+    if _PF_SEEN[0] != (str(config.policy_path()), stamp):
+        _PF_SEEN[:] = [(str(config.policy_path()), stamp), Policy.load().privacy_filter == "on"]
+    return _PF_SEEN[1]
+
+
 def full_model_fits() -> bool:
     """Does the OpenAI privacy filter join on this machine?"""
     return ram_gb() >= FULL_MODEL_MIN_RAM_GB
@@ -113,7 +135,7 @@ def full_model_fits() -> bool:
 
 def models_here() -> list[str]:
     """The smart models this machine runs, in download order (compact first)."""
-    return [COMPACT, PRIVACY_FILTER] if full_model_fits() else [COMPACT]
+    return [COMPACT, PRIVACY_FILTER] if privacy_filter_on() and full_model_fits() else [COMPACT]
 
 
 def ready_models() -> list[str]:

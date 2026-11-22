@@ -48,6 +48,10 @@ def test_security_checks_are_hands_off(host, path):
     ("chatgpt.com", "/realtime/wm"),
     ("www.meta.ai", "/monitoring?o=1"),
     ("www.meta.ai", "/api/analytics"),
+    # #25 (2026-11-21): an idle muse.ai tab — 3,776 values masked, 18 reports rejected
+    ("muse.ai", "/api/falco"),
+    ("muse.ai", "/_vercel/speed-insights/vitals"),
+    ("muse.ai", "/api/marketing/x-marketing/pixel/context"),
 ])
 def test_the_sites_own_reports_are_hands_off(host, path):
     assert hands_off.reason(host, path) == "passthrough-site-report"
@@ -62,6 +66,8 @@ def test_the_sites_own_reports_are_hands_off(host, path):
     ("www.perplexity.ai", "/"),
     # a report path on a site it was not verified on is NOT skipped
     ("chat.deepseek.com", "/monitoring"),
+    ("muse.ai", "/api/hatch/vm/wake"),
+    ("muse.ai", "/thread/abc"),
 ])
 def test_what_you_send_is_never_hands_off(host, path):
     assert hands_off.reason(host, path) is None

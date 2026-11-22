@@ -30,8 +30,12 @@ def calls(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def fresh_models(monkeypatch):
-    """Each test starts with no model downloaded on a 16 GB machine."""
+    """Each test starts with no model downloaded on a 16 GB machine, with the
+    OpenAI privacy filter turned ON (`omna privacy-filter on`): these tests
+    cover the opt-in "both models" path. The default (off) is covered by
+    test_privacy_filter.py."""
     monkeypatch.setenv("OMNA_RAM_GB", "16")
+    monkeypatch.setattr(smart, "privacy_filter_on", lambda: True)
     for e in smart._ready.values():
         e.clear()
     yield

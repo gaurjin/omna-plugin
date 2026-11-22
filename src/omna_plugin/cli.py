@@ -119,6 +119,62 @@ def _wait_healthy(port: int, seconds: float) -> dict | None:
     return None
 
 
+def _wait_exited(pid: int, seconds: float) -> bool:
+    """True once process ``pid`` is gone (its ports are free again)."""
+    end = time.monotonic() + seconds
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return True                     # the number now belongs to someone else's process
+        if time.monotonic() >= end:
+            return False
+        time.sleep(0.2)
+
+
+RESTART_NOTE_MAX_SECONDS = 120
+
+
+def _restart_is_mine() -> bool:
+    """True when the restart note names this process's parent: this copy WAS
+    started by the restart helper, so it is the restart's own new copy and
+    must not wait for that restart (checker 2026-11-21: it did, and the helper
+    waited for it — Omna stayed down about a minute after every change)."""
+    try:
+        return int(config.restart_lock_path().read_text().strip() or 0) == os.getppid()
+    except (OSError, ValueError):
+        return False
+
+
+def _restart_in_progress() -> bool:
+    """#33b: is another `omna` command restarting the service right now? While
+    it is, `omna ensure` and `omna start` must not start a copy of their own:
+    the old copy is closing and the new one is not answering yet, so the
+    service looks down — but a second copy would leave omna.pid naming a dead
+    process. A note left by a restart that died, or is over two minutes old,
+    does not count and is removed."""
+    p = config.restart_lock_path()
+    try:
+        who = int(p.read_text().strip() or 0)
+        age = time.time() - p.stat().st_mtime
+    except (OSError, ValueError):
+        return False
+    alive = False
+    if who and age < RESTART_NOTE_MAX_SECONDS:
+        try:
+            os.kill(who, 0)
+            alive = True
+        except ProcessLookupError:
+            alive = False
+        except PermissionError:
+            alive = True
+    if not alive:
+        p.unlink(missing_ok=True)
+    return alive
+
+
 def _restart_daemon(a=None, smart: bool | None = None) -> None:
     """Called after every policy save. Real behavior (never exercised by a test,
     which always monkeypatches this by name — see the safety rule): if the Mac
@@ -144,10 +200,84 @@ def _restart_daemon(a=None, smart: bool | None = None) -> None:
     # The saved setting, never the dying daemon's answer: when it does not
     # answer, "restore" used to be assumed (lead L1).
     no_restore_secrets = not Policy.load().restore_secrets
+    _hand_off_restart(port, smart, no_restore_secrets)
+
+
+def _restart_here(port: int, smart: bool, no_restore_secrets: bool) -> None:
+    """Do the restart's steps in THIS process, under the restart note. Used by
+    the helper (`omna restart-worker`), and as the fallback when no helper
+    could be started."""
+    lock = config.restart_lock_path()
+    config.ensure_home()
+    lock.write_text(str(os.getpid()))
     try:
-        os.kill(int(p.read_text().strip() or 0), signal.SIGTERM)
-    except (ProcessLookupError, ValueError):
+        _replace_running_copy(config.pid_path(), port, smart, no_restore_secrets)
+    finally:
+        try:
+            if lock.read_text().strip() == str(os.getpid()):
+                lock.unlink()
+        except OSError:
+            pass
+
+
+def _hand_off_restart(port: int, smart: bool, no_restore_secrets: bool) -> None:
+    """#34b: hand the restart to a separate helper process and wait for it.
+
+    Owner, 2026-11-21: the chat was interrupted while `omna privacy-filter off`
+    was restarting the service in this process — the old copy had been stopped,
+    the new one was never started, and the Mac lost its AI traffic. The helper
+    runs in its own session (no terminal, its own process group), so Ctrl-C or
+    a cut chat kills only this command; the helper still finishes the restart.
+    The restart note names the helper, so `omna ensure` waits for it."""
+    config.ensure_home()
+    cmd = (config.self_command() + ["restart-worker", "--port", str(port)]
+           + (["--no-restore-secrets"] if no_restore_secrets else []) + (["--smart"] if smart else []))
+    try:
+        log = open(config.log_path(), "ab")
+        helper = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                  start_new_session=True, close_fds=True)
+    except OSError:
+        _restart_here(port, smart, no_restore_secrets)
+        return
+    config.restart_lock_path().write_text(str(helper.pid))
+    try:
+        helper.wait(timeout=RESTART_NOTE_MAX_SECONDS)
+    except subprocess.TimeoutExpired:
         pass
+    # Never stop the helper here, even when this command is being killed: it
+    # is the only thing that brings the service back.
+    if not _wait_healthy(port, 5):
+        print(f"omna: policy saved, but the proxy did not come back up; see {config.log_path()}", file=sys.stderr)
+
+
+def cmd_restart_worker(a) -> int:
+    """`omna restart-worker` — internal: the helper started by a restart (#34b)."""
+    _restart_here(a.port, bool(a.smart), bool(a.no_restore_secrets))
+    return 0
+
+
+def _replace_running_copy(p, port: int, smart: bool, no_restore_secrets: bool) -> None:
+    """Stop the copy named in omna.pid, wait until it has exited, start a new
+    one and wait for it to answer. Runs under the restart note (#33b)."""
+    try:
+        old = int(p.read_text().strip() or 0)
+        if old:
+            os.kill(old, signal.SIGTERM)
+    except (ProcessLookupError, ValueError):
+        old = 0
+    # omna.pid keeps naming the old copy until it has exited (#33b): deleted
+    # earlier, `omna ensure` saw "not running" and started a second copy.
+    # Wait until the old copy has really exited before starting the new one.
+    # Started too early, the new copy sees the old one still answering, says
+    # "already running" and quits — then the old one finishes closing and
+    # nothing runs (owner, 2026-11-21: Claude Code lost its connection after
+    # `omna privacy-filter off`). A copy that will not close is force-stopped.
+    if old and not _wait_exited(old, 30):
+        try:
+            os.kill(old, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        _wait_exited(old, 5)
     p.unlink(missing_ok=True)
     _spawn(port, smart, no_restore_secrets)
     if not _wait_healthy(port, 60 if smart else 10):
@@ -187,6 +317,11 @@ def _no_restore_secrets_wanted(a) -> bool:
 def cmd_start(a) -> int:
     a.smart = _smart_wanted(a)
     a.no_restore_secrets = _no_restore_secrets_wanted(a)
+    if not _restart_is_mine() and _restart_in_progress():   # #33b: let that restart finish, then look again
+        print("omna: a restart is in progress; waiting for it to finish")
+        end = time.monotonic() + 90
+        while _restart_in_progress() and time.monotonic() < end:
+            time.sleep(0.5)
     who = _who_answers(a.port)
     if who == "omna":
         print(f"omna: already running on {config.base_url(a.port)}")
@@ -233,6 +368,8 @@ def cmd_ensure(a) -> int:
     # Used by the Claude Code SessionStart hook: must be quiet on success
     # (anything printed becomes context for the model).
     write_claude_env_file()
+    if _restart_in_progress():          # #33b: the restart brings it back; a copy of ours would be a second one
+        return 0
     who = _who_answers(a.port)
     if who == "omna":
         return 0
@@ -255,12 +392,32 @@ def cmd_stop(a) -> int:
             return 1
         print("omna: not running")
         return 0
-    pid = int(p.read_text().strip() or 0)
+    try:
+        pid = int(p.read_text().strip() or 0)
+    except ValueError:
+        pid = 0
+    try:
+        if pid <= 0:                    # never os.kill(0, …): that signals our own process group
+            raise ProcessLookupError
+        os.kill(pid, 0)
+        gone_already = False
+    except ProcessLookupError:
+        gone_already = True
+    except PermissionError:
+        gone_already = False
+    if gone_already and _health(a.port):
+        # #33b(b): omna.pid named a process that had already exited, and a
+        # different copy is answering — saying "stopped" would be false.
+        p.unlink(missing_ok=True)
+        print(f"omna: a copy of Omna is still running on {config.base_url(a.port)}, but it is not the one omna.pid named, "
+              f"so it was not stopped. Find it with `lsof -nP -iTCP:{a.port} -sTCP:LISTEN`")
+        return 1
     # Written down BEFORE it goes off (finding 16). The menu bar's Pause has
     # already recorded itself (with its 15-minute end); this is a plain stop.
     pause.begin("stop")
     try:
-        os.kill(pid, signal.SIGTERM)
+        if pid > 0:
+            os.kill(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
     p.unlink(missing_ok=True)
@@ -408,6 +565,44 @@ def cmd_smart(a) -> int:
     return 0
 
 
+PRIVACY_FILTER_OFF_TEXT = ("the OpenAI privacy-filter model is off: faster masking and less memory; "
+                           "the compact model + fast rules still mask secrets and personal data. "
+                           "Turn it on: `omna privacy-filter on`")
+PRIVACY_FILTER_ON_TEXT = ("the OpenAI privacy-filter model is on: it also catches more names and addresses "
+                          "written in sentences, but long pastes are slower and it needs ~2 GB more memory. "
+                          "Turn it off: `omna privacy-filter off`")
+
+
+def privacy_filter_line(pol: Policy) -> str:
+    """The `omna status` line for the opt-in OpenAI privacy-filter model."""
+    from . import smart as smart_models
+
+    if pol.privacy_filter != "on":
+        return "privacy filter: OFF — " + PRIVACY_FILTER_OFF_TEXT
+    if not smart_models.full_model_fits():
+        return (f"privacy filter: ON, but this Mac has under {smart_models.FULL_MODEL_MIN_RAM_GB} GB of memory, "
+                "so it does not run here. Turn it off: `omna privacy-filter off`")
+    return "privacy filter: ON — " + PRIVACY_FILTER_ON_TEXT
+
+
+def cmd_privacy_filter(a) -> int:
+    """`omna privacy-filter [on|off]` — the opt-in OpenAI privacy-filter model
+    (off by default, owner 2026-11-22; kept, never deleted)."""
+    pol = Policy.load()
+    if a.state is None:
+        print(privacy_filter_line(pol))
+        return 0
+    pol.privacy_filter = a.state
+    pol.save()
+    print(privacy_filter_line(pol))
+    if a.state == "on" and pol.smart != "on":
+        print("omna: smart masking is off, so no model runs until `omna smart on`")
+    if a.state == "on":
+        print("omna: its model (~809 MB) downloads once, in the background")
+    _restart_daemon(a, smart=pol.smart == "on")
+    return 0
+
+
 def tool_calls_line(pol: Policy) -> str:
     """One line on what goes back into an agent's tool calls (finding 2)."""
     tc = pol.tool_calls
@@ -517,6 +712,7 @@ def cmd_status(a) -> int:
     if h:
         for line in smart_message(bool(h.get("smart")), h.get("smart_models") or [], h.get("smart_failed") or {}):
             print(line)
+        print(privacy_filter_line(Policy.load()))
     if h:
         from . import pdf as _pdf
 
@@ -1372,6 +1568,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--restore-secrets", action="store_true", help="undo --no-restore-secrets (saved)")
     s.set_defaults(fn=cmd_start)
     s = sub.add_parser("stop", help="stop the background proxy"); add_port(s); s.set_defaults(fn=cmd_stop)
+    s = sub.add_parser("restart-worker", help="internal: finishes a restart even if the command that asked for it is killed"); add_port(s)
+    s.add_argument("--smart", action="store_true"); s.add_argument("--no-restore-secrets", action="store_true")
+    s.set_defaults(fn=cmd_restart_worker)
     s = sub.add_parser("ensure", help="start the background proxy if needed"); add_port(s)
     s.add_argument("--smart", action="store_true"); s.set_defaults(fn=cmd_ensure)
     s = sub.add_parser("status"); add_port(s); s.set_defaults(fn=cmd_status)
@@ -1389,6 +1588,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_port(s); s.set_defaults(fn=cmd_style)
     s = sub.add_parser("smart", help="smart masking on/off (catches names and addresses written in sentences)")
     s.add_argument("state", nargs="?", choices=["on", "off"]); add_port(s); s.set_defaults(fn=cmd_smart)
+    s = sub.add_parser("privacy-filter", help="the OpenAI privacy-filter model on/off (off by default: faster, less memory)")
+    s.add_argument("state", nargs="?", choices=["on", "off"]); add_port(s); s.set_defaults(fn=cmd_privacy_filter)
     s = sub.add_parser("tool-calls", help="what goes back into an agent's commands and files: secrets (off by default), personal data (on)")
     s.add_argument("kind", nargs="?", choices=["secrets", "personal"]); s.add_argument("state", nargs="?", choices=["on", "off"])
     s.set_defaults(fn=cmd_tool_calls)

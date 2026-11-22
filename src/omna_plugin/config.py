@@ -69,6 +69,12 @@ def pid_path() -> Path:
     return home() / "omna.pid"
 
 
+def restart_lock_path() -> Path:
+    """The "restart in progress" note (#33b): holds the process number of the
+    `omna` command that is restarting the service right now."""
+    return home() / "restarting"
+
+
 def log_path() -> Path:
     return home() / "proxy.log"
 

@@ -214,9 +214,9 @@ Measured on a MacBook Air M5 with Claude Code 2.1.274, a 4-request task (read a 
 | fast masking, 68 KB request body | | **16 ms** |
 
 Fast masking (rules + checksums) is the 16 ms. Smart masking (on by default) adds on-device models:
-the compact model alone is ~15 ms a message; with the OpenAI privacy filter too (16 GB machines) a
-typed message is ~0.5 s, 8 KB ~1.5 s, 64 KB ~14 s, measured on the same Mac with 4 cores
-(see [Smart masking](#smart-masking-on-by-default-models-chosen-for-you)).
+the compact model alone is ~15 ms a message (the default); with the opt-in OpenAI privacy filter
+too (`omna privacy-filter on`, 16 GB machines) a typed message is ~0.5 s, 8 KB ~1.5 s, 64 KB ~14 s,
+measured on the same Mac with 4 cores (see [Smart masking](#smart-masking-on-by-default-models-chosen-for-you)).
 
 `omna status` reports the real average for **your** machine and your traffic
 (`avg_mask_ms_this_run`), so you never have to take this table's word for it.
@@ -474,12 +474,17 @@ a caller who types `[EMAIL_1]` gets `[EMAIL_1]` back, never your email.
 
 Smart masking adds on-device AI models on top of the rules, to catch names and addresses written as
 ordinary sentences. It is **on by default**; `omna smart off` turns it off, `omna smart on` back on.
-You never pick a model — Omna picks by the machine:
+Omna picks the model; one opt-in decides whether the larger one joins:
 
 | Model | Download | Memory while running | Runs on |
 |---|---|---|---|
 | Compact model (open source, Apache-2.0) | ~64 MB | ~300 MB | every machine with smart masking on |
-| OpenAI privacy filter (Apache-2.0) | ~809 MB | ~2 GB | machines with 16 GB of memory or more |
+| OpenAI privacy filter (Apache-2.0) | ~809 MB | ~2 GB | **off by default**; after `omna privacy-filter on`, machines with 16 GB of memory or more |
+
+The OpenAI privacy filter is off by default because speed matters as much as catching everything:
+it makes long pastes several times slower and needs ~2 GB more memory. It is kept, never removed:
+`omna privacy-filter on` turns it on (it downloads once, in the background), `omna privacy-filter off`
+turns it off, and `omna status` shows which.
 
 Where both run, **both read every text** and their finds are merged, because each catches things the
 other misses. One exception keeps the browser quick: when Omna for Chrome asks for a message

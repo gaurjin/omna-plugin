@@ -16,6 +16,8 @@ from omna_plugin import menubar, pause, receipts, report
 from omna_plugin.cli import main
 from omna_plugin.policy import Policy
 
+SELF = __import__('omna_plugin.config', fromlist=['x']).self_command()   # how the menu bar runs omna (#34)
+
 
 @pytest.fixture(autouse=True)
 def home(tmp_path, monkeypatch):
@@ -38,7 +40,7 @@ def test_pausing_is_written_down_before_the_proxy_stops(cli_calls):
     state = {"paused": False}
     menubar._toggle_masking({"ok": True}, state)
     assert state["paused"] is True
-    assert cli_calls == [["omna", "stop"]]
+    assert cli_calls == [SELF + ["stop"]]
     assert _notes() == ["protection-paused"]
     rec = receipts.tail(1)[0]
     assert rec["door"] == "control" and rec["auto_end_seconds"] == 15 * 60
@@ -54,7 +56,7 @@ def test_a_pause_ends_by_itself_after_15_minutes(cli_calls, monkeypatch):
     assert menubar._end_pause_if_over(state) is False and state["paused"] is True
     monkeypatch.setattr(pause.time, "time", lambda: since + 15 * 60 + 1)
     assert menubar._end_pause_if_over(state) is True
-    assert state["paused"] is False and cli_calls[-1] == ["omna", "start", "-d"]
+    assert state["paused"] is False and cli_calls[-1] == SELF + ["start", "-d"]
     assert _notes() == ["protection-paused", "protection-resumed"]
     rec = receipts.tail(1)[0]
     assert rec["why"] == "auto" and rec["off_seconds"] == 15 * 60 + 1

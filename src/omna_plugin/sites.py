@@ -238,7 +238,17 @@ SITES: tuple[Site, ...] = (
     )),
     # Meta's personal AI agent, launched 2026-09-08 — handles real tasks:
     # email, bookings, purchases, forms
-    Site("Muse", ("muse.ai",)),
+    Site("Muse", ("muse.ai",), reports=(
+        # #25 (2026-11-21): an idle tab sends these every minute. Masked, 3,776
+        # values were changed with nothing typed and 18 were rejected (400).
+        # /api/falco = Meta's event log {sessionId, user, machineId, events[{event,
+        # timeInMs, payload, rate}]}; payload keys seen live: event names, uri,
+        # action target/type, timings, locale — no message field. Not yet seen
+        # signed in while typing (gate-browser.mjs muse check covers the idle tab).
+        ("muse.ai", r"^/api/falco$"),
+        ("muse.ai", r"^/_vercel/speed-insights/"),
+        ("muse.ai", r"^/api/marketing/x-marketing/pixel/"),
+    )),
 )
 
 # Every other listed AI site: one host each, nothing site-specific known yet.

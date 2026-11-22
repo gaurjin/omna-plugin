@@ -175,7 +175,7 @@ def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monk
 
     # (The look at the network settings is a read: is Omna's routing file still set?)
     assert [c for c in calls if c[:2] != ("networksetup", "-getautoproxyurl")] == [
-        ("omna", "stop"), launchd.LABEL, launchd.MENUBAR_LABEL,
+        tuple(setup.config.self_command() + ["stop"]), launchd.LABEL, launchd.MENUBAR_LABEL,   # #34a: by full path
         "disable_login_item", "remove_app_bundle", "remove_deep_redirector_app",
     ]
 
@@ -460,3 +460,23 @@ def test_the_admin_batch_leaves_no_script_behind(tmp_path, monkeypatch, capsys):
     assert ran == [(["sudo", "sh", "-s"], "set -e\necho one\necho two\n")]
     assert not (tmp_path / "setup.sh").exists()
     assert "echo one" in capsys.readouterr()[0]          # still printed before it runs
+
+
+def test_init_closes_an_old_menu_bar_before_opening_the_app(monkeypatch, tmp_path):
+    # #35: an old menu bar still running from a deleted tool folder made
+    # `open Omna Plugin.app` a no-op (macOS only "activated" the old one).
+    monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
+    monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
+    app_path = tmp_path / "Omna Plugin.app"
+    monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin: app_path)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "enable_login_item", lambda **kw: None)
+    order = []
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: order.append(tuple(cmd)))
+    from omna_plugin import menubar
+    monkeypatch.setattr(menubar, "stop_other_menu_bars", lambda: order.append("stop-old-menu-bars"))
+    setup.apply()
+    assert "stop-old-menu-bars" in order, "the old menu bar was not closed"
+    assert order.index("stop-old-menu-bars") < order.index(("open", str(app_path)))
