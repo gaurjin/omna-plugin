@@ -119,7 +119,7 @@ def test_omna_stop_is_written_down_and_start_closes_it(monkeypatch, capsys, home
 def test_status_names_the_pause_and_the_minutes_left(cli_calls, monkeypatch, capsys):
     menubar._toggle_masking({"ok": True}, {"paused": False})
     monkeypatch.setattr("omna_plugin.cli._health", lambda port: None)
-    main(["status"])
+    main(["status", "--details"])
     out = capsys.readouterr()[0]
     assert "PAUSED" in out and "UNMASKED" in out and "Resumes by itself in 15 min" in out
 
@@ -151,3 +151,64 @@ def test_nothing_is_recorded_when_local_reports_are_off(cli_calls):
     pol.save()
     menubar._toggle_masking({"ok": True}, {"paused": False})
     assert receipts.count() == 0 and pause.state() is not None      # still paused, still ends by itself
+
+
+def test_two_ends_at_once_write_one_resumed_receipt(tmp_path, monkeypatch):
+    # #40: two processes ended the same pause; both wrote "protection-resumed".
+    from omna_plugin import pause
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    written = []
+    monkeypatch.setattr(pause, "_record", lambda note, **kw: written.append(note))
+    pause.begin("stop", now=100.0)
+    written.clear()                                       # only the ends count here
+    have = pause.state()
+    monkeypatch.setattr(pause, "state", lambda: have)     # both saw the note before either removed it
+    assert pause.end("start", now=105.0) is True
+    assert pause.end("start", now=105.0) is False
+    assert written == [pause.NOTE_RESUMED]
+
+
+def test_real_processes_racing_write_one_receipt_each_way(tmp_path):
+    # Checker 2026-11-22 (#40): on APFS two processes deleting the same file can
+    # BOTH be told "deleted", so 12% of real races wrote two "resumed"
+    # receipts; and begin()'s shared temp file crashed one of two stoppers.
+    import os
+    import subprocess
+    import sys
+    env = {**os.environ, "OMNA_HOME": str(tmp_path), "OMNA_REGISTRY_ENCRYPTION": "off", "OMNA_NO_TELEMETRY": "1"}
+    code = ("import sys, time\nfrom omna_plugin import pause\n"
+            "go = float(sys.argv[2])\n"
+            "while time.time() < go: pass\n"
+            "getattr(pause, sys.argv[1])('stop' if sys.argv[1] == 'begin' else 'start')\n")
+    rounds = 25
+    for _ in range(rounds):
+        import time as _t
+        for what in ("begin", "end"):
+            go = str(_t.time() + 0.4)
+            ps = [subprocess.Popen([sys.executable, "-c", code, what, go], env=env, stderr=subprocess.PIPE) for _ in range(4)]
+            errs = [p.communicate(timeout=30)[1] for p in ps]
+            assert all(p.returncode == 0 for p in ps), errs
+    out = subprocess.run([sys.executable, "-c",
+                          "from omna_plugin import receipts\n"
+                          "rs = receipts.tail(0)\n"
+                          "print(sum(r.get('note') == 'protection-stopped' for r in rs), sum(r.get('note') == 'protection-resumed' for r in rs))"],
+                         env=env, capture_output=True, text=True).stdout.split()
+    assert out == [str(rounds), str(rounds)], out
+
+
+def test_a_late_end_records_the_pause_it_really_ended(tmp_path, monkeypatch):
+    # Checker 2026-11-22 (#40 problem A): end() read the note, another process
+    # ended that pause and a new stop began, then end() claimed the NEW one but
+    # wrote the old one's length.
+    from omna_plugin import pause
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    written = []
+    monkeypatch.setattr(pause, "_record", lambda note, **kw: written.append((note, kw)))
+    pause.begin("stop", now=100.0)
+    stale = pause.state()                              # A reads: since 100
+    assert pause.end("start", now=150.0)               # B ends it
+    pause.begin("stop", now=700.0)                     # C stops again
+    written.clear()
+    monkeypatch.setattr(pause, "state", lambda: stale) # A goes on with what it read
+    assert pause.end("start", now=710.0)
+    assert written == [(pause.NOTE_RESUMED, {"off_seconds": 10, "why": "start"})], written

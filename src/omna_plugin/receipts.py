@@ -42,6 +42,7 @@ command runs; they join this chain as ``product: "chrome"``, door "chrome".
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import hmac
 import json
@@ -282,15 +283,26 @@ def append(record: dict) -> dict:
     path = config.receipts_path()
     rec = dict(record)
     rec.setdefault("ts", time.strftime("%Y-%m-%dT%H:%M:%S%z"))
+    key = _key(cached=True)   # before the lock: a Keychain prompt must never hold up other writers (checker D)
     with _LOCK:
-        rec["prev"] = last_hash()
-        rec["hash"] = _hash(rec["prev"], rec)
-        key = _key(cached=True)
-        line = (vault.seal(rec, key) if key
-                else json.dumps(rec, sort_keys=True, separators=(",", ":")))
+        # #40: the thread lock only covers this process. Two processes (a
+        # restart's old and new copy, the menu bar, a command) read the same
+        # last receipt and both chained onto it: the owner's proof broke twice
+        # on 2026-11-21. The file lock is held from reading the last hash until
+        # the new line is written, by every process.
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                _HEAD.pop(str(path), None)        # another process may have written since
+                rec["prev"] = last_hash()
+                rec["hash"] = _hash(rec["prev"], rec)
+                line = (vault.seal(rec, key) if key
+                        else json.dumps(rec, sort_keys=True, separators=(",", ":")))
+                f.write(line + "\n")
+                f.flush()
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         stamp = _stamp(path)
         if stamp is not None:
             _HEAD[str(path)] = (stamp, rec["hash"])

@@ -281,3 +281,21 @@ def test_an_api_address_stays_readable_with_smart_masking_on(tmp_path, monkeypat
     pipe = Pipeline(MaskingSession(smart=True))
     assert pipe.safe_route("/v1/messages?beta=true") == "/v1/messages?beta=true"
     assert asked == [False]
+
+
+def test_several_processes_writing_at_once_keep_the_chain(tmp_path):
+    # #40 (owner's real receipts, 2026-11-22): two processes wrote at the same
+    # moment, chained onto the same previous receipt, and the proof broke.
+    import os
+    import subprocess
+    import sys
+    env = {**os.environ, "OMNA_HOME": str(tmp_path), "OMNA_REGISTRY_ENCRYPTION": "off", "OMNA_NO_TELEMETRY": "1"}
+    code = ("from omna_plugin import receipts\n"
+            "for n in range(30):\n"
+            "    receipts.append({'v': receipts.FORMAT, 'product': 'curl', 'door': 'control', 'route': 't', 'host': '',"
+            " 'status': 0, 'finds': [], 'note': str(n)})\n")
+    ps = [subprocess.Popen([sys.executable, "-c", code], env=env) for _ in range(6)]
+    assert all(p.wait(timeout=60) == 0 for p in ps)
+    out = subprocess.run([sys.executable, "-c", "from omna_plugin import receipts; print(receipts.verify())"],
+                         env=env, capture_output=True, text=True).stdout.strip()
+    assert out.startswith("(True, 180"), out

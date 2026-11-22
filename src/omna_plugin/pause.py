@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 
 from . import config, receipts
@@ -34,6 +35,24 @@ NOTES = (NOTE_PAUSED, NOTE_STOPPED, NOTE_RESUMED)
 
 def path():
     return config.home() / "paused.json"
+
+
+
+def _sweep_leftovers(older_than: float = 60.0) -> None:
+    """Files a process killed halfway through begin()/end() left behind
+    (checker 2026-11-22: they block nothing, but would pile up forever)."""
+    cutoff = time.time() - older_than
+    for f in config.home().glob("paused.json.*"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass
+
+
+def _me() -> str:
+    """A name no other process or thread uses right now."""
+    return f"{os.getpid()}-{threading.get_ident()}"
 
 
 def state() -> dict | None:
@@ -70,11 +89,23 @@ def begin(by: str = "menubar", now: float | None = None) -> dict:
     auto = by == "menubar"
     st = {"since": now, "until": now + PAUSE_SECONDS if auto else 0, "by": by}
     config.ensure_home()
-    tmp = path().with_suffix(".json.tmp")
+    _sweep_leftovers()
+    # #40: a temp file of its own (a shared one crashed one of two stoppers),
+    # and os.link, which fails when the note already exists, so exactly one
+    # process starts the pause and writes its receipt.
+    tmp = path().with_name(f"paused.json.{_me()}.tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         f.write(json.dumps(st))
-    os.replace(tmp, path())
+    try:
+        os.link(tmp, path())
+    except FileExistsError:
+        return state() or st          # another process started it a moment ago
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
     _record(NOTE_PAUSED if auto else NOTE_STOPPED, **({"auto_end_seconds": PAUSE_SECONDS} if auto else {}))
     return st
 
@@ -85,11 +116,26 @@ def end(why: str = "start", now: float | None = None) -> bool:
     if not have:
         return False
     now = time.time() if now is None else now
+    # #40: claim the note by renaming it to a name of our own. On APFS two
+    # processes deleting the same file can BOTH be told "deleted" (checker
+    # 2026-11-22: 161 of 200 races); a rename has exactly one winner.
+    claim = path().with_name(f"paused.json.{_me()}.ending")
     try:
-        path().unlink()
+        os.rename(path(), claim)
+    except OSError:
+        return False                  # another process ended it and wrote the receipt
+    # The length comes from the note we really claimed, not the earlier read:
+    # another process may have ended that pause and started a new one since
+    # (checker 2026-11-22, #40 problem A).
+    try:
+        since = float(json.loads(claim.read_text()).get("since", have["since"]))
+    except (OSError, ValueError, TypeError, AttributeError):
+        since = have["since"]
+    try:
+        claim.unlink()
     except OSError:
         pass
-    _record(NOTE_RESUMED, off_seconds=max(0, int(now - have["since"])), why=why)
+    _record(NOTE_RESUMED, off_seconds=max(0, int(now - since)), why=why)
     return True
 
 
