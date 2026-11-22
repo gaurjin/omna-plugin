@@ -64,6 +64,44 @@ _HEX_LINE = re.compile(r"(?m)^(?:[0-9a-fA-F]{6,8}:?)?((?:[ \t]+[0-9a-fA-F]{2,8})
 _SPREAD_GATE = re.compile(r"(?<!\S)\S(?:" + _SEP + r"\S(?!\S)){5}")
 
 
+# #24 try 2 (checker 2026-11-22): with thousands of known values, building
+# each value's pattern for every table-like text cost seconds. Instead, the
+# spread-out stretches and the hex columns are found ONCE per text, collapsed
+# to plain characters, and a value's pattern is built only if the value (or
+# its reverse / its hex) is in that collapsed text — a necessary condition, so
+# results do not change.
+_SPREAD_RUN = re.compile(r"\S(?:" + _SEP + r"\S)+")
+_SEP_RX = re.compile(_SEP)
+
+
+def _spread_letters(text: str) -> str:
+    """Every spread-out stretch, separators removed, joined by a NUL."""
+    out = []
+    for m in _SPREAD_RUN.finditer(text):
+        out.append("".join(_SEP_RX.split(m.group(0))))
+    return "\x00".join(out)
+
+
+_HEX_WORD = re.compile(r"(?<!\S)[0-9a-fA-F]{2,8}(?!\S)")
+
+
+def _dump_hex(text: str) -> str:
+    """A dump's hex columns, lower case, as streams joined by NUL: whole hex
+    words only (a text column like "6C({o@" is not one), offsets left out;
+    a second stream also drops what follows a line's last double space —
+    where xxd and hexdump put the text column, which can look like hex
+    ("prefix text AbCd")."""
+    full, trimmed = [], []
+    for line in text.splitlines():
+        m = _HEX_LINE.match(line)
+        if not m:
+            continue
+        body = line[m.start(1):]
+        full += _HEX_WORD.findall(body)
+        cut = [m.start() for m in re.finditer(r"[ \t]{2,}", body.rstrip())]
+        trimmed += _HEX_WORD.findall(body[:cut[-1]] if cut else body)
+    return ("".join(full) + "\x00" + "".join(trimmed)).lower()
+
 def _char_dump(text: str) -> str | None:
     body = _OFFSET_LINE.sub("", text)
     items = _ITEM.findall(body)
@@ -250,6 +288,8 @@ class Finder:
         spread = _SPREAD_GATE.search(text) is not None
         dump = len(_HEX_LINE.findall(text)) >= 2
         flat = _WS.sub("", text).lower()
+        letters = _spread_letters(text) if spread else ""
+        hexes = _dump_hex(text) if dump else ""
         for e in self._entries.values():
             if not dump and e.hex_plain in flat:       # hex in one run (xxd -p wraps lines)
                 text, n = e.hex_run.subn(e.stand_in, text)
@@ -263,7 +303,8 @@ class Finder:
                     if enc in text:
                         used += [e.stand_in] * text.count(enc)
                         text = text.replace(enc, e.stand_in)
-            for name, on in (("spread", spread), ("hexed", dump)):
+            for name, on in (("spread", spread and (e.core in letters or e.back in letters)),
+                             ("hexed", dump and e.hex_plain in hexes)):
                 if on:
                     rx = getattr(e, name)
                     text, n = rx.subn(e.stand_in, text)

@@ -146,3 +146,31 @@ def test_memory_does_not_grow_with_every_known_value():
     v = 'person.number42' + chr(64) + 'example-mail.com'
     out, used = f.find('here: ' + v[::-1] + ' end')
     assert used == ['[EMAIL' + '_42]'] and v[::-1] not in out
+
+
+def test_many_known_values_stay_fast_on_tables_and_dumps():
+    # Checker 2026-11-22 (#24 try 1): with more than 1,024 known values, a text
+    # that looks spread-out (a markdown table) or a hex dump rebuilt every
+    # pattern: 1.5-3.5 s instead of ~1 ms. Claude Code resends the chat, so one
+    # table slowed every later message. Budget: 50 ms with 3,000 values.
+    import random
+    import string
+    import subprocess
+    import time
+    from omna_plugin import disguise
+    random.seed(3)
+    vals = {"".join(random.choice(string.ascii_letters + string.digits) for _ in range(random.randint(8, 24))): f"[V_{i}]"
+            for i in range(3000)}
+    f = disguise.Finder()
+    f.compile(vals, (1, 0, 3000))
+    one = list(vals)[5]
+    table = "| a | b | c | d | e | f |\n|---|---|---|---|---|---|\n- - - - - - -\n  1 2 3 4 5 6 7\n"
+    dump = subprocess.run(["xxd"], input=b"hello there, nothing secret here at all\n", capture_output=True).stdout.decode()
+    for text in (table, dump, table * 20):
+        f.find(text)                                    # warm
+        t = time.perf_counter(); f.find(text); ms = (time.perf_counter() - t) * 1000
+        assert ms < 50, f"{ms:.0f} ms for {text[:30]!r}"
+    # still found when it really is there
+    assert f.find("see: " + " ".join(one) + " end")[1] == [vals[one]]
+    xxd = subprocess.run(["xxd"], input=("hello " + one + " bye\n").encode(), capture_output=True).stdout.decode()
+    assert f.find(xxd)[1] == [vals[one]]
