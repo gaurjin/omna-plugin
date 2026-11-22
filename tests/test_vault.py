@@ -127,3 +127,42 @@ def test_delete_key_also_honours_the_off_switch(monkeypatch):
     monkeypatch.setattr(vault, "_kc_delete", lambda a: called.append(a) or True)
     assert vault.delete_key() is False
     assert called == []
+
+
+def test_no_keychain_in_this_home_folder_means_no_keychain_calls(tmp_path, monkeypatch):
+    # #36 (2026-11-21): run with another home folder (a test copy, sudo, a
+    # service account), `security add-generic-password` made macOS pop up
+    # "Keychain Not Found" — whose "Reset To Defaults" can wipe the login
+    # keychain. No keychain file in this home folder → never call `security`.
+    from pathlib import Path
+    monkeypatch.delenv("OMNA_REGISTRY_ENCRYPTION", raising=False)
+    monkeypatch.setattr(vault.sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    calls = []
+    monkeypatch.setattr(vault.subprocess, "run", lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(AssertionError("security was called")))
+    assert vault.keychain_supported() is False
+    assert vault.load_key(create=True) is None
+    assert vault.delete_key() is False
+    assert calls == []
+    # a home folder that has one
+    (tmp_path / "Library" / "Keychains").mkdir(parents=True)
+    (tmp_path / "Library" / "Keychains" / "login.keychain-db").write_bytes(b"x")
+    assert vault.keychain_supported() is True
+
+
+def test_only_a_login_keychain_counts(tmp_path, monkeypatch):
+    # Checker 2026-11-22 (#36): metadata.keychain-db is no keychain to save
+    # into, and HOME="" read as "/" found /Library/Keychains/System.keychain.
+    from pathlib import Path
+    monkeypatch.delenv("OMNA_REGISTRY_ENCRYPTION", raising=False)
+    monkeypatch.setattr(vault.sys, "platform", "darwin")
+    kc = tmp_path / "Library" / "Keychains"
+    kc.mkdir(parents=True)
+    (kc / "metadata.keychain-db").write_bytes(b"x")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    assert vault.keychain_supported() is False
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/")))
+    assert vault.keychain_supported() is False
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    (kc / "login.keychain").write_bytes(b"x")          # the older name
+    assert vault.keychain_supported() is True

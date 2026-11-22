@@ -64,7 +64,25 @@ class RegistryLocked(Exception):
 # These three are the only places that talk to the real machine, so tests swap
 # them for a dict instead of writing into the owner's actual Keychain.
 def _kc_supported() -> bool:
-    return sys.platform == "darwin" and (Path(_SECURITY).exists() or shutil.which("security") is not None)
+    return (sys.platform == "darwin"
+            and (Path(_SECURITY).exists() or shutil.which("security") is not None)
+            and _home_has_a_keychain())
+
+
+def _home_has_a_keychain() -> bool:
+    """#36: `security` looks for keychains in THIS home folder. With another
+    one (a test copy, sudo, a service account) it finds none, and saving the
+    key made macOS pop up "Keychain Not Found" — whose "Reset To Defaults"
+    can wipe the login keychain. No keychain file here = no Keychain: Omna
+    falls back quietly and `omna status` says so."""
+    try:
+        # The login keychain itself — the default one `security` saves into.
+        # Not any keychain file: metadata.keychain-db is none, and a home of
+        # "/" would find the System keychain (checker 2026-11-22).
+        d = Path.home() / "Library" / "Keychains"
+        return str(Path.home()) != "/" and ((d / "login.keychain-db").is_file() or (d / "login.keychain").is_file())
+    except (OSError, RuntimeError):
+        return False
 
 
 def _kc_read(account: str) -> str | None:
