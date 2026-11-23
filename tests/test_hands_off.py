@@ -106,20 +106,50 @@ def test_claude_codes_own_reports_to_anthropic_are_left_alone():
     assert not hands_off.reason("api.anthropic.com", "/v1/messages", b"{}")
 
 
-@pytest.mark.parametrize("host,path", [
-    ("api.anthropic.com", "/v1/code/sessions/cse_01ABC/worker/events"),
-    ("api.anthropic.com", "/v1/code/sessions/cse_01ABC/worker/heartbeat"),
-    ("api.anthropic.com", "/v1/code/sessions/cse_01ABC/client/presence"),
-    ("claude.ai", "/v1/code/sessions/cse_01ABC/events"),
-    ("claude.ai", "/v1/code/sessions/heartbeat_check"),
-    ("claude.ai", "/v1/code/sessions"),
+
+@pytest.fixture(autouse=True)
+def _no_mac_sessions():
+    hands_off.forget_sessions()
+    yield
+    hands_off.forget_sessions()
+
+
+@pytest.mark.parametrize("path", [
+    "/v1/code/sessions/cse_01ABC/worker/events",
+    "/v1/code/sessions/cse_01ABC/worker/heartbeat",
+    "/v1/code/sessions/cse_01ABC/client/presence",
+    "/v1/code/sessions",
 ])
-def test_remote_control_is_hands_off(host, path):
-    """#52 (owner 2026-11-23, option a): Claude Code's Remote Control sends the
-    person's own chat to their own phone/claude.ai — not to an AI to read.
-    Masking it showed 121 stand-ins in 9 minutes. What reaches the model
-    still goes through /v1/messages and is masked there."""
-    assert hands_off.reason(host, path, b'{"events": []}') == hands_off.REMOTE_CONTROL
+def test_the_macs_own_claude_code_uploads_are_hands_off(path):
+    """#52 row 2 (owner 2026-11-23): Claude Code on this Mac copying its chat
+    to the phone / claude.ai is not a message to an AI. Masking it put 121
+    stand-ins on the owner's phone in 9 minutes."""
+    assert hands_off.reason("api.anthropic.com", path, b'{"events": []}') == hands_off.REMOTE_CONTROL
+
+
+def test_website_message_to_a_session_on_this_mac_is_masked_once_by_the_mac():
+    """#52 row 3 (owner: "one should be masking, no duplication"): typed on
+    claude.ai/code to the Claude Code running on this Mac. The Mac masks it
+    before the AI sees it, so Chrome's copy is left alone. The site names one
+    session two ways (cse_X from the Mac, session_X in the browser)."""
+    hands_off.reason("api.anthropic.com", "/v1/code/sessions/cse_01D9NU4GP6N3zbFd3VcqKE6q/worker/heartbeat", b"{}")
+    for p in ("/v1/code/sessions/cse_01D9NU4GP6N3zbFd3VcqKE6q/events",
+              "/v1/code/sessions/session_01D9NU4GP6N3zbFd3VcqKE6q/events",
+              "/v1/code/sessions/session_01D9NU4GP6N3zbFd3VcqKE6q"):
+        assert hands_off.reason("claude.ai", p, b'{"text": "mail ana@x.io"}') == hands_off.REMOTE_CONTROL
+
+
+@pytest.mark.parametrize("path", [
+    "/v1/code/sessions/cse_01CLOUD/events",             # a cloud session: no Claude Code on this Mac runs it
+    "/v1/code/sessions/session_01CLOUD/events",
+    "/v1/code/sessions/session_01D9NU4GP6N3zbFd3VcqKE6qX/events",   # a longer id is another session
+    "/v1/code/sessions",                                 # the site's own list: as before #52
+])
+def test_website_message_to_a_cloud_session_is_masked(path):
+    """#52 row 4: Claude Code on the web runs on Anthropic's computers — the
+    browser is the only place to mask what is typed there."""
+    hands_off.reason("api.anthropic.com", "/v1/code/sessions/cse_01D9NU4GP6N3zbFd3VcqKE6q/worker", b"{}")
+    assert hands_off.reason("claude.ai", path, b'{"text": "mail ana@x.io"}') is None
 
 
 @pytest.mark.parametrize("host,path", [

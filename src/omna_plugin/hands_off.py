@@ -28,15 +28,26 @@ SECURITY = "passthrough-security-check"
 SITE_REPORT = "passthrough-site-report"
 REMOTE_CONTROL = "passthrough-remote-control"
 
-# Claude Code's Remote Control (#52, owner 2026-11-23, option a): the person's
-# own Claude Code chat sent to their own phone / claude.ai — heartbeats,
-# presence, and the chat itself. Not sent to an AI to read: anything that
-# reaches the model still goes through /v1/messages and is masked there.
-# Masking it put 121 stand-ins on the owner's phone in 9 minutes.
-# TRIPWIRE: these uploads include tool output, so a secret in a command's
+# Claude Code's Remote Control (#52, owner 2026-11-23: "at any given point,
+# one should be masking, and there should be no duplication"):
+# - Claude Code on THIS Mac copying its chat to the phone / claude.ai
+#   (api.anthropic.com /v1/code/sessions/…) is not a message to an AI: left
+#   alone. Masking it put 121 stand-ins on the owner's phone in 9 minutes.
+# - Typed on claude.ai/code to a session that Claude Code on this Mac runs:
+#   the Mac masks it before the AI sees it, so the browser's copy is left alone.
+# - Typed on claude.ai/code to any other session (Claude Code on the web runs
+#   on Anthropic's computers): masked in the browser as before — the only place.
+# A session is "on this Mac" once its Claude Code has sent from here since
+# Omna started (it reports every few seconds). The site names one session
+# cse_X (the Mac) and session_X (the browser): X is what is compared.
+# TRIPWIRE: the Mac's uploads include tool output, so a secret in a command's
 # output is stored at claude.ai as it is (the model only ever sees it masked).
-_REMOTE_CONTROL_HOSTS = ("api.anthropic.com", "claude.ai")
-_REMOTE_CONTROL = re.compile(r"^/v1/code/sessions(/|$)")
+_REMOTE_CONTROL = re.compile(r"^/v1/code/sessions(?:/(?:cse|session)_([A-Za-z0-9]+))?(?:/|$)")
+_mac_sessions: set[str] = set()
+
+
+def forget_sessions() -> None:
+    _mac_sessions.clear()
 
 # Any host: these are never anything you typed.
 _SECURITY_ANY_HOST = [
@@ -73,7 +84,12 @@ def reason(host: str, path: str, body: bytes = b"") -> str | None:
     if _CF_CHALLENGE.search(p) and _cloudflare_answer(body or b""):
         return SECURITY
     bare = p.split("?", 1)[0]
-    if h in _REMOTE_CONTROL_HOSTS and _REMOTE_CONTROL.search(bare):
+    m = _REMOTE_CONTROL.match(bare) if h in ("api.anthropic.com", "claude.ai") else None
+    if m and h == "api.anthropic.com":
+        if m.group(1):
+            _mac_sessions.add(m.group(1))
+        return REMOTE_CONTROL
+    if m and m.group(1) in _mac_sessions:
         return REMOTE_CONTROL
     if any(sites.on(h, site) and rx.search(bare) for site, rx in _SECURITY_BY_HOST):
         return SECURITY
