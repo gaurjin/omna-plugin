@@ -14,38 +14,68 @@ def test_status_lines_not_running(tmp_path, monkeypatch):
                                           "omna start -d (or click above)"]
 
 
-def test_status_lines_api_door_only():
-    h = {
-        "doors": {"api": True, "system": False},
-        "requests_this_run": 3,
-        "distinct_secrets_this_run": 2,
-        "distinct_pii_this_run": 5,
-        "avg_mask_ms_this_run": 16,
-    }
-    lines = menubar.status_lines(h)
-    assert lines[0] == "Omna: ON · click to pause"
-    assert lines[1] == "Secrets kept off the wire: 2"
-    assert lines[2] == "Personal values tokenized: 5"
-    assert lines[3] == "Requests masked this session: 3"
-    assert "coding tools only" in lines[4]
-    assert lines[5] == "Masking overhead: 16 ms/request"
+# #44 (client test 2026-11-22): the menu bar said 0 / 0 / 0 while hundreds of
+# messages went through the Mac-wide door, and "every app" while Wi-Fi was not
+# routed through Omna. It now shows the same Today line as `omna status`.
 
-
-def test_status_lines_system_door_on():
+def test_status_lines_show_todays_messages_and_details_like_omna_status():
     h = {"doors": {"api": True, "system": True}, "requests_this_run": 0}
-    lines = menubar.status_lines(h)
-    assert "every app on this Mac" in lines[4]
+    lines = menubar.status_lines(h, today=(312, 41), route=("Wi-Fi", True))
+    assert lines[0] == "Omna: ON · click to pause"
+    assert lines[1] == "Today: 312 messages to AI · 41 private details hidden"
+    assert lines[2] == "Mac apps: protected (Claude, ChatGPT and other AI apps)"
+    assert not any("tokenized" in l or "off the wire" in l or "this session" in l or "overhead" in l for l in lines)
+
+
+def test_status_lines_one_message_reads_as_one():
+    lines = menubar.status_lines({"doors": {"system": True}}, today=(1, 1), route=("Wi-Fi", True))
+    assert lines[1] == "Today: 1 message to AI · 1 private detail hidden"
+
+
+def test_status_lines_never_say_protected_when_wifi_is_not_routed():
+    lines = menubar.status_lines({"doors": {"system": True}}, today=(0, 0), route=("Wi-Fi", False))
+    assert lines[2] == "Mac apps: NOT protected on Wi-Fi — run omna init"
+    assert not any("every app" in l for l in lines)
+
+
+def test_status_lines_mac_wide_door_off():
+    lines = menubar.status_lines({"doors": {"api": True, "system": False}}, today=(0, 0), route=("Wi-Fi", True))
+    assert lines[2] == "Mac apps: turned off — desktop AI apps go unmasked"
 
 
 def test_status_lines_missing_doors_key_does_not_crash():
     assert menubar.status_lines({"requests_this_run": 1}) == [
         "Omna: ON · click to pause",
-        "Secrets kept off the wire: 0",
-        "Personal values tokenized: 0",
-        "Requests masked this session: 1",
-        "Covers: coding tools only (Claude Code etc.)",
-        "Masking overhead: 0 ms/request",
+        "Today: 0 messages to AI · 0 private details hidden",
+        "Mac apps: turned off — desktop AI apps go unmasked",
     ]
+
+
+def test_today_counts_come_from_the_receipts_of_both_doors(tmp_path, monkeypatch):
+    import json
+    from datetime import date
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin import config
+    today = date.today().isoformat()
+    recs = [
+        {"ts": f"{today}T10:00:00+0000", "door": "system", "finds": []},
+        {"ts": f"{today}T10:01:00+0000", "door": "api", "finds": []},
+        {"ts": f"{today}T10:02:00+0000", "door": "control", "finds": []},
+        {"ts": "2000-01-01T10:00:00+0000", "door": "system", "finds": []},
+    ]
+    path = config.receipts_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    msgs, _details = menubar.today_counts()
+    assert msgs == 2
+
+
+def test_menu_words_are_plain():
+    assert menubar.REPORTS_LABEL == "Keep receipts on this Mac"
+    assert menubar.STYLE_LABEL == "Realistic stand-ins in browsers"
+    assert menubar.QUIT_LABEL == "Hide this icon (Omna keeps masking)"
+    assert menubar.RESTORE_LABEL == "Restore on reply (shield mode)"
 
 
 def test_icon_image_size_and_mode():

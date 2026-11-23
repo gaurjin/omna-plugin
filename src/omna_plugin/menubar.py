@@ -57,11 +57,60 @@ def _health(port: int) -> dict | None:
     return None
 
 
-def status_lines(h: dict | None) -> list[str]:
+# Menu words (#44, client test 2026-11-22): plain words, the same as `omna
+# status` and Omna for Chrome use.
+REPORTS_LABEL = "Keep receipts on this Mac"
+RESTORE_LABEL = "Restore on reply (shield mode)"
+STYLE_LABEL = "Realistic stand-ins in browsers"
+QUIT_LABEL = "Hide this icon (Omna keeps masking)"
+
+ROUTE_SECONDS = 30   # how often to re-read which network carries this Mac's internet
+_route_cache: dict = {"at": 0.0, "val": None}
+_today_cache: dict = {"key": None, "val": (0, 0)}
+
+
+def today_counts() -> tuple[int, int]:
+    """(messages to AI, private details hidden) today — the same numbers as
+    `omna status`, from the receipts of every door (#44: the old counters saw
+    only the coding-tools door, so they said 0 while Chrome and the Mac apps
+    sent hundreds). Re-read only when the receipts file or the day changed."""
+    from datetime import date
+
+    from . import cli
+
+    p = config.receipts_path()
+    try:
+        st = p.stat()
+        key = (date.today().isoformat(), st.st_mtime_ns, st.st_size)
+    except OSError:
+        key = (date.today().isoformat(), None, None)
+    if key != _today_cache["key"]:
+        msgs, _refused, details = cli.today_counts()
+        _today_cache.update(key=key, val=(msgs, details))
+    return _today_cache["val"]
+
+
+def mac_apps_route():
+    """(network service, routed through Omna?) — the same check as `omna
+    status` (#44: the menu said "every app" while Wi-Fi was not routed)."""
+    from . import cli
+
+    now = time.time()
+    if now - _route_cache["at"] > ROUTE_SECONDS:
+        _route_cache.update(at=now, val=cli._mac_apps_route())
+    return _route_cache["val"]
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n:,} {word}{'' if n == 1 else 's'}"
+
+
+def status_lines(h: dict | None, today: tuple[int, int] | None = None, route=None) -> list[str]:
     """Pure so it's testable without a running proxy or the tray library. Line 1 is
     the clickable toggle itself — same self-describing pattern as the native Mac
     app's "PII Masking: ON/OFF" item — so there is no separate Pause/Resume entry.
-    Every metric gets its own line — never merged into one run-on sentence."""
+    Every metric gets its own line — never merged into one run-on sentence.
+    ``today`` = today_counts(); ``route`` = mac_apps_route() (None = unknown)."""
     if not h:
         left = pause.minutes_left()
         if left is not None:
@@ -74,15 +123,18 @@ def status_lines(h: dict | None) -> list[str]:
         return ["Omna: OFF — NOT masking · click to resume",
                 "Browsers and desktop apps go to the AI UNMASKED",
                 "omna start -d (or click above)"]
+    msgs, details = today or (0, 0)
     doors = h.get("doors") or {}
-    coverage = "every app on this Mac" if doors.get("system") else "coding tools only (Claude Code etc.)"
+    if not doors.get("system"):
+        mac_apps = "Mac apps: turned off — desktop AI apps go unmasked"
+    elif route and not route[1]:
+        mac_apps = f"Mac apps: NOT protected on {route[0]} — run omna init"
+    else:
+        mac_apps = "Mac apps: protected (Claude, ChatGPT and other AI apps)"
     return [
         "Omna: ON · click to pause",
-        f"Secrets kept off the wire: {h.get('distinct_secrets_this_run', 0)}",
-        f"Personal values tokenized: {h.get('distinct_pii_this_run', 0)}",
-        f"Requests masked this session: {h.get('requests_this_run', 0)}",
-        f"Covers: {coverage}",
-        f"Masking overhead: {h.get('avg_mask_ms_this_run', 0)} ms/request",
+        f"Today: {_plural(msgs, 'message')} to AI · {_plural(details, 'private detail')} hidden",
+        mac_apps,
     ] + _masking_line(h)
 
 
@@ -304,7 +356,7 @@ def _poll_once(icon, state: dict, port: int) -> None:
         _ensure_daemon(state)
         h = _health(port)
     on = bool(h)
-    lines = status_lines(h)
+    lines = status_lines(h, today_counts(), mac_apps_route()) if h else status_lines(h)
 
     def draw() -> None:
         # #35: macOS 27 lets only the main thread change a menu-bar icon;
@@ -406,7 +458,7 @@ def run(port: int = config.DEFAULT_PORT) -> int:
 
     def menu_items():
         h = _health(port)
-        lines = status_lines(h)
+        lines = status_lines(h, today_counts(), mac_apps_route()) if h else status_lines(h)
         items = [pystray.MenuItem(lines[0], lambda: _toggle_masking(h, state), checked=lambda item: bool(h))]
         items += [pystray.MenuItem(line, None, enabled=False) for line in lines[1:]]
         items.append(pystray.Menu.SEPARATOR)
@@ -419,22 +471,22 @@ def run(port: int = config.DEFAULT_PORT) -> int:
                 checked=lambda item: app_bundle.login_item_enabled(),
             ))
         items.append(pystray.MenuItem(
-            "Keep Local Reports",
+            REPORTS_LABEL,
             lambda: _toggle_reports(),
             checked=lambda item: _reports_enabled(),
         ))
         items.append(pystray.MenuItem(
-            "Restore on reply (shield mode)",
+            RESTORE_LABEL,
             lambda: _toggle_restore_browser(),
             checked=lambda item: _restore_browser(),
         ))
         items.append(pystray.MenuItem(
-            "Use Realistic Fake Values in Browser",
+            STYLE_LABEL,
             lambda: _toggle_realistic_style(),
             checked=lambda item: _realistic_style(),
         ))
         items.append(pystray.MenuItem("Uninstall Omna…", lambda icon: _confirm_and_uninstall(icon, state)))
-        items.append(pystray.MenuItem("Quit", lambda icon: _quit(icon)))
+        items.append(pystray.MenuItem(QUIT_LABEL, lambda icon: _quit(icon)))
         return items
 
     icon = pystray.Icon("omna", _icon_image(False), "Omna", menu=pystray.Menu(menu_items))

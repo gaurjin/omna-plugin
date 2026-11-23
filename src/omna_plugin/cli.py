@@ -899,14 +899,24 @@ def _private_details_today(todays: list[dict]) -> int:
     return sum(receipts.details_once(todays).values())
 
 
+def today_counts() -> tuple[int, int, int]:
+    """(messages to AI, blocked by an app that refuses Omna, private details
+    hidden) today, from the receipts of every door. `omna status` and the
+    menu bar (#44) both show these, so they always agree."""
+    from datetime import date
+
+    today = date.today().isoformat()
+    todays = [r for r in receipts.tail(0) if str(r.get("ts", "")).startswith(today) and r.get("door") != "control"]
+    refused = sum(1 for r in todays if r.get("note") == "tls-refused")
+    return len(todays) - refused, refused, _private_details_today(todays)
+
+
 def cmd_status(a) -> int:
     """The client screen (#41). Owner 2026-11-22: easy to read, "like Apple,
     not Windows". Wording from a fresh client read-through of the real screens:
     never claim protection that is not there, every fix true, fits 80 columns."""
     if getattr(a, "details", False):
         return _status_details(a)
-    from datetime import date
-
     from .proxy import __version__
 
     h = _health(a.port)
@@ -1010,12 +1020,7 @@ def cmd_status(a) -> int:
         out.append(("  To fix: " if i == 0 else "          ") + f)
     out.append("")
 
-    recs = receipts.tail(0)
-    today = date.today().isoformat()
-    todays = [r for r in recs if str(r.get("ts", "")).startswith(today) and r.get("door") != "control"]
-    refused = sum(1 for r in todays if r.get("note") == "tls-refused")
-    msgs = len(todays) - refused
-    details = _private_details_today(todays)
+    msgs, refused, details = today_counts()
     line = f"{_n(msgs)} message{'' if msgs == 1 else 's'} to AI · {_n(details)} private detail{'' if details == 1 else 's'} hidden"
     out.append(f"  {'Today':<17}{line}")
     if refused:
