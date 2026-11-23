@@ -69,6 +69,10 @@ def _is_browser(app: str | None) -> bool:
     return a in _BROWSER_APPS
 
 
+# A coding tool's own program (exact name, as procs.py gives it) -> its
+# `omna enable|disable` switch. Case matters: "Claude" is the desktop app.
+_TOOL_PROGRAMS = {"claude": "claude-code"}
+
 _GEMINI_SSE_HOSTS = frozenset({"generativelanguage.googleapis.com",
                                "cloudcode-pa.googleapis.com", "daily-cloudcode-pa.googleapis.com"})
 
@@ -256,12 +260,17 @@ class OmnaAddon:
         if app and app in getattr(for_host(data.client_hello.sni or ""), "skip_apps", ()):
             data.ignore_connection = True   # e.g. the OneDrive app's own sync: never an AI, never opened
             return
+        note = None
         if self.policy.app_action(app) == "bypass":
+            note = "bypassed-by-policy"
+        elif app in _TOOL_PROGRAMS and self._fresh().tools.get(_TOOL_PROGRAMS[app]) == "off":
+            note = f"bypassed-tool-off:{_TOOL_PROGRAMS[app]}"   # #47: `omna disable claude-code` means untouched
+        if note:
             data.ignore_connection = True
             self.pipeline.receipt(door=self._door_for_client(data.context.client), route="CONNECT",
                                   host=data.client_hello.sni or "?", status=0,
                                   stats=MaskStats(), nbytes=0, ms=0, stream=False, app=app,
-                                  note="bypassed-by-policy", session_id=None)
+                                  note=note, session_id=None)
 
     async def tls_failed_client(self, data: tls.TlsData) -> None:
         app = await self._app_of(data.context.client) or "unknown app"

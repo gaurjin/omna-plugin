@@ -912,3 +912,24 @@ def test_which_apps_count_as_a_browser(app, browser):
     starting with that word."""
     from omna_plugin.system_door import _is_browser
     assert _is_browser(app) is browser
+
+
+async def test_claude_code_switched_off_is_not_masked_by_the_mac_wide_door(tmp_path, monkeypatch):
+    """#47 (owner 2026-11-22): after `omna disable claude-code`, Claude Code's own
+    program ("claude") still reached Omna through the Mac-wide door and was
+    masked, while `omna status` said it was not protected. Off means untouched
+    (and receipted), and the switch is read from disk, not from start-up."""
+    addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
+    on = _hello("api.anthropic.com", "claude", addon)
+    await addon.tls_clienthello(on)
+    assert not on.ignore_connection                       # on (the default): masked as before
+    pol = Policy.load()
+    pol.tools["claude-code"] = "off"
+    pol.save()                                            # written by ANOTHER process (the CLI)
+    off = _hello("api.anthropic.com", "claude", addon)
+    await addon.tls_clienthello(off)
+    assert off.ignore_connection
+    assert receipts.tail(1)[0]["note"] == "bypassed-tool-off:claude-code"
+    desktop = _hello("api.anthropic.com", "Claude", addon)   # the Claude desktop app is not Claude Code
+    await addon.tls_clienthello(desktop)
+    assert not desktop.ignore_connection
