@@ -42,7 +42,20 @@ def available() -> bool:
     return _HAVE_VISION and sys.platform == "darwin"
 
 
-def _image_size(data: bytes) -> tuple[float, float] | None:
+# P3 (client test 2026-11-22): Vision shrinks the whole picture to read it in
+# one go, so a whole-page screenshot came back as gibberish or as nothing
+# (measured 2026-11-23: 1200 px wide reads at 8,000 px tall, ZERO lines at
+# 16,000). A picture taller than TALL x its width is read in slices SLICE x
+# its width tall, overlapping by more than a line, each line kept once.
+# SLICE measured on a 30,000 px page, 10 emails: 1x 10/10 2.6 s; 2x 10/10,
+# fewest misread lines, 1.2 s; 3x only 8/10.
+TALL = 4
+SLICE = 2
+OVERLAP = 240   # px: taller than any line of text on a screenshot
+
+
+def _open(data: bytes):
+    """(stored picture, upright width, upright height, orientation) or None."""
     src = Quartz.CGImageSourceCreateWithData(NSData.dataWithBytes_length_(data, len(data)), None)
     if src is None or Quartz.CGImageSourceGetCount(src) < 1:
         return None
@@ -59,34 +72,21 @@ def _image_size(data: bytes) -> tuple[float, float] | None:
         orientation = int(props.get(Quartz.kCGImagePropertyOrientation, 1) or 1)
     except (TypeError, ValueError):
         orientation = 1
-    return (h, w) if orientation in (5, 6, 7, 8) else (w, h)
+    if orientation in (5, 6, 7, 8):
+        w, h = h, w
+    return img, w, h, orientation
 
 
-def recognize(data: bytes) -> dict:
-    """Text lines in the picture: {"width", "height", "lines": [{text,x,y,w,h}]}.
-
-    Raises ValueError for something that isn't a readable picture and
-    RuntimeError when this machine can't read pictures at all.
-    """
-    if not available():
-        raise RuntimeError("reading pictures needs macOS")
-    if not data or len(data) > MAX_BYTES:
-        raise ValueError("picture is empty or too large")
-    size = _image_size(data)
-    if size is None:
-        raise ValueError("not a picture this Mac can open")
-    width, height = size
-
+def _read(handler, width: float, height: float, top: float = 0.0) -> list[dict]:
+    """Vision on one handler; boxes in the full picture's pixels (top-left
+    origin, like the Mac app). ``width``/``height`` = the part read, ``top`` =
+    where that part starts in the full picture."""
     request = Vision.VNRecognizeTextRequest.alloc().init()
     request.setRecognitionLevel_(Vision.VNRequestTextRecognitionLevelAccurate)
     request.setUsesLanguageCorrection_(False)  # keep IDs, keys and emails as written
-    handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
-        NSData.dataWithBytes_length_(data, len(data)), None,
-    )
     ok, err = handler.performRequests_error_([request], None)
     if not ok:
         raise ValueError(f"could not read the picture: {err}")
-
     lines = []
     for obs in request.results() or []:
         cands = obs.topCandidates_(1)
@@ -101,8 +101,53 @@ def recognize(data: bytes) -> dict:
         lines.append({
             "text": text,
             "x": bx * width,
-            "y": (1.0 - by - bh) * height,  # -> top-left origin, like the Mac app
+            "y": top + (1.0 - by - bh) * height,
             "w": bw * width,
             "h": bh * height,
         })
-    return {"width": width, "height": height, "lines": lines}
+    return lines
+
+
+def _read_tall(img, width: float, height: float) -> list[dict]:
+    """A tall upright picture in overlapping slices. A line is kept by the one
+    slice whose own stretch (overlap split in the middle) holds its centre."""
+    step = SLICE * width
+    lines: list[dict] = []
+    top = 0.0
+    while top < height:
+        start = max(0.0, top - OVERLAP)
+        end = min(height, top + step + OVERLAP)
+        tile = Quartz.CGImageCreateWithImageInRect(img, Quartz.CGRectMake(0, start, width, end - start))
+        if tile is None:
+            raise ValueError("could not cut the picture into slices")
+        handler = Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(tile, None)
+        own_end = min(height, top + step)
+        for ln in _read(handler, width, end - start, start):
+            if top <= ln["y"] + ln["h"] / 2 < own_end:
+                lines.append(ln)
+        top = own_end
+    return lines
+
+
+def recognize(data: bytes) -> dict:
+    """Text lines in the picture: {"width", "height", "lines": [{text,x,y,w,h}]}.
+
+    Raises ValueError for something that isn't a readable picture and
+    RuntimeError when this machine can't read pictures at all.
+    """
+    if not available():
+        raise RuntimeError("reading pictures needs macOS")
+    if not data or len(data) > MAX_BYTES:
+        raise ValueError("picture is empty or too large")
+    opened = _open(data)
+    if opened is None:
+        raise ValueError("not a picture this Mac can open")
+    img, width, height, orientation = opened
+    # Slices are cut from the stored pixels, so only an untagged picture is
+    # sliced (screenshots carry no "rotate me" tag; phone photos are not tall).
+    if orientation == 1 and height > TALL * width + OVERLAP:
+        return {"width": width, "height": height, "lines": _read_tall(img, width, height)}
+    handler = Vision.VNImageRequestHandler.alloc().initWithData_options_(
+        NSData.dataWithBytes_length_(data, len(data)), None,
+    )
+    return {"width": width, "height": height, "lines": _read(handler, width, height)}
