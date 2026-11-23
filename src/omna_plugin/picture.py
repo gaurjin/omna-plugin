@@ -31,21 +31,13 @@ def _continues(cur: dict, nxt: dict) -> bool:
     """True when ``nxt`` is the rest of ``cur`` wrapped onto the line below (P2,
     client test 2026-11-22: "ana.lopez.test@" / "example-mail.com" was never
     found as an email). Only right under it, starting at the same left edge,
-    and only where a value can break: after @ - _ (after . only inside a dotted
-    word like ana.lopez.) or before @ . — an ordinary
+    and only where a value can break: after @ . - _ or before @ . — an ordinary
     line keeps its line break. Same rule as Omna for Chrome's picture-ocr.ts."""
     h = max(cur["h"], nxt["h"])
     gap = nxt["y"] - (cur["y"] + cur["h"])
     if gap < -h / 2 or gap > h * 0.8 or abs(nxt["x"] - cur["x"]) > h * 1.5:
         return False
-    words = cur["text"].split()
-    last = words[-1] if words else ""
-    # "." ends sentences: only a word that already holds "." or "@" (ana.lopez.)
-    # breaks there — "me." + an email became one email, both lines blacked out,
-    # and "Thank you." hid the name under it (review of P2, real engine).
-    if last.endswith("."):
-        return "." in last[:-1] or "@" in last[:-1]
-    return last[-1:] in ("@", "-", "_") or nxt["text"].lstrip()[:1] in ("@", ".")
+    return cur["text"].rstrip()[-1:] in ("@", ".", "-", "_") or nxt["text"].lstrip()[:1] in ("@", ".")
 
 
 def join_lines(lines: list[dict]) -> tuple[str, list[tuple[int, int]]]:

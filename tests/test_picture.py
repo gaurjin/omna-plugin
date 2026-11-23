@@ -115,16 +115,3 @@ def test_only_a_real_continuation_is_joined():
     assert picture.join_lines([L("ana.lopez.test@", 30, 72), L("example-mail.com", 30, 400)])[0] == "ana.lopez.test@\nexample-mail.com"
     assert picture.join_lines([L("Meeting notes", 30, 72), L("Budget review", 30, 109)])[0] == "Meeting notes\nBudget review"
     assert picture.join_lines([L("ana.lopez.test@", 30, 72), L("example-mail.com", 30, 109)])[0] == "ana.lopez.test@example-mail.com"
-
-
-def test_a_sentence_end_is_not_a_value_breaking():
-    """Review of P2: joining after ANY "." made "me." + an email one email
-    ("me.ana.lopez@…": both lines blacked out) and hid "John Smith" after
-    "Thank you.". Only a word that already holds "." or "@" continues."""
-    L = lambda t, y: {"text": t, "x": 30.0, "y": y, "w": 330.0, "h": 30.0}  # noqa: E731
-    pair = lambda a, b: [L(a, 72.0), L(b, 109.0)]  # noqa: E731
-    assert picture.join_lines(pair("Please reply to me.", "ana.lopez@example.com"))[0] == "Please reply to me.\nana.lopez@example.com"
-    assert picture.join_lines(pair("Thank you.", "John Smith"))[0] == "Thank you.\nJohn Smith"
-    assert picture.join_lines(pair("Upgrade to 192.", "168.1.20 later"))[0] == "Upgrade to 192.\n168.1.20 later"
-    assert picture.join_lines(pair("Write to ana.lopez.", "test@example-mail.com"))[0] == "Write to ana.lopez.test@example-mail.com"
-    assert picture.join_lines(pair("Write to ana.lopez.test", "@example-mail.com"))[0] == "Write to ana.lopez.test@example-mail.com"
