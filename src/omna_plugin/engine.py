@@ -1183,6 +1183,85 @@ def _only_our_name(seg: str, entity) -> bool:
     return "omna" in words and all(w in BRAND_WORDS for w in words)
 
 
+# #30 (owner's Claude Code chat, 2026-11-22): the compact model (L3) calls
+# version numbers ID numbers, file paths and code names web addresses or
+# people, and short numbers addresses. A model catch is dropped only when the
+# whole word it sits in has one of these shapes — nothing a value can hide in.
+# Words that are never a name: code, file and tool words. No first names, no
+# web endings (com, org, io, dev...): "maria_lopez", "acme-mail.com" stay masked.
+TECH_WORDS = frozenset("""
+src lib bin test tests spec docs doc scripts script tools tool utils util core common shared share local usr opt
+etc var tmp cache build dist target debug release assets static config settings plugin plugins extension
+engine smart proxy daemon service server client cli api app apps web site sites admin dashboard install
+setup main index init mod module modules package packages pkg vendor node bindings native mac macos linux
+chrome browser models model data db logs log gate check checks fix worktree worktrees workspace repo git
+github developer cargo maturin pyproject uv pip npm rust python pytest conftest readme license venv
+py rs ts tsx js mjs json jsonl toml yaml yml md txt sh cfg ini lock html css swift plist tsv csv onnx whl
+omna labs kiji pii mask masking masked privacy filter receipts registry vault policy style door doors
+pipeline body disguise compact rules ruleset report sample menubar menu bar bars icon status keychain
+keychains login auth session crash crashlog record records audit ort l1 l2 l3
+pid path paths home inside old new system kind kinds mine supported drop not values value run runs stays
+on off is by full name names the of to in for and or with from as at it only all get set read write open
+start stop restart worker ready step case cases file files folder list key type text line lines error
+result output input request response message messages process thread port host hosts cmd version
+versions number words word
+""".split())
+_VERSIONS = re.compile(r"v?\d{1,3}(?:\.\d{1,3}){1,3}(?:(?:/|,|->|→)v?\d{1,3}(?:\.\d{1,3}){1,3})*")
+_NUMBER_KINDS = frozenset({"PERSON", "ADDRESS", "LOCATION", "ORGANIZATION", "ORG"})
+
+
+def _word_around(text: str, a: int, b: int) -> tuple[int, int]:
+    """The whole whitespace-separated word a catch sits in, trailing . , ; : ) cut."""
+    while a > 0 and not text[a - 1].isspace() and text[a - 1] not in "\"'`(<[{,;":
+        a -= 1
+    while b < len(text) and not text[b].isspace() and text[b] not in "\"'`)>]},;":
+        b += 1
+    while b > a and text[b - 1] in ".,;:)":
+        b -= 1
+    return a, b
+
+
+def _neighbour_is_a_name(text: str, a: int, b: int, caught) -> bool:
+    """The word right before or after a word catch is an unknown word that is
+    capitalised or caught too ("Kiji Watanabe", "Watanabe, Kiji")."""
+    before = re.search(r"(\w+)[\W_]*$", text[:a])
+    after = re.match(r"[\W_]*(\w+)", text[b:])
+    for m, at in ((before, 0), (after, b)):
+        if not m:
+            continue
+        s, e = at + m.start(1), at + m.end(1)
+        w = m.group(1)
+        if w.lower() not in TECH_WORDS and (w[0].isupper() or any(s < y and e > x for x, y in caught)):
+            return True
+    return False
+
+
+def _technical(text: str, a: int, b: int, entity, caught, homes) -> bool:
+    """A model catch that is a version list, a tiny number or code, or a
+    path/code name made only of TECH_WORDS — never a value (#30)."""
+    wa, wb = _word_around(text, a, b)
+    word = text[wa:wb]
+    for h in homes:
+        word = word.replace(h, "/")
+    if entity in _NAME_KINDS | {"NATIONAL_ID"} and _VERSIONS.fullmatch(word) and all(
+            len(re.sub(r"\D", "", v)) <= 6 for v in re.split(r"/|,|->|→", word)):
+        return True
+    if entity in _NUMBER_KINDS and (
+            (re.fullmatch(r"[\d\s→>-]+", word) and len(re.sub(r"\D", "", word)) <= 4
+             and not re.search(r"\d{4}", word))
+            or (entity == "ADDRESS" and re.fullmatch(r"[A-Z]{1,2}\d{0,3}", word))):
+        return True
+    # Plain ASCII path/code characters only: no @ = ? : % or other alphabets.
+    if entity not in _NAME_KINDS or re.search(r"[^A-Za-z0-9_/.\-~]", word.replace("::", "")):
+        return False
+    parts = []
+    for chunk in re.findall(r"[A-Za-z0-9]+", word):    # "MaskingSession" -> masking, session
+        parts += [chunk] if chunk.lower() in TECH_WORDS else re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", chunk)
+    # A plain word ("Kiji") can be half of a name; a path or code name can't.
+    return (bool(parts) and all(p.lower() in TECH_WORDS for p in parts)
+            and not (word.isalpha() and _neighbour_is_a_name(text, wa, wb, caught)))
+
+
 def _home_dirs() -> list[str]:
     """This Mac's own home folder, as it appears in paths ("/Users/name")."""
     try:
@@ -1195,20 +1274,22 @@ def _home_dirs() -> list[str]:
 def _drop_not_values(text: str, raw: dict, issued=lambda t: True) -> dict:
     """``raw`` without catches that are provably not a value: they touch an
     Omna stand-in already in ``text``, fall inside this Mac's home-folder path,
-    or are a word in NOT_NAMES. Secrets (L2) are never dropped for the path or
-    the word. The audit events line up with spans one to one."""
+    are a word in NOT_NAMES or our own name, or are a model (L3) catch with a
+    technical shape (#30, ``_technical``). Secrets (L2) are never dropped for
+    the path or the word. The audit events line up with spans one to one."""
     # Only stand-ins Omna really issued: "[SSN_123456789]" is shaped like one
     # but holds a real value (checker finding 2026-11-21).
     toks = [(m.start(), m.end()) for m in TOKEN_RE.finditer(text) if issued(m.group(0))] if "[" in text else []
     # Only the home folder's own name ("/Users/name"), never the rest of a
     # path: grep output puts real values right after it (checker 2026-11-21).
-    homes = []
-    for h in _home_dirs():
+    homes, home_dirs = [], _home_dirs()
+    for h in home_dirs:
         start = 0
         while (i := text.find(h, start)) >= 0:
             homes.append((i, i + len(h)))
             start = i + 1
     chars = _spans_in_chars(text, raw["spans"])
+    caught = [(sp["start"], sp["end"]) for sp in chars]
     keep = []
     for idx, sp in enumerate(chars):
         a, b = sp["start"], sp["end"]
@@ -1226,6 +1307,9 @@ def _drop_not_values(text: str, raw: dict, issued=lambda t: True) -> dict:
             if sp.get("entity") == "PERSON" and text[a:b].strip().lower() in NOT_NAMES:
                 continue
             if _only_our_name(text[a:b], sp.get("entity")):
+                continue
+            if sp.get("layer") == "L3" and _technical(text, a, b, sp.get("entity"),
+                                                     [c for c in caught if c != (a, b)], home_dirs):
                 continue
         keep.append(idx)
     if len(keep) == len(raw["spans"]):

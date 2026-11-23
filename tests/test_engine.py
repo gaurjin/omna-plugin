@@ -709,3 +709,81 @@ def test_checker_leaks_after_a_home_path_stay_masked(home, monkeypatch):
         assert value not in _one_catch(monkeypatch, text, a, a + len(value), kind), (text, kind)
 
 
+def _catches(monkeypatch, text, found):
+    """The engine reports ``found`` = [(value, entity), ...] as L3 catches."""
+    from omna_plugin import smart as smart_models
+    spans, start = [], 0
+    for value, entity in found:
+        a = text.index(value, start)
+        start = a + len(value)
+        a, b = len(text[:a].encode()), len(text[:start].encode())
+        spans.append({"start": a, "end": b, "entity": entity, "layer": "L3", "token": "[" + entity + "_1]"})
+    fake = {"spans": spans, "audit": []}
+    monkeypatch.setattr(smart_models, "mask", lambda t, sm, r=None: fake if t == text else {"spans": [], "audit": []})
+    return MaskingSession().mask_text(text).masked
+
+
+# #30 (owner's own Claude Code chat, 2026-11-22): what the compact model really
+# caught in ordinary work messages, recorded from omna-pii-mask 0.2.30.
+REAL_FALSE_ALARMS = [
+    ("Omna is working. Bump omna_pii_mask from 0.2.30 to 0.2.31, compare against Kiji, then open "
+     "/Users/priyar/Developer/Omna Labs/omna-plugin/src/omna_plugin/smart.py and run cargo test in l3-ort.",
+     [("Kiji", "PERSON"), ("plugin/smart.py", "PERSONAL_URL")]),
+    ("Installed omna_pii_mask 0.2.30 into ~/.local/share/uv/tools/omna-plugin",
+     [("pii_mask", "PERSON"), (".local/share/uv/tools/omna-plugin", "PERSONAL_URL")]),
+    ("File: src/omna_plugin/engine.py lines 1150-1260; tests/test_engine.py::test_drop_not_values",
+     [("src/omna_plugin/engine.py", "PERSONAL_URL"), ("tests/test_engine.py", "PERSONAL_URL"),
+      ("test_drop_not_values", "PERSON")]),
+    ("Next: bump to 0.2.31 in core/Cargo.toml and bindings/omna-core-py/pyproject.toml, then build.",
+     [("bindings/omna-core-py/pyproject.toml", "PERSONAL_URL")]),
+    ("8/32/64 KB pastes 0.2/1.2/1.9 s. Versions 0.2.30/0.2.31/1.1.0 and 1.0.5.",
+     [("0.2/1.2/1.9", "NATIONAL_ID"), ("0.2.30/0.2.31/1.1.0", "NATIONAL_ID"), (".0.5", "NATIONAL_ID")]),
+    ("Kiji (from Dataiku) missed a phone number in our hands-on test.", [("Kiji", "PERSON")]),
+    ("Items 3, 4, 7 and 12 left; 157 values; gate G09 and B04 at 340 MB.",
+     [("12", "ADDRESS"), ("157", "ADDRESS"), ("G09", "ADDRESS"), ("B04", "ADDRESS"), ("MB", "ADDRESS")]),
+    ("the menu bar pid is old, so restart the path filter on release",
+     [("menu", "PERSON"), ("pid", "PERSON"), ("old", "PERSON"), ("path", "PERSON"),
+      ("filter", "PERSON"), ("release", "PERSON")]),
+    ("Open omna.dev/admin/dashboard and check the IP column.", [("omna.dev/admin/dashboard", "PERSONAL_URL")]),
+]
+
+
+def test_real_false_alarms_in_claude_code_messages_are_not_masked(home, monkeypatch):
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    for text, found in REAL_FALSE_ALARMS:
+        assert _catches(monkeypatch, text, found) == text, text
+
+
+def test_technical_shapes_never_spare_a_value(home, monkeypatch):
+    # The #30 shapes are narrow: a name, an ID number, an email or a web
+    # domain inside a version, a path, a code name or a short number stays
+    # masked (a leak is worse than a false alarm).
+    from pathlib import Path
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("/Users/priyar")))
+    cases = [
+        ("Kiji Watanabe called.", [("Kiji", "PERSON"), ("Watanabe", "PERSON")], "Kiji"),
+        ("Watanabe, Kiji called.", [("Kiji", "PERSON")], "Kiji"),
+        ("ask Kiji\tWatanabe now", [("Kiji", "PERSON")], "Kiji"),
+        ("ask Kiji Watanabe now", [("Kiji", "PERSON")], "Kiji"),
+        ("ask Kiji (Watanabe) now", [("Kiji", "PERSON")], "Kiji"),
+        ("open src/maria_lopez/engine.py now", [("src/maria_lopez/engine.py", "PERSONAL_URL")], "maria"),
+        ("open tests/test_maria.py now", [("tests/test_maria.py", "PERSONAL_URL")], "maria"),
+        ("open src/acme-mail.com/x.py now", [("src/acme-mail.com/x.py", "PERSONAL_URL")], "acme"),
+        ("open src/engine.py?email=ana" + "@x.com now", [("src/engine.py?email=ana" + "@x.com", "PERSONAL_URL")], "ana"),
+        ("open src/acct_48213377/engine.py", [("src/acct_48213377/engine.py", "PERSONAL_URL")], "48213377"),
+        ("id 123.456.789-09 here", [("123.456.789", "NATIONAL_ID")], "123.456.789"),
+        ("id 123.45.6789 here", [("123.45.6789", "NATIONAL_ID")], "6789"),
+        ("v 0.2.30-123456789 here", [("0.2.30", "NATIONAL_ID")], "0.2.30"),
+        ("lives at 60201 now", [("60201", "ADDRESS")], "60201"),
+        ("ssn 123 456 789 now", [("123 456 789", "ADDRESS")], "123 456"),
+        ("pin 2154 now", [("2154", "ADDRESS")], "2154"),
+        ("cvv 123 now", [("123", "CREDIT_CARD")], "123"),
+        ("user menu_maria now", [("menu_maria", "PERSON")], "maria"),
+        ("call MariaFilter now", [("MariaFilter", "PERSON")], "Maria"),
+        ("it is engine.py:OWNER=maria now", [("engine.py:OWNER=maria", "PERSON")], "maria"),
+    ]
+    for text, found, leaked in cases:
+        assert leaked not in _catches(monkeypatch, text, found), text
+
+
