@@ -60,13 +60,71 @@ def test_icon_image_on_state_is_the_unmodified_logo():
     assert on.tobytes() == base.tobytes()
 
 
-def test_icon_image_off_state_adds_a_status_dot_without_recoloring_the_logo():
-    w, h = Image.open(menubar.LOGO_PATH).size
-    cx, cy = int(w * 0.78), int(h * 0.22)
+def _pixels(img):
+    return [img.getpixel((x, y)) for x in range(img.width) for y in range(img.height)]
+
+
+def _dot_centre(w):
+    cx, cy, _ = (part * w for part in menubar.OFF_DOT_AT)
+    return int(cx), int(cy)
+
+
+def test_icon_image_off_state_adds_a_red_dot_and_greys_the_logo():
+    w = Image.open(menubar.LOGO_PATH).width
     on = menubar._icon_image(True)
     off = menubar._icon_image(False)
-    assert off.getpixel((cx, cy)) == menubar.OFF_DOT_COLOR
-    assert on.getpixel((cx, cy)) != menubar.OFF_DOT_COLOR
+    assert off.getpixel(_dot_centre(w)) == menubar.OFF_DOT_COLOR
+    assert on.getpixel(_dot_centre(w)) != menubar.OFF_DOT_COLOR
+    # The same O, in grey: readable on a light AND a dark menu bar (#45).
+    logo = [p for p in _pixels(off) if p[3] == 255 and p != menubar.OFF_DOT_COLOR]
+    assert logo and all(p[:3] == menubar.OFF_LOGO_COLOR[:3] for p in logo)
+
+
+def test_off_state_keeps_the_ring_of_the_o_whole():
+    # #45 (owner 2026-11-22): the red dot sits beside the O; no piece of the
+    # ring is cut away or painted over.
+    on = menubar._icon_image(True)
+    off = menubar._icon_image(False)
+    ring = [(x, y) for x in range(on.width) for y in range(on.height) if on.getpixel((x, y))[3] > 0]
+    assert all(off.getpixel(p)[3] >= on.getpixel(p)[3] for p in ring), "part of the ring was cut away"
+    covered = [p for p in ring if off.getpixel(p) == menubar.OFF_DOT_COLOR]
+    assert len(covered) <= len(ring) * 0.02, f"the dot covers {len(covered)} of {len(ring)} ring pixels"
+
+
+def test_logo_has_no_white_box_behind_it():
+    # #45 (owner 2026-11-22): the logo sat on a white box in the menu bar.
+    # Only the O itself may be drawn: the middle of the O and every edge are clear.
+    img = Image.open(menubar.LOGO_PATH).convert("RGBA")
+    w, h = img.size
+    edges = [img.getpixel((x, y)) for x in range(w) for y in (0, h - 1)]
+    edges += [img.getpixel((x, y)) for y in range(h) for x in (0, w - 1)]
+    assert all(p[3] == 0 for p in edges), "the picture has a background"
+    assert img.getpixel((w // 2, h // 2))[3] == 0, "the middle of the O is filled in"
+    drawn = sum(1 for p in _pixels(img) if p[3] > 0)
+    assert drawn < w * h * 0.4, f"{drawn} of {w * h} pixels drawn: a box, not a logo"
+
+
+def _near_gradient(rgb, stops=((0x2F, 0x5B, 0xFF), (0x4A, 0x45, 0xFF), (0x86, 0x36, 0xEF))):
+    """How far a colour is from the website's blue-to-purple gradient line."""
+    best = 999.0
+    for a, b in zip(stops, stops[1:]):
+        ab = [b[i] - a[i] for i in range(3)]
+        t = sum((rgb[i] - a[i]) * ab[i] for i in range(3)) / sum(v * v for v in ab)
+        t = min(1.0, max(0.0, t))
+        best = min(best, sum((rgb[i] - a[i] - t * ab[i]) ** 2 for i in range(3)) ** 0.5)
+    return best
+
+
+def test_logo_is_the_website_o_in_its_own_colours():
+    # #45 (owner 2026-11-22): "the same O" as omna.dev — its gradient
+    # #2F5BFF -> #4A45FF -> #8636EF, blue at the top, purple lower down.
+    img = Image.open(menubar.LOGO_PATH).convert("RGBA")
+    solid = [(x, y) for x in range(img.width) for y in range(img.height) if img.getpixel((x, y))[3] == 255]
+    assert solid
+    assert all(_near_gradient(img.getpixel(p)) < 6 for p in solid)
+    top = min(solid, key=lambda p: p[1])
+    bottom = max(solid, key=lambda p: p[1])
+    assert img.getpixel(top)[0] < img.getpixel(bottom)[0], "blue should be at the top, purple at the bottom"
 
 
 class _FakeIcon:

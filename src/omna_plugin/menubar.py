@@ -30,6 +30,12 @@ _last_logo = None   # the last picture that opened (see _icon_image)
 # calm grey, for a state in which browsers go to the AI unmasked (security
 # review 2026-11-11, finding 16).
 OFF_DOT_COLOR = (220, 38, 38, 255)
+# #45 (owner 2026-11-22): the logo is the website's own O in its own colours
+# on a clear background (scripts/make_menubar_icon.py draws it from favicon.svg).
+# OFF: the same O in grey, which reads on a light and on a dark menu bar, with
+# the red dot just outside its top-right corner so the ring stays whole.
+OFF_LOGO_COLOR = (142, 142, 147, 255)
+OFF_DOT_AT = (0.84, 0.16, 0.12)   # centre x, centre y, radius, as parts of the width
 
 
 # What `/omna/health` says a request gets right now, in plain words (the menu
@@ -102,10 +108,11 @@ def _icon_image(on: bool):
         if _last_logo is None:
             ImageDraw.Draw(img).ellipse((8, 8, 36, 36), fill=(30, 30, 30, 255))
     if not on:
-        # Same overlay position the Mac app uses for its state dots: a small
-        # circle in the top-right corner of the glyph, not a full recolor.
-        w, h = img.size
-        cx, cy, r = w * 0.78, h * 0.22, max(w * 0.16, 3.0)
+        grey = Image.new("RGBA", img.size, OFF_LOGO_COLOR)
+        grey.putalpha(img.getchannel("A"))
+        img = grey
+        w = img.width
+        cx, cy, r = (part * w for part in OFF_DOT_AT)
         ImageDraw.Draw(img).ellipse((cx - r, cy - r, cx + r, cy + r), fill=OFF_DOT_COLOR)
     return img
 
