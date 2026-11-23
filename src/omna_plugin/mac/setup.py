@@ -20,11 +20,7 @@ def plan(*, services: list[str], cert: Path, pac_url: str) -> list[str]:
     return [certs.trust_command(cert), *netproxy.pac_on_commands(services, pac_url)]
 
 
-def revert_plan(*, services: list[str], cert: Path) -> list[str]:
-    return [*netproxy.pac_off_commands(services), *certs.untrust_commands(cert)]
-
-
-def _run_batch(lines: list[str], why: str) -> int:
+def _run_batch(lines: list[str], why: str, stop_on_error: bool = True) -> int:
     """Run the printed commands as administrator, in one password prompt.
 
     The commands go to ``sudo sh -s`` on its standard input. They used to be
@@ -33,7 +29,11 @@ def _run_batch(lines: list[str], why: str) -> int:
     this user could read it — or rewrite it before the next run (security
     review 2026-11-11, delete list). ``sudo`` asks for the password on the
     terminal itself, not on standard input, so nothing else changes. A file
-    left by an older version is removed."""
+    left by an older version is removed.
+
+    Setup stops at the first failed line (``set -e``). Uninstall must not: one
+    failed line there used to leave every later service and the certificate in
+    place (#49), so it runs every line and reads the result back afterwards."""
     try:
         (config.home() / "setup.sh").unlink()
     except OSError:
@@ -41,7 +41,8 @@ def _run_batch(lines: list[str], why: str) -> int:
     print(f"omna: {why} — these {len(lines)} commands will run as administrator (one password prompt):")
     for l in lines:
         print("      " + l)
-    return subprocess.run(["sudo", "sh", "-s"], input="set -e\n" + "\n".join(lines) + "\n", text=True, check=False).returncode
+    script = ("set -e\n" if stop_on_error else "") + "\n".join(lines) + "\n"
+    return subprocess.run(["sudo", "sh", "-s"], input=script, text=True, check=False).returncode
 
 
 def apply(api_port: int = config.DEFAULT_PORT) -> dict:
@@ -99,17 +100,19 @@ def _wait_for_daemon_exit(pid: int, timeout: float = 2.0) -> None:
 
 
 def _points_at_omna(service: str) -> bool:
-    """Does this network service still use Omna's routing file?"""
+    """Does this network service still use Omna's routing file? (A read.) When it
+    cannot be read, the answer is yes: turning Omna's setting off is harmless, and
+    uninstall must never call a service clean that it could not check (#49)."""
     try:
         url, _on = netproxy.current_pac(service)
-    except Exception:  # noqa: BLE001 - cannot tell: leave the network settings alone
-        return False
+    except Exception:  # noqa: BLE001
+        return True
     return "/omna/proxy.pac" in (url or "")
 
 
 def revert() -> dict:
     cert = config.ca_dir() / "mitmproxy-ca-cert.pem"
-    services = netproxy.list_services()
+    services = netproxy.list_services(include_disabled=True)
     # The daemon has no launchd job to bootout anymore; stop the supervised
     # subprocess directly so it doesn't keep running after uninstall. Read its
     # pid before stopping it (cmd_stop unlinks the pidfile immediately), then
@@ -133,18 +136,20 @@ def revert() -> dict:
     # it actually touches, same as aider/codex/continue_dev's uninstall().
     vscode.revert_proxy_setting()
     vscode.disable_node_ca_trust(cert)
+    # Only what is really Omna's, read from the Mac itself: never a company's
+    # own proxy file, and no password prompt when nothing of Omna's is set.
+    # The certificate FILE may already be gone (somebody deleted ~/.omna by
+    # hand) while this Mac still routes to Omna and still trusts its
+    # certificate (security review 2026-11-11).
+    lines = netproxy.pac_off_commands([s for s in services if _points_at_omna(s)])
     if cert.exists():
-        rc = _run_batch(revert_plan(services=services, cert=cert), "remove certificate + system proxy")
-    else:
-        # The certificate FILE is gone (somebody deleted ~/.omna by hand) but
-        # this Mac may still send its browsers to Omna's routing file and
-        # still trust Omna's certificate. Uninstall used to skip both in that
-        # case and call it done (security review 2026-11-11, "not checked:
-        # omna uninstall reverses everything"). Only asks for the password
-        # when something of Omna's is really still set.
-        left = [s for s in services if _points_at_omna(s)]
-        rc = _run_batch([*netproxy.pac_off_commands(left), certs.untrust_commands(cert)[-1]],
-                        "remove certificate + system proxy") if left else 0
+        lines.append(certs.untrust_command(cert))
+    if certs.in_system_keychain():
+        lines.append(certs.delete_command())
+    rc = _run_batch(lines, "remove certificate + system proxy", stop_on_error=False) if lines else 0
+    # Read back what is still there, so the person is told the truth (#49).
+    proxy_left = [s for s in services if _points_at_omna(s)]
+    cert_left = certs.in_system_keychain()
     # Leave no trace: the cert is untrusted above, but the files themselves —
     # registry, receipts, policy, ruleset, the CA on disk, logs, pidfile — all
     # live under config.home() and survive that. Delete the whole directory so
@@ -167,7 +172,8 @@ def revert() -> dict:
     # Receipts have their own key (so `omna forget` cannot blind the evidence
     # trail). Uninstall must take BOTH, or one is left opening nothing.
     vault.delete_key(vault.RECEIPTS_ACCOUNT)
-    return {"services": services, "sudo_rc": rc, "home_removed": home_error is None,
+    return {"services": services, "sudo_rc": rc, "proxy_left": proxy_left, "cert_left": cert_left,
+            "home_removed": home_error is None,
             "home_error": home_error, "key_removed": key_removed}
 
 

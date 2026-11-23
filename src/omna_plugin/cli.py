@@ -1381,11 +1381,28 @@ def cmd_uninstall(a) -> int:
     from . import installping
 
     installping.send_uninstall()
+    rc = 0
     if sys.platform == "darwin":
         from .mac import setup as mac_setup
 
         res = mac_setup.revert()
-        print("      Mac: system proxy + certificate removed, menu-bar app and Launch at Login removed.")
+        print("      Mac: menu-bar app and Launch at Login removed.")
+        # Say "removed" only for what was read back as gone (#49): the admin
+        # step can fail partway, and it used to be reported as done anyway.
+        proxy_left, cert_left = res.get("proxy_left", []), res.get("cert_left", False)
+        if not proxy_left and not cert_left:
+            print("      Mac: system proxy + certificate removed.")
+        else:
+            rc = 1
+            from .mac import certs, netproxy
+
+            for s in proxy_left:
+                print(f"      Mac: WARNING — network service \"{s}\" still uses Omna's system proxy. Remove it by hand:")
+                for line in netproxy.pac_off_commands([s]):
+                    print(f"        sudo {line}")
+            if cert_left:
+                print(f"      Mac: WARNING — \"{certs.CA_NAME}\" is still in the System keychain. Remove it by hand:")
+                print(f"        sudo {certs.delete_command()}")
         if not res.get("home_removed", True):
             print(f"      Mac: WARNING — could not delete {config.home()} ({res['home_error']}); "
                   f"registry/receipts may still hold real values, remove it by hand.")
@@ -1399,7 +1416,7 @@ def cmd_uninstall(a) -> int:
     # The one thing this command cannot do is delete the program it is.
     print("omna: Omna no longer masks anything on this computer. To remove the program itself: "
           "`brew uninstall omna` if you installed it with Homebrew, otherwise `uv tool uninstall omna-plugin`.")
-    return 0
+    return rc
 
 
 def cmd_tools(a) -> int:

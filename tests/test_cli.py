@@ -285,6 +285,31 @@ def test_uninstall_calls_mac_setup_revert(monkeypatch):
     assert calls == [True]
 
 
+def test_uninstall_never_says_removed_while_the_proxy_or_certificate_is_still_there(monkeypatch, capsys):
+    # #49 (owner, 2026-11-22): uninstall stopped partway, yet printed
+    # "Mac: system proxy + certificate removed" — both were still on the Mac.
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("omna_plugin.claude_code.uninstall", lambda path: {"env": False, "hook": False})
+    monkeypatch.setattr("omna_plugin.mac.setup.revert",
+                        lambda: {"sudo_rc": 1, "proxy_left": ["Wi-Fi"], "cert_left": True})
+
+    assert main(["uninstall"]) == 1
+    out = capsys.readouterr()[0]
+    assert "system proxy + certificate removed" not in out
+    assert 'sudo networksetup -setautoproxystate "Wi-Fi" off' in out
+    assert 'sudo security delete-certificate -c "Omna Local Certificate Authority" /Library/Keychains/System.keychain' in out
+
+
+def test_uninstall_says_removed_only_when_verified(monkeypatch, capsys):
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("omna_plugin.claude_code.uninstall", lambda path: {"env": False, "hook": False})
+    monkeypatch.setattr("omna_plugin.mac.setup.revert",
+                        lambda: {"sudo_rc": 0, "proxy_left": [], "cert_left": False})
+
+    assert main(["uninstall"]) == 0
+    assert "Mac: system proxy + certificate removed" in capsys.readouterr()[0]
+
+
 # ---------------------------------------------------------------- status shows doors / apps / refused
 
 def test_status_shows_doors_apps_and_refused_lines(capsys, monkeypatch):

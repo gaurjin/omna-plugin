@@ -14,18 +14,24 @@ def _dq(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"').replace("`", "\\`").replace("$", "\\$")
 
 
-def parse_services(text: str) -> list[str]:
+def parse_services(text: str, *, include_disabled: bool = False) -> list[str]:
+    """A disabled service is listed as ``*Name``. Setup skips it; uninstall takes it too,
+    because a service switched off after `omna init` still holds Omna's setting."""
     out = []
     for line in text.splitlines()[1:]:
         line = line.strip()
-        if line and not line.startswith("*"):
+        if line.startswith("*"):
+            if not include_disabled:
+                continue
+            line = line[1:].strip()
+        if line:
             out.append(line)
     return out
 
 
-def list_services() -> list[str]:
+def list_services(*, include_disabled: bool = False) -> list[str]:
     r = subprocess.run(["networksetup", "-listallnetworkservices"], capture_output=True, text=True, check=False)
-    return parse_services(r.stdout)
+    return parse_services(r.stdout, include_disabled=include_disabled)
 
 
 def pac_on_commands(services: list[str], pac_url: str) -> list[str]:
@@ -40,10 +46,12 @@ def pac_off_commands(services: list[str]) -> list[str]:
     # Turning the state off alone leaves the PAC URL itself sitting in Network
     # settings (visible, though inert, in System Settings > Network > service >
     # Details > Proxies) — clear it too so uninstall leaves nothing to find.
+    # It is cleared with a single space, never "": networksetup rejects an empty
+    # URL with "The parameters were not valid." (#49, checked on macOS 2026-11-22).
     cmds = []
     for s in services:
         cmds.append(f'networksetup -setautoproxystate "{_dq(s)}" off')
-        cmds.append(f'networksetup -setautoproxyurl "{_dq(s)}" ""')
+        cmds.append(f'networksetup -setautoproxyurl "{_dq(s)}" " "')
     return cmds
 
 

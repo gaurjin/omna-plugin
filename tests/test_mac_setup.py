@@ -20,6 +20,11 @@ def _vscode_not_installed(monkeypatch):
     monkeypatch.setattr(setup.vscode, "installed", lambda: False)
     monkeypatch.setattr(setup.vscode, "revert_proxy_setting", lambda: {"proxy": False, "backup": False})
     monkeypatch.setattr(setup.vscode, "disable_node_ca_trust", lambda cert: None)
+    # Same rule for the Mac's real network settings and System keychain: the
+    # read-backs revert() does are faked too (nothing of Omna's set) unless a
+    # test says otherwise.
+    monkeypatch.setattr(setup.netproxy, "current_pac", lambda s: ("", False))
+    monkeypatch.setattr(setup.certs, "in_system_keychain", lambda: False)
 
 
 def test_services_parsing_skips_header_and_disabled():
@@ -32,14 +37,15 @@ def test_pac_on_off_commands():
                   'networksetup -setautoproxystate "Wi-Fi" on']
     assert netproxy.pac_off_commands(["Wi-Fi"]) == [
         'networksetup -setautoproxystate "Wi-Fi" off',
-        'networksetup -setautoproxyurl "Wi-Fi" ""',
+        'networksetup -setautoproxyurl "Wi-Fi" " "',
     ]
 
 
 def test_trust_commands(tmp_path):
     cert = tmp_path / "mitmproxy-ca-cert.pem"
     assert certs.trust_command(cert) == f'security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "{cert}"'
-    assert certs.untrust_commands(cert)[0] == f'security remove-trusted-cert -d "{cert}"'
+    assert certs.untrust_command(cert) == f'security remove-trusted-cert -d "{cert}"'
+    assert certs.delete_command() == f'security delete-certificate -c "{certs.CA_NAME}" /Library/Keychains/System.keychain'
 
 
 def test_pac_commands_escape_a_hostile_service_name():
@@ -101,7 +107,7 @@ def test_apply_never_installs_a_raw_launchd_agent_and_uses_the_branded_login_ite
     # `omna init` must never install one for the menu-bar. Only the branded `.app`
     # login item (System Events, same mechanism as the native Mac app) may start it.
     monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
     app_path = tmp_path / "Omna Plugin.app"
@@ -163,7 +169,7 @@ def test_revert_stops_the_daemon_subprocess_and_removes_both_launchd_agents(monk
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi"])
     calls = []
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: calls.append(tuple(cmd)))
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: calls.append(label))
@@ -189,7 +195,7 @@ def test_revert_still_turns_the_system_proxy_off_when_the_certificate_file_is_go
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi", "Ethernet"])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi", "Ethernet"])
     monkeypatch.setattr(setup.netproxy, "current_pac",
                         lambda s: ("http://127.0.0.1:7788/omna/proxy.pac", True) if s == "Wi-Fi" else ("", False))
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
@@ -197,16 +203,17 @@ def test_revert_still_turns_the_system_proxy_off_when_the_certificate_file_is_go
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
     monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
     monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+    monkeypatch.setattr(setup.certs, "in_system_keychain", lambda: True)
     batches = []
-    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: batches.append(lines) or 0)
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why, stop_on_error=True: batches.append(lines) or 0)
 
     setup.revert()
 
     assert len(batches) == 1
     assert batches[0] == [
         'networksetup -setautoproxystate "Wi-Fi" off',
-        'networksetup -setautoproxyurl "Wi-Fi" ""',
-        f'security delete-certificate -c "{setup.certs.CA_NAME}" {setup.certs.SYSTEM_KEYCHAIN} || true',
+        'networksetup -setautoproxyurl "Wi-Fi" " "',
+        f'security delete-certificate -c "{setup.certs.CA_NAME}" {setup.certs.SYSTEM_KEYCHAIN}',
     ]
 
 
@@ -215,14 +222,14 @@ def test_revert_asks_for_no_password_when_nothing_of_omnas_is_set(monkeypatch, t
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi"])
     monkeypatch.setattr(setup.netproxy, "current_pac", lambda s: ("http://corp.example/proxy.pac", True))
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
     monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
     monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
-    monkeypatch.setattr(setup, "_run_batch", lambda lines, why: (_ for _ in ()).throw(AssertionError("no admin step needed")))
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why, **k: (_ for _ in ()).throw(AssertionError("no admin step needed")))
     setup.revert()          # a company's own proxy file is never touched
 
 
@@ -240,7 +247,7 @@ def test_revert_deletes_all_local_state_so_nothing_is_left_behind(monkeypatch, t
     (home / "ca" / "mitmproxy-ca-cert.pem").write_text("cert")
     monkeypatch.setattr(setup.config, "ca_dir", lambda: home / "ca")
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: [])
 
     class R:
         returncode = 0
@@ -264,7 +271,7 @@ def test_revert_removes_the_deep_door_redirector_app(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: [])
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
@@ -285,7 +292,7 @@ def test_revert_reports_a_failed_home_delete_instead_of_swallowing_it(monkeypatc
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: [])
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
@@ -315,7 +322,7 @@ def test_oneshot_plist_contents():
 
 def test_apply_wires_vscode_when_installed(monkeypatch, tmp_path):
     monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
     app_path = tmp_path / "Omna Plugin.app"
@@ -339,7 +346,7 @@ def test_apply_reports_vscode_ca_trust_skip_alongside_a_successful_proxy_write(m
     # BOTH parts of vscode's result are clean, so this combined dict is what
     # keeps that message honest.
     monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
     monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin, **kw: tmp_path / "Omna Plugin.app")
@@ -357,7 +364,7 @@ def test_apply_reports_vscode_ca_trust_skip_alongside_a_successful_proxy_write(m
 
 def test_apply_skips_vscode_entirely_when_not_installed(monkeypatch, tmp_path):
     monkeypatch.setattr(setup, "ensure_ca", lambda d: tmp_path / "ca.pem")
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: ["Wi-Fi"])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi"])
     monkeypatch.setattr(setup, "_run_batch", lambda lines, why: 0)
     monkeypatch.setattr(setup.shutil, "which", lambda name: "/usr/local/bin/omna")
     monkeypatch.setattr(setup.app_bundle, "install", lambda omna_bin, **kw: tmp_path / "Omna Plugin.app")
@@ -376,7 +383,7 @@ def test_revert_reverts_vscode_when_installed(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: [])
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
@@ -401,7 +408,7 @@ def test_revert_cleans_up_vscode_even_when_vscode_app_is_already_gone(monkeypatc
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: [])
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
@@ -431,7 +438,7 @@ def test_revert_removes_the_registry_key_from_the_keychain(monkeypatch, tmp_path
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(setup.config, "home", lambda: home)
-    monkeypatch.setattr(setup.netproxy, "list_services", lambda: [])
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: [])
     monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
     monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
     monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
@@ -480,3 +487,85 @@ def test_init_closes_an_old_menu_bar_before_opening_the_app(monkeypatch, tmp_pat
     setup.apply()
     assert "stop-old-menu-bars" in order, "the old menu bar was not closed"
     assert order.index("stop-old-menu-bars") < order.index(("open", str(app_path)))
+
+
+# ---------------------------------------------------------------- #49: uninstall fails partway, claims success
+
+def _quiet_revert(monkeypatch, tmp_path, *, cert_file: bool):
+    """revert() with every side effect faked; only the admin batch + the read-back are left to the test."""
+    ca = tmp_path / "ca"
+    ca.mkdir()
+    if cert_file:
+        (ca / "mitmproxy-ca-cert.pem").write_text("cert")
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: ca)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+
+
+def test_pac_off_never_passes_an_empty_url():
+    # Owner, 2026-11-22: `networksetup -setautoproxyurl "Wi-Fi" ""` answers
+    # "** Error: The parameters were not valid." (checked on a real Mac inside a
+    # write-blocked sandbox). Under `set -e` that one line stopped uninstall
+    # after the first service — every later service and the certificate stayed.
+    for cmd in netproxy.pac_off_commands(["Wi-Fi", "Ethernet"]):
+        assert "" not in shlex.split(cmd)
+
+
+def test_uninstall_batch_keeps_going_after_one_failed_line(tmp_path, monkeypatch):
+    # The batch runs for real here (plain `sh`, never sudo): a failed first
+    # line must not stop the lines after it.
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    real_run = setup.subprocess.run
+    monkeypatch.setattr(setup.subprocess, "run",
+                        lambda cmd, **kw: real_run(["sh", "-s"], **kw) if cmd[:1] == ["sudo"] else real_run(cmd, **kw))
+    marker = tmp_path / "second-line-ran"
+    setup._run_batch(["false", f'touch "{marker}"'], "test", stop_on_error=False)
+    assert marker.exists()
+
+
+def test_uninstall_lists_disabled_services_too():
+    assert netproxy.parse_services(SERVICES, include_disabled=True) == ["Thunderbolt Bridge", "Wi-Fi", "iPhone USB"]
+
+
+def test_revert_reports_exactly_what_is_still_set_after_the_batch(monkeypatch, tmp_path):
+    _quiet_revert(monkeypatch, tmp_path, cert_file=True)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi", "Ethernet"])
+    # The admin step "ran" but changed nothing on Wi-Fi; Ethernet was never Omna's.
+    monkeypatch.setattr(setup.netproxy, "current_pac",
+                        lambda s: ("http://127.0.0.1:7788/omna/proxy.pac", True) if s == "Wi-Fi" else ("", False))
+    monkeypatch.setattr(setup.certs, "in_system_keychain", lambda: True)
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why, stop_on_error=True: 1)
+
+    res = setup.revert()
+
+    assert res["proxy_left"] == ["Wi-Fi"]
+    assert res["cert_left"] is True
+
+
+def test_revert_removes_a_trusted_certificate_even_when_no_service_points_at_omna(monkeypatch, tmp_path):
+    # Before: with the certificate FILE gone and no network service left on
+    # Omna's routing file, the certificate in the System keychain was skipped.
+    _quiet_revert(monkeypatch, tmp_path, cert_file=False)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi"])
+    monkeypatch.setattr(setup.netproxy, "current_pac", lambda s: ("", False))
+    state = {"cert": True}
+    monkeypatch.setattr(setup.certs, "in_system_keychain", lambda: state["cert"])
+    batches = []
+
+    def fake_batch(lines, why, stop_on_error=True):
+        batches.append((lines, stop_on_error))
+        state["cert"] = False
+        return 0
+
+    monkeypatch.setattr(setup, "_run_batch", fake_batch)
+
+    res = setup.revert()
+
+    assert batches == [([f'security delete-certificate -c "{certs.CA_NAME}" {certs.SYSTEM_KEYCHAIN}'], False)]
+    assert res["proxy_left"] == [] and res["cert_left"] is False
