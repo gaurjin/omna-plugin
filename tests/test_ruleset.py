@@ -180,3 +180,28 @@ def test_mask_always_refuses_a_bad_label(home, capsys):
 def test_status_hides_exactly_the_built_in_entries():
     from omna_plugin.engine import DEFAULT_ALLOWLIST
     assert ruleset_file._BUILT_IN == set(DEFAULT_ALLOWLIST)
+
+
+def test_mask_always_masks_whole_words_only_and_refuses_tiny_values(home, capsys):
+    """Checker on #32: `mask-always Ann` turned "Joanna" into "Jo[CLIENT_3]a",
+    and `mask-always a` scrambled every word — false alarms."""
+    assert main(["mask-always", "Ann"]) == 0
+    out = MaskingSession().mask_text("Ann met Joanna and Annabel; ann-marie too").masked
+    assert "Joanna" in out and "Annabel" in out
+    assert out.startswith("[CLIENT_1] met")
+    for bad in ["", " ", "a"]:
+        assert main(["mask-always", bad]) == 2
+    assert len(json.loads(config.ruleset_path().read_text())["custom_rules"]) == 1
+
+
+def test_mask_always_never_overwrites_a_broken_or_odd_rules_file(home, capsys):
+    p = config.ruleset_path()
+    config.ensure_home()
+    p.write_text('{"allowlist": ["keep\\\\.me"], "custom_rules": null}')
+    assert main(["mask-always", "Acme"]) == 0                    # null list: no crash
+    data = json.loads(p.read_text())
+    assert data["allowlist"] == ["keep\\.me"] and len(data["custom_rules"]) == 1
+    p.write_text("{not json")
+    assert main(["mask-always", "Acme"]) == 1                    # broken file: left alone, said so
+    assert p.read_text() == "{not json"
+    assert "cannot be read" in capsys.readouterr().err

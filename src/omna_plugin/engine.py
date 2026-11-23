@@ -711,16 +711,20 @@ class MaskingSession:
             self._cache.clear()
 
     def mask_always(self, value: str, label: str = "CLIENT") -> None:
-        """Always mask this exact value, any capitalisation, as ``[LABEL_n]`` (#32)."""
+        """Always mask this exact value, any capitalisation, as ``[LABEL_n]`` (#32).
+        Whole words only: "Ann" must never mask the middle of "Joanna". A rules
+        file that cannot be read is left alone (ValueError), never replaced —
+        it holds the person's other lists."""
         p = config.ruleset_path()
         data: dict = {"allowlist": list(DEFAULT_ALLOWLIST), "custom_rules": []}
         if p.exists():
-            try:
-                data = json.loads(p.read_text())
-            except ValueError:
-                pass
-        rules = data.setdefault("custom_rules", [])
-        rule = {"label": label, "pattern": "(?i)" + re.escape(value)}
+            data = json.loads(p.read_text())          # ValueError: the caller says so
+            if not isinstance(data, dict):
+                raise ValueError("not a JSON object")
+        rules = data.get("custom_rules") or []
+        data["custom_rules"] = rules
+        edge = lambda c: r"\b" if c.isalnum() or c == "_" else ""   # noqa: E731
+        rule = {"label": label, "pattern": "(?i)" + edge(value[0]) + re.escape(value) + edge(value[-1])}
         if rule not in rules:
             rules.append(rule)
         ruleset_file.write(data)

@@ -101,7 +101,7 @@ _BUILT_IN = {r"127\.0\.0\.1", r"0\.0\.0\.0", r"::1", r"localhost"}
 def _shown(pattern: str) -> str:
     """A list entry as the person typed it (``omna allow``/``mask-always``
     escape it); a hand-written pattern is shown as it is."""
-    p = pattern.removeprefix("(?i)")
+    p = pattern.removeprefix("(?i)").removeprefix(r"\b").removesuffix(r"\b")
     plain = re.sub(r"\\(.)", r"\1", p)
     return plain if re.escape(plain) == p else pattern
 

@@ -1210,8 +1210,16 @@ def cmd_mask_always(a) -> int:
     if not re.fullmatch(r"[A-Z][A-Z_]*", a.label):
         print(f"omna: --label must be capital letters and _ only, like CLIENT or PROJECT_NAME (got {a.label!r})", file=sys.stderr)
         return 2
-    MaskingSession().mask_always(a.value, a.label)
-    print(f"omna: will always mask {a.value!r} as [{a.label}_n], any capitalisation (ruleset {config.ruleset_path()}). "
+    value = a.value.strip()
+    if len(value) < 2:
+        print("omna: mask-always needs a value of at least 2 characters, e.g. omna mask-always \"Acme Corp\"", file=sys.stderr)
+        return 2
+    try:
+        MaskingSession().mask_always(value, a.label)
+    except ValueError as e:
+        print(f"omna: {config.ruleset_path()} cannot be read ({e}); nothing changed. Fix or remove that file, then try again", file=sys.stderr)
+        return 1
+    print(f"omna: will always mask {value!r} as [{a.label}_n], any capitalisation (ruleset {config.ruleset_path()}). "
           "Restart the proxy to apply.")
     return 0
 
