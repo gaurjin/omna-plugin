@@ -17,6 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 
 import omna_pii_mask
 
@@ -66,7 +67,8 @@ def summary() -> dict:
     hit = _cache.get(home)
     if hit and hit[0] == stamp:
         return hit[1]
-    out = {"fingerprint": "", "allowlist": 0, "custom_rules": 0, "mask_off": [], "ignored_allowlist": [], "error": ""}
+    out = {"fingerprint": "", "allowlist": 0, "custom_rules": 0, "mask_off": [], "ignored_allowlist": [], "error": "",
+           "never": [], "always": []}
     p = config.ruleset_path()
     if stamp is not None:
         try:
@@ -77,6 +79,9 @@ def summary() -> dict:
                 out["allowlist"] = len(data.get("allowlist") or [])
                 out["custom_rules"] = len(data.get("custom_rules") or [])
                 out["mask_off"] = [str(c) for c in (data.get("mask_off") or [])]
+                out["never"] = [_shown(str(x)) for x in data.get("allowlist") or [] if x not in _BUILT_IN]
+                out["always"] = [_shown(str(r.get("pattern", ""))) + ("" if r.get("label") == "CLIENT" else f" (as {r.get('label')})")
+                                 for r in data.get("custom_rules") or [] if isinstance(r, dict)]
         except (OSError, ValueError):
             out["error"] = "cannot be read"
         check = getattr(omna_pii_mask, "ruleset_check", None)
@@ -87,6 +92,18 @@ def summary() -> dict:
                 out["error"] = str(e)
     _cache[home] = (stamp, out)
     return out
+
+
+# The entries every install starts with (engine.DEFAULT_ALLOWLIST): not the person's list.
+_BUILT_IN = {r"127\.0\.0\.1", r"0\.0\.0\.0", r"::1", r"localhost"}
+
+
+def _shown(pattern: str) -> str:
+    """A list entry as the person typed it (``omna allow``/``mask-always``
+    escape it); a hand-written pattern is shown as it is."""
+    p = pattern.removeprefix("(?i)")
+    plain = re.sub(r"\\(.)", r"\1", p)
+    return plain if re.escape(plain) == p else pattern
 
 
 def fingerprint() -> str:
@@ -102,6 +119,10 @@ def status_lines() -> list[str]:
              f"{s['custom_rules']} custom rule(s)"
              + (f", switched off: {', '.join(s['mask_off'])}" if s["mask_off"] else "")
              + f"  ·  fingerprint {s['fingerprint']} (on every receipt)"]
+    if s["always"]:
+        lines.append(f"              always mask: {', '.join(s['always'])}")
+    if s["never"]:
+        lines.append(f"              never mask:  {', '.join(s['never'])}")
     for pat in s["ignored_allowlist"]:
         lines.append(f"              IGNORED allowlist entry {pat!r}: it matches everything, so it would switch masking off. "
                      f"Remove it from {config.ruleset_path()}")

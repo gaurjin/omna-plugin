@@ -12,6 +12,7 @@
     omna smart [on|off]                    smart masking (names and addresses written in sentences); on by default
     omna categories [on|off NAME...]       what Omna masks; switch a category off or back on (secrets: always masked)
     omna allow VALUE                       never mask this exact value again (false positive)
+    omna mask-always VALUE [--label NAME]  always mask this value, e.g. a client's name
     omna forget                            wipe the token registry (tokens will renumber)
     omna crash [--show N|--send|--always|--never]  what broke here; masked on disk, sent only if you said yes
     omna verify-model                      check the on-device model against its pinned hash
@@ -35,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import contextlib
 import fcntl
 import shutil
@@ -1202,6 +1204,18 @@ def cmd_allow(a) -> int:
     return 0
 
 
+def cmd_mask_always(a) -> int:
+    from .engine import MaskingSession
+
+    if not re.fullmatch(r"[A-Z][A-Z_]*", a.label):
+        print(f"omna: --label must be capital letters and _ only, like CLIENT or PROJECT_NAME (got {a.label!r})", file=sys.stderr)
+        return 2
+    MaskingSession().mask_always(a.value, a.label)
+    print(f"omna: will always mask {a.value!r} as [{a.label}_n], any capitalisation (ruleset {config.ruleset_path()}). "
+          "Restart the proxy to apply.")
+    return 0
+
+
 def cmd_forget(a) -> int:
     from .engine import MaskingSession
 
@@ -1894,6 +1908,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("action", nargs="?", choices=["on", "off"]); s.add_argument("names", nargs="*"); add_port(s)
     s.set_defaults(fn=cmd_categories)
     s = sub.add_parser("allow", help="never mask this value again"); s.add_argument("value"); s.set_defaults(fn=cmd_allow)
+    s = sub.add_parser("mask-always", help="always mask this value (a client, a project name)")
+    s.add_argument("value"); s.add_argument("--label", default="CLIENT", help="the stand-in name, e.g. CLIENT -> [CLIENT_1]")
+    s.set_defaults(fn=cmd_mask_always)
     s = sub.add_parser("forget", help="wipe the token registry"); s.set_defaults(fn=cmd_forget)
     s = sub.add_parser("init", help="wire Claude Code (and, on a Mac, the system proxy + certificate)"); add_port(s)
     s.add_argument("--project", action="store_true", help="write ./.claude/settings.json instead of ~/.claude/settings.json")

@@ -149,3 +149,34 @@ def test_a_broken_ruleset_is_named_not_silently_dropped(home):
     assert "PROBLEM" in lines
     with pytest.raises(Exception):
         MaskingSession().mask_text(TEXT)            # refused (the doors answer 400), never sent unmasked
+
+
+# ------------------------------------------------- #32: the client's own lists
+def test_mask_always_masks_a_client_value_in_any_case_and_status_shows_both_lists(home, capsys):
+    """#32 (owner 2026-11-22): clients need a "mask always" list next to the
+    "never mask" list, by command, not by hand-editing JSON."""
+    assert main(["mask-always", "Acme Corp & Sons"]) == 0
+    assert main(["mask-always", "Project Bluebird", "--label", "PROJECT"]) == 0
+    assert main(["mask-always", "Acme Corp & Sons"]) == 0          # twice = still one entry
+    assert main(["allow", "support@ourshop.example"]) == 0
+    out = MaskingSession().mask_text("Send ACME corp & sons the Project Bluebird plan, cc support@ourshop.example").masked
+    assert "acme" not in out.lower() and "Bluebird" not in out
+    assert "[CLIENT_1]" in out and "[PROJECT_1]" in out
+    assert "support@ourshop.example" in out
+    assert len(json.loads(config.ruleset_path().read_text())["custom_rules"]) == 2
+    capsys.readouterr()
+    lines = "\n".join(ruleset_file.status_lines())
+    assert "always mask: Acme Corp & Sons, Project Bluebird (as PROJECT)" in lines
+    assert "never mask:  support@ourshop.example" in lines
+    assert "127.0.0.1" not in lines                                 # the built-in entries are not the person's list
+
+
+def test_mask_always_refuses_a_bad_label(home, capsys):
+    assert main(["mask-always", "Acme", "--label", "bad label"]) == 2
+    p = config.ruleset_path()
+    assert not p.exists() or not json.loads(p.read_text()).get("custom_rules")
+
+
+def test_status_hides_exactly_the_built_in_entries():
+    from omna_plugin.engine import DEFAULT_ALLOWLIST
+    assert ruleset_file._BUILT_IN == set(DEFAULT_ALLOWLIST)

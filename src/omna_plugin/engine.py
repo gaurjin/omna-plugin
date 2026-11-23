@@ -710,6 +710,23 @@ class MaskingSession:
         with self._lock:
             self._cache.clear()
 
+    def mask_always(self, value: str, label: str = "CLIENT") -> None:
+        """Always mask this exact value, any capitalisation, as ``[LABEL_n]`` (#32)."""
+        p = config.ruleset_path()
+        data: dict = {"allowlist": list(DEFAULT_ALLOWLIST), "custom_rules": []}
+        if p.exists():
+            try:
+                data = json.loads(p.read_text())
+            except ValueError:
+                pass
+        rules = data.setdefault("custom_rules", [])
+        rule = {"label": label, "pattern": "(?i)" + re.escape(value)}
+        if rule not in rules:
+            rules.append(rule)
+        ruleset_file.write(data)
+        with self._lock:
+            self._cache.clear()
+
     # ------------------------------------------------------------------ masking
     @staticmethod
     def _kind_of(token: str) -> tuple[str, bool]:
