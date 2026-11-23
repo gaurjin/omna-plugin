@@ -571,9 +571,11 @@ def test_today_counts_only_real_messages(tmp_path, monkeypatch):
         rec("muse.ai", "/api/falco", "passthrough-site-report"),
         rec("api.anthropic.com", "CONNECT", "bypassed-tool-off:claude-code", 0),
         rec("claude.ai", "TLS", "tls-refused", 0),
+        dict(rec("chat.example-ai.com", "websocket", None, 0), status=101),        # counted: both doors write 0 bytes
+        dict(rec("localhost", "/v1/realtime", "websocket", 0), status=101),        # counted (API door)
     ]
     path = config.receipts_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("".join(json.dumps(r) + "\n" for r in recs))
     msgs, refused, _details = cli.today_counts()
-    assert (msgs, refused) == (3, 1)
+    assert (msgs, refused) == (5, 1)

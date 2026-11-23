@@ -924,7 +924,9 @@ def _is_message(r: dict) -> bool:
     input"). Not: the sites' own checks, reports and page loads Omna passes
     through, empty requests, and the background pings listed above."""
     note = str(r.get("note") or "")
-    if note == "tls-refused" or note.startswith("passthrough-") or r.get("bytes_in", 1) == 0:
+    # A WebSocket receipt (101) always records 0 bytes (both doors): it is a chat.
+    empty = r.get("bytes_in", 1) == 0 and r.get("status") != 101
+    if note == "tls-refused" or note.startswith("passthrough-") or empty:
         return False
     return not _BACKGROUND.search(str(r.get("route", "")).split("?", 1)[0])
 

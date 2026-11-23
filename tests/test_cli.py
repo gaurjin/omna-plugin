@@ -273,7 +273,7 @@ def test_init_never_claims_mac_apps_protected_when_the_password_step_failed(monk
     monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None, **k: {"backup": None})
     monkeypatch.setattr("omna_plugin.mac.setup.apply", lambda api_port=None: {"sudo_rc": 1})
 
-    main(["init"])
+    assert main(["init"]) == 1
     out, _ = capsys.readouterr()
     assert "certificate installed" not in out
     assert "every AI app on this Mac is masked" not in out
