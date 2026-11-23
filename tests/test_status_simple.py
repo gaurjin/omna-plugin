@@ -42,7 +42,8 @@ def test_all_covered_short_plain_and_fits_80_columns(mac, capsys):
     for jargon in ("doors:", "style:", "fingerprint", "registry:", "chrome link", "proxy:", "engine ", "values"):
         assert jargon not in out, jargon
     assert "✓  Claude Code" in out and "✓  Chrome" in out and "✓  Mac apps" in out
-    assert "omna status --details" in out and "1.1.0" in out.splitlines()[-1]
+    from omna_plugin.proxy import __version__
+    assert "omna status --details" in out and f"Omna {__version__}" in out.splitlines()[-1]
 
 
 def test_no_fact_said_twice(mac, capsys):
