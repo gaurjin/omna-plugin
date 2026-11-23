@@ -79,7 +79,7 @@ def summary() -> dict:
                 out["allowlist"] = len(data.get("allowlist") or [])
                 out["custom_rules"] = len(data.get("custom_rules") or [])
                 out["mask_off"] = [str(c) for c in (data.get("mask_off") or [])]
-                out["never"] = [_shown(str(x)) for x in data.get("allowlist") or [] if x not in _BUILT_IN]
+                out["never"] = [_shown(str(x)) for x in data.get("allowlist") or [] if str(x) not in _BUILT_IN]
                 out["always"] = [_shown(str(r.get("pattern", ""))) + ("" if r.get("label") == "CLIENT" else f" (as {r.get('label')})")
                                  for r in data.get("custom_rules") or [] if isinstance(r, dict)]
         except (OSError, ValueError):

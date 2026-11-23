@@ -205,3 +205,14 @@ def test_mask_always_never_overwrites_a_broken_or_odd_rules_file(home, capsys):
     assert main(["mask-always", "Acme"]) == 1                    # broken file: left alone, said so
     assert p.read_text() == "{not json"
     assert "cannot be read" in capsys.readouterr().err
+
+
+def test_odd_hand_edited_entries_never_crash_status_or_mask_always(home, capsys):
+    p = config.ruleset_path()
+    config.ensure_home()
+    p.write_text('{"allowlist": [["x"]], "custom_rules": [{"label": "CLIENT", "pattern": "Acme"}, "junk"]}')
+    ruleset_file._cache.clear()
+    "\n".join(ruleset_file.status_lines())                       # must not raise
+    p.write_text('{"custom_rules": {"a": 1}}')
+    assert main(["mask-always", "Acme"]) == 1
+    assert p.read_text() == '{"custom_rules": {"a": 1}}'

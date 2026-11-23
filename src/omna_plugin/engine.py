@@ -722,6 +722,8 @@ class MaskingSession:
             if not isinstance(data, dict):
                 raise ValueError("not a JSON object")
         rules = data.get("custom_rules") or []
+        if not isinstance(rules, list):
+            raise ValueError("custom_rules is not a list")
         data["custom_rules"] = rules
         edge = lambda c: r"\b" if c.isalnum() or c == "_" else ""   # noqa: E731
         rule = {"label": label, "pattern": "(?i)" + edge(value[0]) + re.escape(value) + edge(value[-1])}
