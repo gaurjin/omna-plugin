@@ -1299,6 +1299,13 @@ def cmd_init(a) -> int:
 
         _system_door_on()
         res = mac_setup.apply(api_port=a.port)
+        if res.get("sudo_rc", 0) != 0:
+            # #50: no terminal for the password, wrong password, or cancelled.
+            # Nothing was installed, so nothing on this Mac is masked yet —
+            # Claude Code included, since it goes through the same Mac-wide door.
+            print("omna: NOT finished — the Mac password step did not complete, so nothing is masked yet.")
+            print("      Open the Terminal app, run `omna init`, and type your Mac password when asked.")
+            return 1
         print("      Mac: system proxy + certificate installed — every AI app on this Mac is masked, not just Claude Code.")
         print("      Mac: a menu-bar icon now shows Omna's status — click it any time to see what's covered, or to uninstall.")
         print("      Mac: quit the icon any time and re-open \"Omna Plugin\" from Spotlight — turn on its Launch at Login to skip that step.")
