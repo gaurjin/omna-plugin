@@ -858,7 +858,10 @@ def _mac_apps_route() -> tuple[str, bool] | None:
             service = last
     if not service:
         return None
-    url, enabled = netproxy.current_pac(service)
+    try:
+        url, enabled = netproxy.current_pac(service)
+    except (OSError, subprocess.SubprocessError):
+        return None
     return service, bool(enabled and "/omna/proxy.pac" in url)
 
 

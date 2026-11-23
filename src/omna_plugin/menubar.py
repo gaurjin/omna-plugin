@@ -458,7 +458,9 @@ def run(port: int = config.DEFAULT_PORT) -> int:
 
     def menu_items():
         h = _health(port)
-        lines = status_lines(h, today_counts(), mac_apps_route()) if h else status_lines(h)
+        # Only the saved answer here: this runs on the main thread, where a
+        # slow networksetup would freeze the menu (review of #44).
+        lines = status_lines(h, today_counts(), _route_cache["val"]) if h else status_lines(h)
         items = [pystray.MenuItem(lines[0], lambda: _toggle_masking(h, state), checked=lambda item: bool(h))]
         items += [pystray.MenuItem(line, None, enabled=False) for line in lines[1:]]
         items.append(pystray.Menu.SEPARATOR)

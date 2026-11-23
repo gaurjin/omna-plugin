@@ -56,7 +56,7 @@ def pac_off_commands(services: list[str]) -> list[str]:
 
 
 def current_pac(service: str) -> tuple[str, bool]:
-    r = subprocess.run(["networksetup", "-getautoproxyurl", service], capture_output=True, text=True, check=False)
+    r = subprocess.run(["networksetup", "-getautoproxyurl", service], capture_output=True, text=True, check=False, timeout=5)
     url, enabled = "", False
     for line in r.stdout.splitlines():
         if line.startswith("URL:"):
