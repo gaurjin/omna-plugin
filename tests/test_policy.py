@@ -50,7 +50,9 @@ def test_pac_names_only_ai_hosts_and_the_system_door(tmp_path, monkeypatch):
     monkeypatch.setenv("OMNA_HOME", str(tmp_path))
     p = policy.Policy.load()
     pac = p.pac(system_port=7789)
-    assert 'return "PROXY 127.0.0.1:7789"' in pac
+    # #48 (owner chose A, 2026-11-22): when Omna is stopped, browsers go to the
+    # AI directly (unmasked, as `omna stop` says) instead of failing to load.
+    assert 'return "PROXY 127.0.0.1:7789; DIRECT"' in pac
     assert 'return "DIRECT"' in pac
     assert '"claude.ai"' in pac
     assert "github.com" not in pac

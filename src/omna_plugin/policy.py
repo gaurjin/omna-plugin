@@ -237,7 +237,7 @@ class Policy:
             "  host = host.toLowerCase();\n"
             "  for (var i = 0; i < hosts.length; i++) {\n"
             "    if (host == hosts[i] || dnsDomainIs(host, '.' + hosts[i])) "
-            f'return "PROXY 127.0.0.1:{system_port}";\n'
+            f'return "PROXY 127.0.0.1:{system_port}; DIRECT";\n'
             "  }\n"
             '  return "DIRECT";\n'
             "}\n"
