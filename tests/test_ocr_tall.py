@@ -60,3 +60,15 @@ def test_a_normal_picture_is_read_in_one_go(monkeypatch):
     r = ocr.recognize(data)
     assert len(calls) == 1
     assert all(any(e in ln["text"] for ln in r["lines"]) for e in emails)
+
+
+def test_a_thin_very_tall_picture_is_read_in_a_bounded_number_of_slices(monkeypatch):
+    """Review of P3: slices followed the width, so a 10 x 100,000 px picture
+    was cut into ~5,000 slices (78 s, measured). At most MAX_SLICES now."""
+    im = Image.new("RGB", (10, 100_000), "white")
+    b = io.BytesIO()
+    im.save(b, "PNG")
+    calls = []
+    monkeypatch.setattr(ocr, "_read", lambda *a, **k: calls.append(1) or [])
+    ocr.recognize(b.getvalue())
+    assert 1 < len(calls) <= ocr.MAX_SLICES

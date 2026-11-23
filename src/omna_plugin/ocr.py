@@ -51,6 +51,10 @@ def available() -> bool:
 # fewest misread lines, 1.2 s; 3x only 8/10.
 TALL = 4
 SLICE = 2
+# Review of P3: slices followed the width, so a 10 x 100,000 px picture was
+# ~5,000 slices (78 s). A thin picture gets taller slices instead: never more
+# than this many reads (about 0.1 s each).
+MAX_SLICES = 32
 OVERLAP = 240   # px: taller than any line of text on a screenshot
 
 
@@ -111,7 +115,7 @@ def _read(handler, width: float, height: float, top: float = 0.0) -> list[dict]:
 def _read_tall(img, width: float, height: float) -> list[dict]:
     """A tall upright picture in overlapping slices. A line is kept by the one
     slice whose own stretch (overlap split in the middle) holds its centre."""
-    step = SLICE * width
+    step = max(SLICE * width, height / MAX_SLICES)
     lines: list[dict] = []
     top = 0.0
     while top < height:
