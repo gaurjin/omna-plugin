@@ -265,6 +265,22 @@ def test_init_calls_mac_setup_apply_on_darwin_unless_no_system(monkeypatch, caps
     assert out.strip().splitlines()[-1] == "Omna is active. Everything you send to an AI from this Mac is masked. `omna status` any time."
 
 
+def test_init_never_claims_mac_apps_protected_when_the_password_step_failed(monkeypatch, capsys):
+    """#50 (2026-11-23): `omna init` run where sudo could not ask for the
+    password (or the person cancelled it) printed "system proxy + certificate
+    installed — every AI app on this Mac is masked". Nothing was installed."""
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None, **k: {"backup": None})
+    monkeypatch.setattr("omna_plugin.mac.setup.apply", lambda api_port=None: {"sudo_rc": 1})
+
+    main(["init"])
+    out, _ = capsys.readouterr()
+    assert "certificate installed" not in out
+    assert "every AI app on this Mac is masked" not in out
+    assert "Everything you send to an AI from this Mac is masked" not in out
+    assert "omna init" in out          # tells the person how to finish
+
+
 def test_init_no_system_skips_mac_setup_apply(monkeypatch, capsys):
     monkeypatch.setattr("sys.platform", "darwin")
     monkeypatch.setattr("omna_plugin.claude_code.init", lambda path, port=None, **k: {"backup": None})
