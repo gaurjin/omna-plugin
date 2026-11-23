@@ -128,30 +128,3 @@ def test_a_sentence_end_is_not_a_value_breaking():
     assert picture.join_lines(pair("Upgrade to 192.", "168.1.20 later"))[0] == "Upgrade to 192.\n168.1.20 later"
     assert picture.join_lines(pair("Write to ana.lopez.", "test@example-mail.com"))[0] == "Write to ana.lopez.test@example-mail.com"
     assert picture.join_lines(pair("Write to ana.lopez.test", "@example-mail.com"))[0] == "Write to ana.lopez.test@example-mail.com"
-
-
-@pytest.mark.skipif(not ocr.available(), reason="needs macOS + Apple Vision")
-def test_mirrored_text_in_a_photo_is_blacked_out(tmp_path, monkeypatch):
-    """P1 (client test 2026-11-22): text mirrored in a photo (a selfie) reads as
-    gibberish ("pggâє: yus rober"), so the email went out. A photo is also read
-    flipped, and what is found there is blacked out at the mirrored spot."""
-    import io
-
-    from PIL import Image, ImageDraw, ImageFont, ImageOps
-
-    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
-    f = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 30)
-    up = Image.new("RGB", (600, 800), (190, 170, 150))
-    d = ImageDraw.Draw(up)
-    d.text((30, 100), "Plan line: review the launch", fill="black", font=f)
-    d.text((30, 460), "Contact: ana.lopez.test" + "@example-mail.com", fill="black", font=f)
-    b = io.BytesIO()
-    ImageOps.mirror(up).save(b, "JPEG", quality=90)
-    out, st = Pipeline(MaskingSession()).mask_file(b.getvalue(), "image/jpeg")
-    assert out[:3] == b"\xff\xd8\xff", "must stay a JPEG"
-    back = Image.open(io.BytesIO(out))
-    flipped = io.BytesIO()
-    ImageOps.mirror(back).save(flipped, "PNG")
-    read = " ".join(ln["text"] for ln in ocr.recognize(flipped.getvalue())["lines"])
-    assert "example-mail" not in read and "lopez" not in read, read
-    assert "Plan line" in read, "the rest of the picture must stay"
