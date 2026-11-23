@@ -79,3 +79,39 @@ def test_picture_limit_is_100_mb_and_bigger_is_refused_not_misread():
         pytest.skip("reading pictures needs macOS")
     with pytest.raises(ValueError, match="too large"):
         ocr.recognize(b"\x89PNG" + b"\0" * ocr.MAX_BYTES)
+
+
+@pytest.mark.skipif(not ocr.available(), reason="needs macOS + Apple Vision")
+def test_a_value_wrapped_onto_two_lines_is_blacked_out_on_both(tmp_path, monkeypatch):
+    """P2 (client test 2026-11-22): an email or phone number that wraps onto the
+    next line was never found — the read lines were joined with a line break.
+    Ordinary lines keep their break and are never blacked out."""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    f = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", 30)
+    im = Image.new("RGB", (520, 560), "white")
+    d = ImageDraw.Draw(im)
+    rows = ["Plan line: review the launch", "Write to ana.lopez.test@", "example-mail.com today", "",
+            "Or maria.garcia.test@example-", "mail.com for billing", "", "Call 415-555-", "0199 after five",
+            "", "Total-", "2024 budget"]
+    for i, t in enumerate(rows):
+        d.text((30, 30 + i * 42), t, fill="black", font=f)
+    b = io.BytesIO()
+    im.save(b, "PNG")
+    out, st = Pipeline(MaskingSession()).mask_file(b.getvalue(), "image/png")
+    after = [ln["text"] for ln in ocr.recognize(out)["lines"]]
+    for gone in ("ana.lopez", "example-mail.com", "maria.garcia", "mail.com for", "415-555", "0199"):
+        assert not any(gone in t for t in after), f"{gone} still readable: {after}"
+    for kept in ("Plan line: review the launch", "Total-", "2024 budget"):
+        assert any(kept in t for t in after), f"{kept} was blacked out: {after}"
+
+
+def test_only_a_real_continuation_is_joined():
+    L = lambda t, x, y: {"text": t, "x": x, "y": y, "w": 200.0, "h": 30.0}  # noqa: E731
+    assert picture.join_lines([L("ana.lopez.test@", 30, 72), L("example-mail.com", 600, 72)])[0] == "ana.lopez.test@\nexample-mail.com"
+    assert picture.join_lines([L("ana.lopez.test@", 30, 72), L("example-mail.com", 30, 400)])[0] == "ana.lopez.test@\nexample-mail.com"
+    assert picture.join_lines([L("Meeting notes", 30, 72), L("Budget review", 30, 109)])[0] == "Meeting notes\nBudget review"
+    assert picture.join_lines([L("ana.lopez.test@", 30, 72), L("example-mail.com", 30, 109)])[0] == "ana.lopez.test@example-mail.com"
