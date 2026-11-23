@@ -159,3 +159,16 @@ def test_website_message_to_a_cloud_session_is_masked(path):
 ])
 def test_remote_control_rule_leaves_messages_masked(host, path):
     assert hands_off.reason(host, path, b'{"prompt": "hi"}') is None
+
+
+@pytest.mark.parametrize("path", [
+    "/v1/code/sessions/session_01CLOUD",               # Claude Code on this Mac only LOOKING at a cloud session
+    "/v1/code/sessions/cse_01CLOUD/client/presence",
+    "/v1/code/sessions/cse_01CLOUD",
+])
+def test_only_a_session_this_mac_runs_counts_as_a_mac_session(path):
+    """Reviewer 2026-11-23: a cloud session id seen on api.anthropic.com
+    without this Mac running it (its worker uploads) must stay masked on
+    the website."""
+    assert hands_off.reason("api.anthropic.com", path, b"{}") == hands_off.REMOTE_CONTROL
+    assert hands_off.reason("claude.ai", "/v1/code/sessions/session_01CLOUD/events", b'{"text": "x"}') is None

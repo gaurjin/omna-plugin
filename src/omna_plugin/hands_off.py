@@ -43,6 +43,9 @@ REMOTE_CONTROL = "passthrough-remote-control"
 # TRIPWIRE: the Mac's uploads include tool output, so a secret in a command's
 # output is stored at claude.ai as it is (the model only ever sees it masked).
 _REMOTE_CONTROL = re.compile(r"^/v1/code/sessions(?:/(?:cse|session)_([A-Za-z0-9]+))?(?:/|$)")
+# Only a session whose worker is THIS Mac (it uploads cse_X/worker/…) counts:
+# Claude Code here only looking at a cloud session must not make it "on this Mac".
+_RUNS_HERE = re.compile(r"^/v1/code/sessions/cse_[A-Za-z0-9]+/worker(/|$)")
 _mac_sessions: set[str] = set()
 
 
@@ -86,7 +89,7 @@ def reason(host: str, path: str, body: bytes = b"") -> str | None:
     bare = p.split("?", 1)[0]
     m = _REMOTE_CONTROL.match(bare) if h in ("api.anthropic.com", "claude.ai") else None
     if m and h == "api.anthropic.com":
-        if m.group(1):
+        if m.group(1) and _RUNS_HERE.match(bare):
             _mac_sessions.add(m.group(1))
         return REMOTE_CONTROL
     if m and m.group(1) in _mac_sessions:
