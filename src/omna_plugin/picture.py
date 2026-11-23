@@ -27,26 +27,12 @@ from . import ocr, receipts
 PAD = 3  # pixels of margin around each box, so letter edges don't show
 
 
-def _continues(cur: dict, nxt: dict) -> bool:
-    """True when ``nxt`` is the rest of ``cur`` wrapped onto the line below (P2,
-    client test 2026-11-22: "ana.lopez.test@" / "example-mail.com" was never
-    found as an email). Only right under it, starting at the same left edge,
-    and only where a value can break: after @ . - _ or before @ . — an ordinary
-    line keeps its line break. Same rule as Omna for Chrome's picture-ocr.ts."""
-    h = max(cur["h"], nxt["h"])
-    gap = nxt["y"] - (cur["y"] + cur["h"])
-    if gap < -h / 2 or gap > h * 0.8 or abs(nxt["x"] - cur["x"]) > h * 1.5:
-        return False
-    return cur["text"].rstrip()[-1:] in ("@", ".", "-", "_") or nxt["text"].lstrip()[:1] in ("@", ".")
-
-
 def join_lines(lines: list[dict]) -> tuple[str, list[tuple[int, int]]]:
-    """Lines joined with newlines (nothing between a line and its wrapped
-    rest), and each line's [start, end) char range."""
+    """Lines joined with newlines, and each line's [start, end) char range."""
     text, ranges = "", []
     for i, line in enumerate(lines):
         if i:
-            text += "" if _continues(lines[i - 1], line) else "\n"
+            text += "\n"
         start = len(text)
         text += line["text"]
         ranges.append((start, len(text)))
