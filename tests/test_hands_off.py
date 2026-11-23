@@ -104,3 +104,28 @@ def test_claude_codes_own_reports_to_anthropic_are_left_alone():
     assert hands_off.reason("api.anthropic.com", "/api/event_logging/v2/batch", b"{}")
     assert hands_off.reason("api.anthropic.com", "/api/eval/sdk-zAZezfDKGoZuXXKe", b"{}")
     assert not hands_off.reason("api.anthropic.com", "/v1/messages", b"{}")
+
+
+@pytest.mark.parametrize("host,path", [
+    ("api.anthropic.com", "/v1/code/sessions/cse_01ABC/worker/events"),
+    ("api.anthropic.com", "/v1/code/sessions/cse_01ABC/worker/heartbeat"),
+    ("api.anthropic.com", "/v1/code/sessions/cse_01ABC/client/presence"),
+    ("claude.ai", "/v1/code/sessions/cse_01ABC/events"),
+    ("claude.ai", "/v1/code/sessions/heartbeat_check"),
+    ("claude.ai", "/v1/code/sessions"),
+])
+def test_remote_control_is_hands_off(host, path):
+    """#52 (owner 2026-11-23, option a): Claude Code's Remote Control sends the
+    person's own chat to their own phone/claude.ai — not to an AI to read.
+    Masking it showed 121 stand-ins in 9 minutes. What reaches the model
+    still goes through /v1/messages and is masked there."""
+    assert hands_off.reason(host, path, b'{"events": []}') == hands_off.REMOTE_CONTROL
+
+
+@pytest.mark.parametrize("host,path", [
+    ("api.anthropic.com", "/v1/messages"),
+    ("claude.ai", "/api/organizations/x/chat_conversations/y/completion"),
+    ("example.com", "/v1/code/sessions/cse_01ABC/worker/events"),   # only Anthropic's hosts
+])
+def test_remote_control_rule_leaves_messages_masked(host, path):
+    assert hands_off.reason(host, path, b'{"prompt": "hi"}') is None

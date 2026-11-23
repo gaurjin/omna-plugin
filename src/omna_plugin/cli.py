@@ -911,7 +911,22 @@ def today_counts() -> tuple[int, int, int]:
     today = date.today().isoformat()
     todays = [r for r in receipts.tail(0) if str(r.get("ts", "")).startswith(today) and r.get("door") != "control"]
     refused = sum(1 for r in todays if r.get("note") == "tls-refused")
-    return len(todays) - refused, refused, _private_details_today(todays)
+    return sum(1 for r in todays if _is_message(r)), refused, _private_details_today(todays)
+
+
+# Background requests apps send on their own — never a message (#53).
+_BACKGROUND = re.compile(r"^/v1/code/|^/v1/messages/count_tokens|^/api/hatch/vm/wake")
+
+
+def _is_message(r: dict) -> bool:
+    """A receipt for something the person sent to an AI (#53, owner
+    2026-11-23: the count climbed "every second when I have not given any
+    input"). Not: the sites' own checks, reports and page loads Omna passes
+    through, empty requests, and the background pings listed above."""
+    note = str(r.get("note") or "")
+    if note == "tls-refused" or note.startswith("passthrough-") or r.get("bytes_in", 1) == 0:
+        return False
+    return not _BACKGROUND.search(str(r.get("route", "")).split("?", 1)[0])
 
 
 def cmd_status(a) -> int:

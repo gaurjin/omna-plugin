@@ -543,3 +543,37 @@ def test_a_leftover_off_note_while_omna_runs_does_not_switch_recovery_off_for_go
     pause.begin("stop")                                   # a fresh one (the menu bar's own Pause sequence)
     menubar._poll_once(object(), {"paused": True}, 7788)
     assert pause.state() is not None
+
+
+def test_today_counts_only_real_messages(tmp_path, monkeypatch):
+    """#53 (owner 2026-11-23: "increasing every second when I have not given
+    any input"): Remote Control pings, claude.ai branch checks, token counts
+    and empty requests are not messages to AI."""
+    import json
+    from datetime import date
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin import config, cli
+    t = f"{date.today().isoformat()}T10:00:00+0000"
+    rec = lambda host, route, note=None, n=200: {"ts": t, "door": "system", "host": host, "route": route,  # noqa: E731
+                                                 "note": note, "bytes_in": n, "finds": []}
+    recs = [
+        rec("api.anthropic.com", "/v1/messages"),                                    # counted
+        rec("chatgpt.com", "/backend-api/f/conversation"),                           # counted
+        rec("api.anthropic.com", "/v1/messages", "file-not-masked:image"),           # counted
+        rec("api.anthropic.com", "/v1/code/sessions/cse_1/worker/heartbeat", "passthrough-remote-control"),
+        rec("api.anthropic.com", "/v1/code/sessions/cse_1/worker/events"),           # old receipt, before #52
+        rec("claude.ai", "/v1/code/sessions/cse_1/client/presence"),
+        rec("claude.ai", "/v1/code/github/get-batch-branch-status"),
+        rec("api.anthropic.com", "/v1/messages/count_tokens"),
+        rec("muse.ai", "/api/hatch/vm/wake"),
+        rec("claude.ai", "/v1/code/sessions/cse_1", "passthrough-nonprompt", 0),
+        rec("muse.ai", "/api/falco", "passthrough-site-report"),
+        rec("api.anthropic.com", "CONNECT", "bypassed-tool-off:claude-code", 0),
+        rec("claude.ai", "TLS", "tls-refused", 0),
+    ]
+    path = config.receipts_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    msgs, refused, _details = cli.today_counts()
+    assert (msgs, refused) == (3, 1)

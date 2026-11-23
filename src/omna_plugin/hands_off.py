@@ -26,6 +26,17 @@ from . import sites
 
 SECURITY = "passthrough-security-check"
 SITE_REPORT = "passthrough-site-report"
+REMOTE_CONTROL = "passthrough-remote-control"
+
+# Claude Code's Remote Control (#52, owner 2026-11-23, option a): the person's
+# own Claude Code chat sent to their own phone / claude.ai — heartbeats,
+# presence, and the chat itself. Not sent to an AI to read: anything that
+# reaches the model still goes through /v1/messages and is masked there.
+# Masking it put 121 stand-ins on the owner's phone in 9 minutes.
+# TRIPWIRE: these uploads include tool output, so a secret in a command's
+# output is stored at claude.ai as it is (the model only ever sees it masked).
+_REMOTE_CONTROL_HOSTS = ("api.anthropic.com", "claude.ai")
+_REMOTE_CONTROL = re.compile(r"^/v1/code/sessions(/|$)")
 
 # Any host: these are never anything you typed.
 _SECURITY_ANY_HOST = [
@@ -62,6 +73,8 @@ def reason(host: str, path: str, body: bytes = b"") -> str | None:
     if _CF_CHALLENGE.search(p) and _cloudflare_answer(body or b""):
         return SECURITY
     bare = p.split("?", 1)[0]
+    if h in _REMOTE_CONTROL_HOSTS and _REMOTE_CONTROL.search(bare):
+        return REMOTE_CONTROL
     if any(sites.on(h, site) and rx.search(bare) for site, rx in _SECURITY_BY_HOST):
         return SECURITY
     if any(sites.on(h, site) and rx.search(bare) for site, rx in _REPORTS_BY_HOST):
