@@ -147,6 +147,28 @@ def paint_boxes(data: bytes, boxes: list[tuple[float, float, float, float]]) -> 
     return bytes(buf)
 
 
+def _mirrored_lines(data: bytes) -> list[list[dict]]:
+    """P1 (client test 2026-11-22): text mirrored in a photo (a selfie) reads as
+    gibberish ("pggâє: yus rober", measured), so the email went out. A photo —
+    not a PNG screenshot, never mirrored — is also read flipped left-right; its
+    lines come back with x flipped onto the real picture. Same as Omna for
+    Chrome's picturesForReading. [] when it can't be done (then as before)."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return []
+    try:
+        import io
+
+        from PIL import Image, ImageOps
+
+        b = io.BytesIO()
+        ImageOps.mirror(Image.open(io.BytesIO(data)).convert("RGB")).save(b, "PNG")
+        read = ocr.recognize(b.getvalue())
+    except Exception:  # noqa: BLE001 — an extra read; the normal read already ran
+        return []
+    w = read["width"]
+    return [[{**ln, "x": w - ln["x"] - ln["w"]} for ln in read["lines"]]]
+
+
 def redact(data: bytes, detect: Callable[[str], list[dict]]) -> tuple[bytes, dict] | None:
     """(picture with sensitive lines blacked out, stats) — or the original and
     empty stats when nothing was found. None = can't do it here (see module)."""
@@ -158,11 +180,15 @@ def redact(data: bytes, detect: Callable[[str], list[dict]]) -> tuple[bytes, dic
         read = ocr.recognize(data)
     except (ValueError, RuntimeError):
         return None
-    if not read["lines"]:
-        return data, stats_of([])
-    text, _ = join_lines(read["lines"])
-    spans = detect(text)
-    boxes = boxes_to_hide(read["lines"], spans)
+    spans: list[dict] = []
+    boxes: list[tuple[float, float, float, float]] = []
+    for lines in [read["lines"], *_mirrored_lines(data)]:
+        if not lines:
+            continue
+        text, _ = join_lines(lines)
+        found = detect(text)
+        spans += found
+        boxes += boxes_to_hide(lines, found)
     if not boxes:
         return data, stats_of([])
     out = paint_boxes(data, boxes)
