@@ -579,3 +579,33 @@ def test_today_counts_only_real_messages(tmp_path, monkeypatch):
     path.write_text("".join(json.dumps(r) + "\n" for r in recs))
     msgs, refused, _details = cli.today_counts()
     assert (msgs, refused) == (5, 1)
+
+
+def test_today_counts_one_message_per_send_with_omna_for_chrome_and_the_mac_wide_door(tmp_path, monkeypatch):
+    """Bug list row 5 (2026-11-25, check row5.py: 1 message counted as 2).
+    Omna for Chrome writes a record per Hide click (door "chrome") and labels
+    every send; the send's system-door receipt is the message. Chrome's records
+    add private details only (each once), never messages."""
+    import json
+    from datetime import date
+
+    monkeypatch.setenv("OMNA_HOME", str(tmp_path))
+    from omna_plugin import config, cli
+    t = f"{date.today().isoformat()}T10:00:00+0000"
+    find = lambda fp: {"entity": "AWS_KEY", "layer": "L1", "risk": "secret", "action": "redacted", "n": 1, "fp": [fp]}  # noqa: E731
+    chrome = lambda fp: {"ts": t, "product": "chrome", "door": "chrome", "kind": "typed", "route": "typed",  # noqa: E731
+                         "host": "chatgpt.com", "finds": [find(fp)]}
+    send = lambda finds=(): {"ts": t, "door": "system", "host": "chatgpt.com", "route": "/backend-api/f/conversation",  # noqa: E731
+                             "bytes_in": 120, "finds": list(finds)}
+    path = config.receipts_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    def counts(recs):
+        path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        msgs, _refused, details = cli.today_counts()
+        return msgs, details
+
+    assert counts([chrome("f6eb6eef67ee8435"), send()]) == (1, 1)                        # 1 hide, 1 send
+    assert counts([send()]) == (1, 0)                                                   # nothing hidden
+    assert counts([chrome("f6eb6eef67ee8435"), chrome("1fa40ec3ebc4a7c4"), send()]) == (1, 2)   # 2 hides, 1 send
+    assert counts([send([find("0123456789abcdef")])]) == (1, 1)                         # no extension

@@ -923,6 +923,14 @@ def _is_message(r: dict) -> bool:
     2026-11-23: the count climbed "every second when I have not given any
     input"). Not: the sites' own checks, reports and page loads Omna passes
     through, empty requests, and the background pings listed above."""
+    if r.get("door") == "chrome":
+        # Omna for Chrome writes a record per Hide click, not per send; the
+        # send itself is the door's receipt. Its private details still count
+        # (bug list row 5, 2026-11-25: one message showed as 2).
+        # Known limit (reviewer 2026-11-25, not fixed): when Chrome's traffic does
+        # not pass the Mac-wide door (door off, or "Not connected" on this
+        # network), Chrome sends count 0 messages; private details still count.
+        return False
     note = str(r.get("note") or "")
     # A WebSocket receipt (101) always records 0 bytes (both doors): it is a chat.
     empty = r.get("bytes_in", 1) == 0 and r.get("status") != 101
