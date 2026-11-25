@@ -6,6 +6,7 @@ whole message as flat text edited 37 of Codex's own fields — ids, tool
 descriptions, even two KEY NAMES ("access_programs", "session_id") — and
 OpenAI refused the turn ("Unsupported parameter"). Owner rule 2026-11-15:
 only the person's data is masked. Shapes below are that message's, ids made up."""
+import asyncio
 import copy
 import json
 
@@ -52,7 +53,7 @@ def _send(frame, host="chatgpt.com", path="/backend-api/codex/responses", opcode
     f.request.host = host; f.request.path = path; f.request.method = "GET"
     f.websocket = WebSocketData()
     f.websocket.messages.append(WebSocketMessage(opcode, True, json.dumps(frame).encode()))
-    a.websocket_message(f)
+    asyncio.run(a.websocket_message(f))
     return f.websocket.messages[-1].content.decode()
 
 

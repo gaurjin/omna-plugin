@@ -93,7 +93,7 @@ def test_a_websocket_on_another_site_gets_nothing_back_either(addon):
     f.request.method = "GET"
     f.websocket = WebSocketData()
     f.websocket.messages.append(WebSocketMessage(Opcode.TEXT, False, json.dumps({"text": f"it is {EMAIL_1}"}).encode()))
-    addon.websocket_message(f)
+    asyncio.run(addon.websocket_message(f))
     assert EMAIL not in f.websocket.messages[-1].content.decode()
 
 

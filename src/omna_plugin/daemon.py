@@ -100,7 +100,7 @@ async def serve(api_port: int = config.DEFAULT_PORT, system_port: int = config.S
     master = None
     tasks: list[asyncio.Task] = []
     if policy.doors.get("system", True):
-        addon = OmnaAddon(pipeline, policy, door="system", resolver=ProcessResolver().resolve)
+        addon = OmnaAddon(pipeline, policy, door="system", resolver=ProcessResolver(door_port=system_port).resolve)
         master = build_master(policy, addon, port=system_port, ca_dir=config.ca_dir(),
                               deep_apps=policy.deep_apps if policy.doors.get("deep") else None)
         tasks.append(asyncio.create_task(master.run()))

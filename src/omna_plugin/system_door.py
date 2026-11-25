@@ -367,8 +367,16 @@ class OmnaAddon:
         req = RequestView(host=flow.request.pretty_host, method=flow.request.method, path=flow.request.path,
                           content_type=flow.request.headers.get("content-type", ""),
                           body=flow.request.get_content() or b"", headers=dict(flow.request.headers))
-        with self.pipeline.session.sending_to(self._site(flow)), from_extension(bool(flow.metadata.get("omna_ext"))):
-            out = adapter.mask(self.pipeline, req, self._style_for(flow))
+        style, site, ext = self._style_for(flow), self._site(flow), bool(flow.metadata.get("omna_ext"))
+
+        def mask():
+            with self.pipeline.session.sending_to(site), from_extension(ext):
+                return adapter.mask(self.pipeline, req, style)
+
+        # Off the door's one shared loop: masking a big upload takes seconds,
+        # and on the loop every AI site on the Mac waited for it (client test
+        # 2026-11-21, bug list row 2). The API door does the same (proxy.py).
+        out = await asyncio.to_thread(mask)
         note = f"file-not-masked:{out.stats.not_masked}" if out.stats.not_masked else (
             "passthrough-nonprompt" if out.passthrough else None)
         flow.metadata.update(omna_app=app, omna_adapter=adapter, omna_stats=out.stats, omna_nbytes=len(req.body),
@@ -553,11 +561,11 @@ class OmnaAddon:
             flow.metadata["omna_note"] = "cancelled"
             self._receipt(flow, flow.response.status_code if flow.response else 0, stream=False)
 
-    def _mask_ws_message(self, flow: http.HTTPFlow, text: str) -> tuple[str, MaskStats]:
+    def _mask_ws_message(self, flow: http.HTTPFlow, text: str, style: str) -> tuple[str, MaskStats]:
         agent = sites.is_agent_api(flow.request.pretty_host.lower(), flow.request.path)
-        return self.pipeline.mask_ws_message(text, self._style_for(flow), agent=agent)
+        return self.pipeline.mask_ws_message(text, style, agent=agent)
 
-    def websocket_message(self, flow: http.HTTPFlow) -> None:
+    async def websocket_message(self, flow: http.HTTPFlow) -> None:
         assert flow.websocket
         msg = flow.websocket.messages[-1]
         text = msg.text if msg.is_text else _binary_text(msg.content)
@@ -570,8 +578,16 @@ class OmnaAddon:
             return
         if msg.from_client:
             try:
-                with self.pipeline.session.sending_to(self._site(flow)):
-                    masked, stats = self._mask_ws_message(flow, text)
+                site, style = self._site(flow), self._style_for(flow)   # on the loop, like `_request`
+
+                def mask():
+                    with self.pipeline.session.sending_to(site):
+                        return self._mask_ws_message(flow, text, style)
+
+                # Off the shared loop, like `_request`: a big pasted message
+                # must not hold up every other AI site. mitmproxy waits for
+                # this hook before it sends the message, so order is kept.
+                masked, stats = await asyncio.to_thread(mask)
             except Exception as e:  # noqa: BLE001 — same rule as `request`: never send it unmasked
                 log.error("omna: masking a WebSocket message failed (%s) — message dropped", type(e).__name__)
                 msg.drop()

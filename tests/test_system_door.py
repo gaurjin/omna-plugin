@@ -370,7 +370,7 @@ async def test_a_websocket_message_honours_the_door_style(tmp_path, monkeypatch)
     flow = a_prompt_flow()
     flow.websocket = WebSocketData()
     flow.websocket.messages.append(WebSocketMessage(Opcode.TEXT, True, b"mail jane.doe@acme.com"))
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     sent = flow.websocket.messages[-1].content.decode()
     assert "jane.doe@acme.com" not in sent and "[" not in sent and "@example." in sent
 
@@ -703,14 +703,14 @@ async def test_a_websocket_reply_from_another_site_does_not_get_your_value(tmp_p
     addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
     sent = _flow_on("chatgpt.com")
     _ws(sent, True, "mail jane.doe@acme.com")
-    addon.websocket_message(sent)
+    await addon.websocket_message(sent)
     token = sent.websocket.messages[-1].content.decode().split("mail ")[1]
     _ws(sent, False, f"echo {token}")
-    addon.websocket_message(sent)
+    await addon.websocket_message(sent)
     assert sent.websocket.messages[-1].content.decode() == "echo jane.doe@acme.com"
     other = _flow_on("grok.com")
     _ws(other, False, f"echo {token}")
-    addon.websocket_message(other)
+    await addon.websocket_message(other)
     assert other.websocket.messages[-1].content.decode() == f"echo {token}"
 
 
@@ -720,16 +720,16 @@ async def test_a_websocket_reply_obeys_the_restore_switch_and_the_extension_tag(
     flow = _flow_on("claude.ai")
     flow.metadata["omna_app"] = "Google Chrome"   # set by the opening request; the switch is about the browser
     _ws(flow, True, "mail jane.doe@acme.com")
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     token = flow.websocket.messages[-1].content.decode().split("mail ")[1]
     addon.policy.restore_browser = False
     _ws(flow, False, f"echo {token}")
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     assert flow.websocket.messages[-1].content.decode() == f"echo {token}"
     addon.policy.restore_browser = True
     flow.metadata["omna_ext"] = True
     _ws(flow, False, f"echo {token}")
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     assert flow.websocket.messages[-1].content.decode() == f"echo {token}"
 
 
@@ -743,7 +743,7 @@ async def test_a_websocket_json_reply_stays_valid_json_when_a_value_has_a_quote(
     addon = an_addon(tmp_path, monkeypatch, "system", TOKENS)
     flow = _flow_on("claude.ai")
     _ws(flow, False, json.dumps({"type": "delta", "text": "hi [PERSON_1]!"}))
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     got = json.loads(flow.websocket.messages[-1].content.decode())
     assert got == {"type": "delta", "text": f"hi {value}!"}
 
@@ -755,12 +755,12 @@ async def test_a_binary_websocket_message_that_is_text_is_masked(tmp_path, monke
     flow = _flow_on("claude.ai")
     flow.websocket = WebSocketData()
     flow.websocket.messages.append(WebSocketMessage(Opcode.BINARY, True, b'{"text": "mail jane.doe@acme.com"}'))
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     msg = flow.websocket.messages[-1]
     assert b"jane.doe@acme.com" not in msg.content and b"[EMAIL_" in msg.content
     assert not msg.is_text                      # still a binary frame
     flow.websocket.messages.append(WebSocketMessage(Opcode.BINARY, False, msg.content))
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     assert b"jane.doe@acme.com" in flow.websocket.messages[-1].content
 
 
@@ -770,7 +770,7 @@ async def test_a_binary_websocket_message_that_is_not_text_passes_and_says_so(tm
     audio = bytes(range(256)) * 4
     flow.websocket = WebSocketData()
     flow.websocket.messages.append(WebSocketMessage(Opcode.BINARY, True, audio))
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     assert flow.websocket.messages[-1].content == audio
     assert flow.metadata.get("omna_note") == "websocket-binary-not-masked"
 
@@ -783,7 +783,7 @@ async def test_what_a_websocket_masked_is_receipted_when_it_closes(tmp_path, mon
     flow.response = http.Response.make(101, b"", {})
     addon.response(flow)
     _ws(flow, True, "mail jane.doe@acme.com")
-    addon.websocket_message(flow)
+    await addon.websocket_message(flow)
     addon.websocket_end(flow)
     rec = receipts.tail(1)[0]
     assert rec["route"] == "websocket" and rec["masked"].get("EMAIL") == 1
@@ -933,3 +933,51 @@ async def test_claude_code_switched_off_is_not_masked_by_the_mac_wide_door(tmp_p
     desktop = _hello("api.anthropic.com", "Claude", addon)   # the Claude desktop app is not Claude Code
     await addon.tls_clienthello(desktop)
     assert not desktop.ignore_connection
+
+
+async def test_one_slow_upload_does_not_hold_up_other_ai_sites(door, monkeypatch):
+    """Bug list row 2 (client test 2026-11-21): masking ran on the system
+    door's one shared event loop, so while one big upload was being masked
+    every AI site on the Mac waited. Masking now runs off that loop: a small
+    message must get through while a 2 s upload is still being masked."""
+    import omna_plugin.system_door as sd
+
+    real_for_host = sd.for_host
+
+    class SlowOnUpload:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+        def mask(self, pipeline, req, style):
+            if req.path.endswith("/slow-upload"):
+                time.sleep(2.0)   # like the engine reading a big file: blocks its thread
+            return self._inner.mask(pipeline, req, style)
+
+    monkeypatch.setattr(sd, "for_host", lambda host: SlowOnUpload(real_for_host(host)))
+    up, port, ctx, _ = door
+    base = f"https://127.0.0.1:{up.port}/api"
+
+    def scenario():
+        # On its own thread: the door's loop is this test's loop, so timing
+        # from here would freeze along with it and could never see the wait.
+        import concurrent.futures as cf
+        with httpx.Client(proxy=f"http://127.0.0.1:{port}", verify=ctx, timeout=10) as slow_c, \
+             httpx.Client(proxy=f"http://127.0.0.1:{port}", verify=ctx, timeout=10) as fast_c, \
+             cf.ThreadPoolExecutor(1) as pool:
+            fast_c.post(f"{base}/warm", json={"prompt": "hi"})   # TLS set up
+            slow = pool.submit(slow_c.post, f"{base}/slow-upload", json={"prompt": f"file for {EMAIL}"})
+            time.sleep(0.3)   # the upload is now being masked
+            t0 = time.monotonic()
+            r = fast_c.post(f"{base}/chat", json={"prompt": f"hi {EMAIL}"})
+            waited = time.monotonic() - t0
+            still_masking = not slow.done()
+            return waited, still_masking, r, up.last_body, slow.result()
+
+    waited, still_masking, r, fast_body, rs = await asyncio.to_thread(scenario)
+    assert waited < 0.5, f"a small message waited {waited:.2f}s behind one slow upload"
+    assert still_masking, "the slow upload finished too early for this test to mean anything"
+    assert r.status_code == 200 and EMAIL.encode() not in fast_body
+    assert rs.status_code == 200
