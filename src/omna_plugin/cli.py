@@ -1451,7 +1451,7 @@ def cmd_uninstall(a) -> int:
             from .mac import certs, netproxy
 
             for s in proxy_left:
-                print(f"      Mac: WARNING — network service \"{s}\" still uses Omna's system proxy. Remove it by hand:")
+                print(f"      Mac: WARNING — network service \"{s}\" still has Omna's system proxy setting on. Remove it by hand:")
                 for line in netproxy.pac_off_commands([s]):
                     print(f"        sudo {line}")
             if cert_left:

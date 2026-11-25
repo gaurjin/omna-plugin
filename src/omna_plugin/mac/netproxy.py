@@ -48,10 +48,12 @@ def pac_off_commands(services: list[str]) -> list[str]:
     # Details > Proxies) — clear it too so uninstall leaves nothing to find.
     # It is cleared with a single space, never "": networksetup rejects an empty
     # URL with "The parameters were not valid." (#49, checked on macOS 2026-11-22).
+    # Order matters: setting the URL turns auto-proxy back ON, so "off" must come
+    # last (checked on a real Mac 2026-11-24: off-then-URL left "Enabled: Yes").
     cmds = []
     for s in services:
-        cmds.append(f'networksetup -setautoproxystate "{_dq(s)}" off')
         cmds.append(f'networksetup -setautoproxyurl "{_dq(s)}" " "')
+        cmds.append(f'networksetup -setautoproxystate "{_dq(s)}" off')
     return cmds
 
 

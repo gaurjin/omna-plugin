@@ -36,8 +36,8 @@ def test_pac_on_off_commands():
     assert on == ['networksetup -setautoproxyurl "Wi-Fi" "http://127.0.0.1:7788/omna/proxy.pac"',
                   'networksetup -setautoproxystate "Wi-Fi" on']
     assert netproxy.pac_off_commands(["Wi-Fi"]) == [
-        'networksetup -setautoproxystate "Wi-Fi" off',
         'networksetup -setautoproxyurl "Wi-Fi" " "',
+        'networksetup -setautoproxystate "Wi-Fi" off',  # last: setting the URL turns it back on
     ]
 
 
@@ -211,8 +211,8 @@ def test_revert_still_turns_the_system_proxy_off_when_the_certificate_file_is_go
 
     assert len(batches) == 1
     assert batches[0] == [
-        'networksetup -setautoproxystate "Wi-Fi" off',
         'networksetup -setautoproxyurl "Wi-Fi" " "',
+        'networksetup -setautoproxystate "Wi-Fi" off',
         f'security delete-certificate -c "{setup.certs.CA_NAME}" {setup.certs.SYSTEM_KEYCHAIN}',
     ]
 
@@ -569,3 +569,46 @@ def test_revert_removes_a_trusted_certificate_even_when_no_service_points_at_omn
 
     assert batches == [([f'security delete-certificate -c "{certs.CA_NAME}" {certs.SYSTEM_KEYCHAIN}'], False)]
     assert res["proxy_left"] == [] and res["cert_left"] is False
+
+
+def test_points_at_omna_catches_the_leftover_from_the_old_off_order(monkeypatch):
+    # 2026-11-24: the old pac_off_commands ran "off" then set the URL to " ",
+    # which turned auto-proxy back on — Macs were left "Enabled: Yes" with a
+    # blank URL. A blank URL can't be anyone's proxy file, so uninstall must
+    # count it as Omna's leftover and turn it off. A company's own PAC (a real
+    # URL that is not Omna's) and a plain off service stay untouched.
+    states = {
+        "Wi-Fi": ("", True),                                       # the leftover
+        "Ethernet": ("http://wpad.corp.example/proxy.pac", True),  # company's own
+        "iPhone USB": ("", False),                                 # clean
+        "Omna": ("http://127.0.0.1:7788/omna/proxy.pac", True),
+    }
+    monkeypatch.setattr(setup.netproxy, "current_pac", lambda s: states[s])
+    assert [s for s in states if setup._points_at_omna(s)] == ["Wi-Fi", "Omna"]
+
+
+def test_revert_turns_off_the_leftover_from_the_old_off_order(monkeypatch, tmp_path):
+    # End to end through revert(): a service stuck "Enabled: Yes" with a blank
+    # URL gets the URL-then-off commands; a company's own PAC gets nothing.
+    monkeypatch.setattr(setup.config, "ca_dir", lambda: tmp_path / "gone")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(setup.config, "home", lambda: home)
+    monkeypatch.setattr(setup.netproxy, "list_services", lambda **k: ["Wi-Fi", "Ethernet"])
+    monkeypatch.setattr(setup.netproxy, "current_pac",
+                        lambda s: ("", True) if s == "Wi-Fi" else ("http://wpad.corp.example/proxy.pac", True))
+    monkeypatch.setattr(setup.subprocess, "run", lambda cmd, **k: None)
+    monkeypatch.setattr(setup.launchd, "remove", lambda label=launchd.LABEL: None)
+    monkeypatch.setattr(setup.app_bundle, "disable_login_item", lambda: None)
+    monkeypatch.setattr(setup.app_bundle, "remove", lambda: None)
+    monkeypatch.setattr(setup, "remove_deep_redirector_app", lambda: None)
+    monkeypatch.setattr(setup.certs, "in_system_keychain", lambda: False)
+    batches = []
+    monkeypatch.setattr(setup, "_run_batch", lambda lines, why, stop_on_error=True: batches.append(lines) or 0)
+
+    setup.revert()
+
+    assert batches == [[
+        'networksetup -setautoproxyurl "Wi-Fi" " "',
+        'networksetup -setautoproxystate "Wi-Fi" off',
+    ]]

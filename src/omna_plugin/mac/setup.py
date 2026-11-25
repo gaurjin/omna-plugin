@@ -104,10 +104,12 @@ def _points_at_omna(service: str) -> bool:
     cannot be read, the answer is yes: turning Omna's setting off is harmless, and
     uninstall must never call a service clean that it could not check (#49)."""
     try:
-        url, _on = netproxy.current_pac(service)
+        url, on = netproxy.current_pac(service)
     except Exception:  # noqa: BLE001
         return True
-    return "/omna/proxy.pac" in (url or "")
+    # On with a blank URL = what the old pac_off_commands order left behind
+    # (2026-11-24). A blank URL is nobody's proxy file, so it counts as Omna's.
+    return "/omna/proxy.pac" in (url or "") or (on and not (url or "").strip())
 
 
 def revert() -> dict:
