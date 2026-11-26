@@ -828,7 +828,7 @@ wheels = [
 
 [[package]]
 name = "omna-plugin"
-version = "1.2"
+version = "1.3"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
